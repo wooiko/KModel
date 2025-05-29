@@ -1,0 +1,30 @@
+# config.yaml
+random_seed: 42
+
+data_gen:
+  ore_flow_var_pct: 3.0
+  N_data: 10000
+  control_pts: 10
+  n_neighbors: 5
+
+model:
+  type: krr
+  alpha: 1.0
+  gamma: null
+
+mpc:
+  horizon: 6
+  lag: 2
+  u_min: 25.0
+  u_max: 35.0
+  delta_u_max: 1.0
+  lambda: 0.1
+
+split:
+  train_size: 0.7
+  val_size: 0.15
+  test_size: 0.15
+
+sim:
+  reference_data_path: "historical_data.csv"
+  output_results_path: "mpc_simulation_results.csv"
