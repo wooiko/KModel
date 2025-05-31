@@ -42,7 +42,7 @@ def compute_metrics(y_true, y_pred):
     Підтримує numpy-масиви або pandas.DataFrame.
     Повертає словник {column+'_mae':…, column+'_rmse':…}.
     """
-    # Перекладимо в numpy
+    # Перекладемо в numpy
     if hasattr(y_true, "values"):
         cols = list(y_true.columns)
         yt = y_true.values
@@ -56,8 +56,9 @@ def compute_metrics(y_true, y_pred):
 
     metrics = {}
     for i, col in enumerate(cols):
-        mae  = mean_absolute_error(yt[:, i], yp[:, i])
-        rmse = mean_squared_error(yt[:, i], yp[:, i], squared=False)
+        mae = mean_absolute_error(yt[:, i], yp[:, i])
+        mse = mean_squared_error(yt[:, i], yp[:, i])  # без squared
+        rmse = np.sqrt(mse)
         metrics[f"{col}_mae"]  = mae
         metrics[f"{col}_rmse"] = rmse
     return metrics
