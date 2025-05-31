@@ -27,6 +27,30 @@ def train_val_test(X, Y,
             X[val_idx],   Y[val_idx],
             X[test_idx],  Y[test_idx])
 
+def train_val_test_time_series(X, Y,
+                               train_size: float = 0.7,
+                               val_size: float   = 0.15,
+                               test_size: float  = 0.15):
+    """
+    Послідовне розбиття X, Y на train/val/test у пропорціях сумарно = 1.0,
+    без перемішування.
+    Повертає: X_train, Y_train, X_val, Y_val, X_test, Y_test
+    """
+    if abs(train_size + val_size + test_size - 1.0) > 1e-8:
+        raise ValueError("train_size + val_size + test_size має дорівнювати 1.0")
+
+    n = X.shape[0]
+    n_train = int(train_size * n)
+    n_val   = int(val_size   * n)
+    # останні n_test = n - n_train - n_val
+    X_train = X[:n_train]
+    Y_train = Y[:n_train]
+    X_val   = X[n_train:n_train + n_val]
+    Y_val   = Y[n_train:n_train + n_val]
+    X_test  = X[n_train + n_val:]
+    Y_test  = Y[n_train + n_val:]
+
+    return X_train, Y_train, X_val, Y_val, X_test, Y_test
 
 def add_noise(arr: np.ndarray, noise_std: float):
     """

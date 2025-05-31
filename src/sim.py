@@ -2,12 +2,13 @@
 
 import numpy as np
 import pandas as pd
+from typing import Callable
 
 from data_gen import DataGenerator
 from model import KernelModel
 from objectives import MaxIronMassObjective
 from mpc import MPCController
-from utils import train_val_test, compute_metrics
+from utils import compute_metrics, train_val_test_time_series
 
 
 def simulate_mpc(
@@ -23,89 +24,79 @@ def simulate_mpc(
     gamma: float = None,
     λ_obj: float = 0.1,
     w_fe: float = 1.0,
-    w_mass: float = 1.0
+    w_mass: float = 1.0,
+    train_size: float = 0.7,
+    val_size: float   = 0.15,
+    test_size: float  = 0.15,
+    u_min: float  = 25.0, 
+    u_max: float  = 35.0, 
+    delta_u_max: float  = 1.0,
+    progress_callback: Callable[[int, int, str], None] = None
 ):
-    """
-    Повна симуляція MPC у закритому циклі:
-      1) Генеруємо «справжні» дані через DataGenerator.
-      2) Будуємо лаговані X, Y і ділимо на train/val/test.
-      3) Навчаємо KernelModel.
-      4) Ініціалізуємо MPCController з MaxIronMassObjective.
-      5) Закритий цикл довжини T_sim:
-         - для кожного кроку формуємо d_seq, оптимізуємо QP, отримуємо u_k,
-         - робимо «справжній» крок через true_gen, оновлюємо історію,
-         - зберігаємо результати.
-      6) Обчислюємо метрики.
-
-    Повертає:
-      results_df: DataFrame з колонками
-        ['feed_fe_percent','ore_mass_flow','solid_feed_percent',
-         'conc_fe','tail_fe','conc_mass','tail_mass',
-         'mass_pull_pct','fe_recovery_pct']
-      metrics: dict з { 'mae': DataFrame, 'avg_iron_mass': float }
-    """
-    # 1. «Справжній» генератор
+    # 1. «справжній» генератор
     true_gen = DataGenerator(reference_df, ore_flow_var_pct=3.0)
     df_true  = true_gen.generate(N_data, control_pts, n_neighbors)
 
-    # 2. Лаговані X, Y і train/val/test
+    # 2. Лаговані X, Y і послідовне розбиття на train/val/test
     X, Y = DataGenerator.create_lagged_dataset(df_true, lags=lag)
-    (X_train, Y_train,
-     X_val,   Y_val,
-     X_test,  Y_test) = train_val_test(
-         X, Y, train_size=0.7, val_size=0.15, test_size=0.15
-    )
+    X_train, Y_train, X_val, Y_val, X_test, Y_test = \
+        train_val_test_time_series(X, Y, train_size, val_size, test_size)
 
-    # 3–4. Створюємо модель і контролер
+    # 3–4. Модель і MPC-контролер
     km = KernelModel(model_type=model_type,
                      kernel=kernel,
                      alpha=alpha,
                      gamma=gamma)
-
-    objective = MaxIronMassObjective(λ=λ_obj,
-                                     w_fe=w_fe,
-                                     w_mass=w_mass)
-
+    obj = MaxIronMassObjective(λ=λ_obj, w_fe=w_fe, w_mass=w_mass)
     mpc = MPCController(model=km,
-                        objective=objective,
+                        objective=obj,
                         horizon=horizon,
                         lag=lag,
-                        u_min=25.0,
-                        u_max=35.0,
-                        delta_u_max=1.0)
+                        u_min=u_min, u_max=u_max, delta_u_max=delta_u_max)
 
-    # 5a. Навчаємо модель і ініціалізуємо історію
-    cols_state = ['feed_fe_percent', 'ore_mass_flow', 'solid_feed_percent']
-    hist0 = df_true[cols_state].iloc[: lag + 1].values  # (lag+1,3)
-    mpc.fit(X_train, Y_train, hist0)
+    # 5a. Навчаємо модель на train і ініціалізуємо історію
+    cols_state = ['feed_fe_percent','ore_mass_flow','solid_feed_percent']
+    hist_train = df_true[cols_state].iloc[:lag+1].values
+    mpc.fit(X_train, Y_train, hist_train)
 
-    # Підготовка до циклу
-    d_all        = df_true[['feed_fe_percent', 'ore_mass_flow']].values
-    T_sim        = len(df_true) - (lag + 1)
-    records      = []
-    pred_records = []  # для збереження прогнозів
-    u_prev       = float(hist0[-1, 2])
+    # 5b. Визначаємо початок тестової ділянки у df_true
+    n        = X.shape[0]
+    n_train  = int(train_size * n)
+    n_val    = int(val_size * n)
+    test_idx = (lag + 1) + n_train + n_val
+
+    # Історія для симуляції (lag+1 точок перед тестом)
+    hist0  = df_true[cols_state]\
+                .iloc[test_idx - (lag + 1): test_idx]\
+                .values
+
+    # Самі «тестові» дані
+    df_run = df_true.iloc[test_idx:]
+    d_all  = df_run[['feed_fe_percent','ore_mass_flow']].values
+    T_sim  = len(df_run) - (lag + 1)
+
+    # 5c–5f. Замкнений цикл MPC тільки на тесті
+    records, pred_records = [], []
+    u_prev = float(hist0[-1, 2])
 
     for t in range(T_sim):
-        # 5b. Формуємо d_seq довжини horizon
-        d_seq = d_all[t+1: t+1 + horizon]
-        if d_seq.shape[0] < horizon:
-            pad   = np.repeat(d_seq[-1][None, :], horizon - d_seq.shape[0], axis=0)
+        if progress_callback:
+            progress_callback(t, T_sim, f"Крок {t+1}/{T_sim}")
+
+        # формуємо d_seq
+        d_seq = d_all[t+1 : t+1 + horizon]
+        if len(d_seq) < horizon:
+            pad   = np.repeat(d_seq[-1][None, :], horizon - len(d_seq), axis=0)
             d_seq = np.vstack([d_seq, pad])
 
-        # 5c. Оптимізація MPC → u_seq
+        # оптимізація та реальний крок
         u_seq = mpc.optimize(d_seq, u_prev)
         u_cur = float(u_seq[0])
 
-        # 5d. «Справжній» крок процесу
-        inp    = pd.DataFrame(
-            [[d_all[t+1, 0], d_all[t+1, 1], u_cur]],
-            columns=cols_state
-        )
+        inp    = pd.DataFrame([[ *d_all[t+1], u_cur ]], columns=cols_state)
         y_pred = true_gen._predict_outputs(inp)
         y_corr = true_gen._apply_mass_balance(inp, y_pred)
 
-        # зберігаємо прогнозні значення для compute_metrics
         pred_records.append({
             'conc_fe':   y_pred.concentrate_fe_percent.iloc[0],
             'tail_fe':   y_pred.tailings_fe_percent.iloc[0],
@@ -113,13 +104,11 @@ def simulate_mpc(
             'tail_mass': y_pred.tailings_mass_flow.iloc[0],
         })
 
-        # додаємо необхідні стовпці для _derive
-        y_corr['ore_mass_flow']   = inp['ore_mass_flow'].values
-        y_corr['feed_fe_percent'] = inp['feed_fe_percent'].values
-
+        # повний вихід
+        y_corr['ore_mass_flow']   = inp.ore_mass_flow.values
+        y_corr['feed_fe_percent'] = inp.feed_fe_percent.values
         y_full = true_gen._derive(y_corr)
 
-        # 5e. Зберігаємо результати «справжніх» виходів
         records.append({
             'feed_fe_percent':    inp.feed_fe_percent.iloc[0],
             'ore_mass_flow':      inp.ore_mass_flow.iloc[0],
@@ -132,41 +121,38 @@ def simulate_mpc(
             'fe_recovery_pct':    y_full.fe_recovery_percent.iloc[0],
         })
 
-        # 5f. Оновлюємо історію у контролері
+        # оновлюємо історію
         new_state = np.array([
             records[-1]['feed_fe_percent'],
             records[-1]['ore_mass_flow'],
             records[-1]['solid_feed_percent']
         ])
         xk = np.roll(mpc.x_hist, -1, axis=0)
-        xk[-1, :] = new_state
+        xk[-1] = new_state
         mpc.x_hist = xk
         u_prev     = u_cur
 
-    # 6. Конвертуємо списки в DataFrame
+    if progress_callback:
+        progress_callback(T_sim, T_sim, "Симуляція завершена")
+
+    # 6. Збір результатів і метрик
     results_df = pd.DataFrame(records)
     preds_df   = pd.DataFrame(pred_records)
-
-    # Обчислюємо метрики за справжніми та прогнозованими
-    mae = compute_metrics(
-        results_df[['conc_fe','tail_fe','conc_mass','tail_mass']],
-        preds_df
-    )
-
-    # Середня маса заліза в концентраті
-    iron_mass     = results_df.conc_fe * results_df.conc_mass / 100
-    avg_iron_mass = iron_mass.mean()
-
     metrics = {
-        'mae': mae,
-        'avg_iron_mass': avg_iron_mass
+        'mae': compute_metrics(
+            results_df[['conc_fe','tail_fe','conc_mass','tail_mass']],
+            preds_df),
+        'avg_iron_mass': (results_df.conc_fe * results_df.conc_mass / 100).mean()
     }
 
     return results_df, metrics
 
 
 if __name__ == '__main__':
+    def my_progress(step, total, msg):
+        print(f"[{step}/{total}] {msg}")
+
     hist_df = pd.read_parquet('processed.parquet')
-    results, metrics = simulate_mpc(hist_df)
-    print("Метрики:", metrics)
-    results.to_parquet('mpc_simulation_results.parquet')
+    res, mets = simulate_mpc(hist_df, progress_callback=my_progress)
+    print("Метрики:", mets)
+    res.to_parquet('mpc_simulation_results.parquet')
