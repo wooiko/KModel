@@ -15,27 +15,45 @@ class DataGenerator:
     def __init__(self,
                  reference_df: pd.DataFrame,
                  ore_flow_var_pct: float = 3.0):
-        # очікуємо в reference_df колонки:
-        # 'feed_fe_percent','solid_feed_percent',
-        # 'concentrate_fe_percent','tailings_fe_percent',
-        # 'concentrate_mass_flow','tailings_mass_flow'
-        self.ref = reference_df.copy()
-        # якщо немає ore_mass_flow, вважаємо константою 100
-        if 'ore_mass_flow' not in self.ref:
-            self.ref['ore_mass_flow'] = 100.0
-        self.input_cols  = ['feed_fe_percent','ore_mass_flow','solid_feed_percent']
-        self.output_cols = ['concentrate_fe_percent','tailings_fe_percent',
-                            'concentrate_mass_flow','tailings_mass_flow']
-        self._fit_knn()
-        # діапазони для генерації
-        base = self.ref['ore_mass_flow'].mean()
-        dv = base * ore_flow_var_pct/100
-        self.ranges = {
-            'ore_mass_flow': (base-dv, base+dv),
-            'feed_fe_percent': (self.ref.feed_fe_percent.min(), self.ref.feed_fe_percent.max()),
-            'solid_feed_percent': (self.ref.solid_feed_percent.min(), self.ref.solid_feed_percent.max()),
-        }
+        # Копіюємо вхідний DF
+        self.ref = reference_df.copy().reset_index(drop=True)
 
+        # Якщо немає ore_mass_flow — додаємо стовпець зі значенням 100.0
+        if 'ore_mass_flow' not in self.ref.columns:
+            # вставимо після 'feed_fe_percent' (якщо є), інакше в кінець
+            if 'feed_fe_percent' in self.ref.columns:
+                pos = list(self.ref.columns).index('feed_fe_percent') + 1
+            else:
+                pos = len(self.ref.columns)
+            self.ref.insert(loc=pos,
+                            column='ore_mass_flow',
+                            value=100.0)
+
+        # Перелік вхідних і вихідних стовпців
+        self.input_cols = ['feed_fe_percent',
+                           'ore_mass_flow',
+                           'solid_feed_percent']
+        self.output_cols = [
+            'concentrate_fe_percent',
+            'tailings_fe_percent',
+            'concentrate_mass_flow',
+            'tailings_mass_flow'
+        ]
+
+        # Навчаємо kNN на вихідних даних reference_df
+        self._fit_knn()
+
+        # Розмах для генерації випадкових збурень
+        base_flow = self.ref['ore_mass_flow'].mean()
+        dv        = base_flow * ore_flow_var_pct / 100.0
+        self.ranges = {
+            'ore_mass_flow':     (base_flow - dv, base_flow + dv),
+            'feed_fe_percent':   (self.ref['feed_fe_percent'].min(),
+                                  self.ref['feed_fe_percent'].max()),
+            'solid_feed_percent':(self.ref['solid_feed_percent'].min(),
+                                  self.ref['solid_feed_percent'].max()),
+        }
+        
     def _fit_knn(self, n_neighbors: int = 5):
         X = self.ref[self.input_cols]
         y = self.ref[self.output_cols]
