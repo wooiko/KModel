@@ -61,3 +61,45 @@ class MaxIronMassObjective(ControlObjective):
         smoothing_term = self.λ * cp.square(u_k - u_prev)
 
         return linear_term + smoothing_term
+    
+class MaxIronMassTrackingObjective(ControlObjective):
+    """
+    Прагнемо conc_fe→ref_fe і conc_mass→ref_mass,
+    але з можливістю задати пріоритети через w_fe, w_mass.
+    """
+
+    def __init__(self,
+                 ref_fe: float,
+                 ref_mass: float,
+                 w_fe: float = 1.0,
+                 w_mass: float = 1.0,
+                 λ: float = 0.1):
+        """
+        Args:
+            ref_fe:   цільове (максимальне) значення conc_fe
+            ref_mass: цільове (максимальне) значення conc_mass
+            w_fe:     вага помилки по conc_fe
+            w_mass:   вага помилки по conc_mass
+            λ:        коефіцієнт штрафу за різкі зміни керування
+        """
+        self.ref_fe   = ref_fe
+        self.ref_mass = ref_mass
+        self.w_fe     = w_fe
+        self.w_mass   = w_mass
+        self.λ        = λ
+
+    def cost_term(self,
+                  y_pred: list,
+                  u_k: cp.Expression,
+                  u_prev: cp.Expression) -> cp.Expression:
+        # Розпаковуємо прогнозовані виходи
+        conc_fe, _, conc_mass, _ = y_pred
+
+        # Вага-квадратична помилка до цілей
+        tracking_term = (self.w_fe   * cp.square(conc_fe   - self.ref_fe)
+                       + self.w_mass * cp.square(conc_mass - self.ref_mass))
+
+        # Штраф за різку зміну керування
+        smoothing_term = self.λ * cp.square(u_k - u_prev)
+
+        return tracking_term + smoothing_term

@@ -6,15 +6,15 @@ from typing import Callable
 
 from data_gen import DataGenerator
 from model import KernelModel
-from objectives import MaxIronMassObjective
+from objectives import MaxIronMassObjective, MaxIronMassTrackingObjective
 from mpc import MPCController
-from utils import compute_metrics, train_val_test_time_series
+from utils import compute_metrics, train_val_test_time_series, plot_mpc_diagnostics, analyze_correlation, analyze_sensitivity
 
 
 def simulate_mpc(
     reference_df: pd.DataFrame,
-    N_data: int = 1000,
-    control_pts: int = 200,
+    N_data: int = 500,
+    control_pts: int = 100,
     lag: int = 2,
     horizon: int = 6,
     n_neighbors: int = 5,
@@ -25,11 +25,13 @@ def simulate_mpc(
     λ_obj: float = 0.1,
     w_fe: float = 1.0,
     w_mass: float = 1.0,
+    ref_fe: float = 54.0,
+    ref_mass: float = 60.0,
     train_size: float = 0.7,
     val_size: float   = 0.15,
     test_size: float  = 0.15,
-    u_min: float  = 25.0, 
-    u_max: float  = 35.0, 
+    u_min: float  = 23.0, 
+    u_max: float  = 37.0, 
     delta_u_max: float  = 1.0,
     progress_callback: Callable[[int, int, str], None] = None
 ):
@@ -47,7 +49,7 @@ def simulate_mpc(
                      kernel=kernel,
                      alpha=alpha,
                      gamma=gamma)
-    obj = MaxIronMassObjective(λ=λ_obj, w_fe=w_fe, w_mass=w_mass)
+    obj = MaxIronMassTrackingObjective(λ=λ_obj, w_fe=w_fe, w_mass=w_mass, ref_fe=ref_fe, ref_mass=ref_mass)
     mpc = MPCController(model=km,
                         objective=obj,
                         horizon=horizon,
@@ -145,6 +147,12 @@ def simulate_mpc(
         'avg_iron_mass': (results_df.conc_fe * results_df.conc_mass / 100).mean()
     }
 
+    plot_mpc_diagnostics(results_df, w_fe, w_mass, λ_obj)
+    
+    analyze_correlation(results_df)
+    
+    analyze_sensitivity(results_df, preds_df)
+    
     return results_df, metrics
 
 
