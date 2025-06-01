@@ -1,8 +1,11 @@
 # utils.py
 
 import numpy as np
+import pandas as pd
+
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 import matplotlib.pyplot as plt
+from typing import List, Optional  
 
 def train_val_test(X, Y,
                    train_size: float = 0.7,
@@ -209,5 +212,209 @@ def analyze_sensitivity(results_df, preds_df):
     axes[1].grid(True)
 
     plt.suptitle('Чутливість прогнозів до зміни керування u')
+    plt.tight_layout()
+    plt.show()
+    
+def analize_errors(results_df, ref_fe, ref_mass):
+    err_fe   = results_df['conc_fe']   - ref_fe
+    err_mass = results_df['conc_mass'] - ref_mass
+    
+    plt.figure(figsize=(8,3))
+    plt.plot(err_fe,   label='error conc_fe')
+    plt.plot(err_mass, label='error conc_mass')
+    plt.axhline(0, color='k', lw=0.8)
+    plt.legend(); plt.xlabel('крок'); plt.ylabel('помилка')
+    plt.title('Tracking error')
+    plt.show()
+    
+def control_aggressiveness_metrics(u: np.ndarray,
+                                   delta_u_max: float,
+                                   threshold_ratio: float = 0.9
+                                   ) -> dict:
+    """
+    Обчислює метрики агресивності керування.
+    Параметри:
+      u              – масив керування (u[0],…,u[T])
+      delta_u_max    – гранична |Δu|
+      threshold_ratio– доля порогу для лічильника переключень (за замовчуванням 0.9·Δu_max)
+    Повертає словник з:
+      mean_delta_u     – середнє |Δu|
+      std_delta_u      – std |Δu|
+      energy_u         – E_u = mean(u^2)
+      switch_count     – кількість кроків, де |Δu| ≥ threshold_ratio·Δu_max
+      switch_frequency – switch_count / (T−1)
+    """
+    du = np.diff(u)
+    abs_du = np.abs(du)
+    mean_du = abs_du.mean()
+    std_du = abs_du.std()
+    energy = np.mean(u**2)
+    threshold = delta_u_max * threshold_ratio
+    switches = int((abs_du >= threshold).sum())
+    freq = switches / len(abs_du) if len(abs_du)>0 else 0.0
+    return {
+        'mean_delta_u': mean_du,
+        'std_delta_u': std_du,
+        'energy_u': energy,
+        'switch_count': switches,
+        'switch_frequency': freq
+    }
+
+def plot_delta_u_histogram(u: np.ndarray, bins: int = 20) -> None:
+    """
+    Побудова гістограми Δu = u[k]−u[k−1].
+    """
+    du = np.diff(u)
+    plt.figure()
+    plt.hist(du, bins=bins, edgecolor='black')
+    plt.xlabel('Δu')
+    plt.ylabel('Частота')
+    plt.title('Гістограма змін керування Δu')
+    plt.grid(True)
+    plt.show()
+
+def plot_control_vs_disturbance(u: np.ndarray,
+                                d: np.ndarray,
+                                time: np.ndarray = None
+                                ) -> None:
+    """
+    Візуалізує u(t) разом з збуреннями d(t).
+    Параметри:
+      u     – масив керування довжини T
+      d     – масив збурень форми (T, 2): [feed_fe_percent, ore_mass_flow]
+      time  – ось часу (довжина T), якщо None – використовує np.arange(T)
+    """
+    T = len(u)
+    if time is None:
+        time = np.arange(T)
+
+    fig, ax1 = plt.subplots()
+    ax1.step(time, u, where='post', color='tab:blue', label='u (solid_feed_percent)')
+    ax1.set_xlabel('Крок симуляції')
+    ax1.set_ylabel('u', color='tab:blue')
+    ax1.tick_params(axis='y', labelcolor='tab:blue')
+
+    ax2 = ax1.twinx()
+    ax2.plot(time, d[:T,0], '--', color='tab:green', label='feed_fe_percent')
+    ax2.plot(time, d[:T,1], '--', color='tab:orange', label='ore_mass_flow')
+    ax2.set_ylabel('Збурення', color='tab:green')
+    ax2.tick_params(axis='y', labelcolor='tab:green')
+
+    # легенда з обох осей
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
+
+    plt.title('Керування u та збурення d')
+    fig.tight_layout()
+    plt.show()
+
+def plot_control_and_disturbances(u_seq: np.ndarray,
+                                  d: np.ndarray,
+                                  time: np.ndarray = None,
+                                  title: str = None):
+    """
+    Малює:
+     1) у верхньому субплоті – керуючий сигнал u,
+     2) у нижньому – два канали d[:,0] та d[:,1], кожен на своїй Y-осі.
+    """
+    T = len(u_seq)
+    if time is None:
+        time = np.arange(T)
+
+    fig, (ax_u, ax_d1) = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
+
+    # 1) Керуючий сигнал u
+    ax_u.step(time, u_seq, where='post', color='tab:blue')
+    ax_u.set_ylabel('u (feed solid %)')
+    ax_u.grid(True)
+
+    # 2) Збурення d[:,0] на лівій осі
+    ax_d1.plot(time, d[:T, 0], '--', color='tab:green', label='feed_fe_percent')
+    ax_d1.set_ylabel('feed_fe_percent', color='tab:green')
+    ax_d1.tick_params(axis='y', labelcolor='tab:green')
+    ax_d1.grid(True)
+
+    # 3) Збурення d[:,1] на правій осі
+    if d.shape[1] > 1:
+        ax_d2 = ax_d1.twinx()
+        ax_d2.plot(time, d[:T, 1], '--', color='tab:orange', label='ore_mass_flow')
+        ax_d2.set_ylabel('ore_mass_flow', color='tab:orange')
+        ax_d2.tick_params(axis='y', labelcolor='tab:orange')
+
+    ax_d1.set_xlabel('Крок симуляції')
+
+    if title:
+        fig.suptitle(title)
+
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.show()
+    
+def plot_historical_data(hist_df: pd.DataFrame,
+                         columns: Optional[List[str]] = None,
+                         start_date: Optional[str] = None,
+                         end_date: Optional[str] = None,
+                         figsize: tuple = (14, 10),
+                         timestamp_col: Optional[str] = 'timestamp'):
+    """
+    Візуалізація історичних даних з DataFrame.
+
+    Параметри:
+    - hist_df: DataFrame з datetime індексом або стовпцем 'timestamp'.
+    - columns: Список стовпців для візуалізації. Якщо None — використовуються всі числові.
+    - start_date, end_date: Фільтрація по датах (формат рядка, наприклад '2023-01-01').
+    - figsize: Розмір фігури.
+
+    Виводить субплоти для кожного обраного параметра.
+    """
+    df = hist_df.copy()
+
+    # Встановлюємо індекс часу, якщо задано
+    if timestamp_col is not None and timestamp_col in df.columns:
+        df = df.set_index(timestamp_col)
+
+    # Перетворюємо індекс у DatetimeIndex, якщо потрібно
+    if not isinstance(df.index, pd.DatetimeIndex):
+        try:
+            df.index = pd.to_datetime(df.index)
+        except Exception:
+            raise ValueError("Індекс не є DatetimeIndex і не вдалося конвертувати.")
+            
+    # Індекс як DatetimeIndex
+    if not isinstance(df.index, pd.DatetimeIndex):
+        if 'timestamp' in df.columns:
+            df.set_index('timestamp', inplace=True)
+        else:
+            raise ValueError("DataFrame повинен мати індекс DatetimeIndex або стовпець 'timestamp'.")
+
+    # Фільтруємо за датами
+    if start_date:
+        df = df.loc[df.index >= pd.to_datetime(start_date)]
+    if end_date:
+        df = df.loc[df.index <= pd.to_datetime(end_date)]
+
+    # Визначаємо стовпці
+    if columns is None:
+        columns = df.select_dtypes(include=[np.number]).columns.tolist()
+        if not columns:
+            raise ValueError("Числових стовпців не знайдено.")
+    else:
+        missing_cols = [col for col in columns if col not in df.columns]
+        if missing_cols:
+            raise KeyError(f"Стовпці відсутні в DataFrame: {missing_cols}")
+
+    n = len(columns)
+
+    fig, axes = plt.subplots(n, 1, figsize=figsize, sharex=True)
+    if n == 1:
+        axes = [axes]
+
+    for ax, col in zip(axes, columns):
+        ax.plot(df.index, df[col], label=col)
+        ax.set_ylabel(col)
+        ax.grid(True)
+        ax.legend()
+
+    axes[-1].set_xlabel('Час')
     plt.tight_layout()
     plt.show()
