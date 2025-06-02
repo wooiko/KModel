@@ -143,3 +143,9 @@ class DataGenerator:
             Y.append(vals.loc[i, ['concentrate_fe_percent','tailings_fe_percent',
                                   'concentrate_mass_flow','tailings_mass_flow']].values)
         return np.array(X), np.array(Y)
+    
+if __name__ == '__main__':
+    hist_df = pd.read_parquet('processed.parquet')
+    true_gen=DataGenerator(hist_df, 3)
+    data = true_gen.generate(100, 20, 5)
+    print(data.head(10))

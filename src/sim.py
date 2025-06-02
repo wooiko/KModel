@@ -8,12 +8,12 @@ from data_gen import DataGenerator
 from model import KernelModel
 from objectives import  MaxIronMassTrackingObjective
 from mpc import MPCController
-from utils import compute_metrics, train_val_test_time_series, analyze_sensitivity, analize_errors, plot_control_and_disturbances, plot_historical_data
+from utils import compute_metrics, train_val_test_time_series, analyze_sensitivity, analize_errors, plot_control_and_disturbances, plot_historical_data, plot_fact_vs_mpc_plans
 
 def simulate_mpc(
     reference_df: pd.DataFrame,
-    N_data: int = 50,
-    control_pts: int = 10,
+    N_data: int = 500,
+    control_pts: int = 100,
     lag: int = 2,
     # horizon: int = 6,
     Np: int = 6,       # prediction horizon
@@ -92,6 +92,7 @@ def simulate_mpc(
 
     # 5c–5f. Замкнений цикл MPC тільки на тесті
     records, pred_records = [], []
+    all_u_sequences, control_steps = [], []
     u_prev = float(hist0[-1, 2])
 
     for t in range(T_sim):
@@ -106,6 +107,8 @@ def simulate_mpc(
 
         # оптимізація та реальний крок
         u_seq = mpc.optimize(d_seq, u_prev)
+        all_u_sequences.append(u_seq)
+        control_steps.append(t)   
         u_cur = float(u_seq[0])
 
         inp    = pd.DataFrame([[ *d_all[t+1], u_cur ]], columns=cols_state)
@@ -160,27 +163,32 @@ def simulate_mpc(
         'avg_iron_mass': (results_df.conc_fe * results_df.conc_mass / 100).mean()
     }
 
-    # plot_mpc_diagnostics(results_df, w_fe, w_mass, λ_obj)
-    
-    # analyze_correlation(results_df)
-    
-    # analyze_sensitivity(results_df, preds_df)
+
+    columns=['solid_feed_percent']
+    # plot_historical_data(results_df)
     
     # analize_errors(results_df, ref_fe, ref_mass)
+    
+    plot_control_and_disturbances(u_seq, d_all)
+
+
+    plot_fact_vs_mpc_plans(
+        results_df,
+        all_u_sequences,
+        control_steps,
+        var_name="solid_feed_percent"
+    )
 
     print("=" * 50)   
     
-    
-    plot_control_and_disturbances(u_seq, d_all)
+    return results_df, metrics
 
 if __name__ == '__main__':
     def my_progress(step, total, msg):
         print(f"[{step}/{total}] {msg}")
 
     hist_df = pd.read_parquet('processed.parquet')
-    
-    plot_historical_data(hist_df)
-    
+       
     res, mets = simulate_mpc(hist_df, progress_callback=my_progress)
     print("=" * 50)
     print("Метрики:", mets)

@@ -418,3 +418,45 @@ def plot_historical_data(hist_df: pd.DataFrame,
     axes[-1].set_xlabel('Час')
     plt.tight_layout()
     plt.show()
+    
+def plot_fact_vs_mpc_plans(results_df, all_u_sequences, control_steps, var_name="solid_feed_percent"):
+    """
+    Порівняння фактичних значень var_name з оптимізованими планами MPC.
+    results_df      — DataFrame з фактичними результатами (індекс 0,1,...)
+    all_u_sequences — список масивів [u_k, u_{k+1}, ...] для кожного кроку MPC
+    control_steps   — список індексів (0,1,2,...) кроків, на яких оптимізували
+    var_name        — назва стовпця в results_df, який малюємо
+    """
+    plt.figure(figsize=(12, 6))
+
+    # 1. Фактичні значення
+    plt.plot(results_df.index,
+             results_df[var_name],
+             'b-',
+             linewidth=2,
+             label=f'Факт {var_name}')
+
+    # 2. Всі горизонти планів MPC
+    for i, u_seq in enumerate(all_u_sequences):
+        start = control_steps[i]
+        t_plan = [start + j for j in range(len(u_seq))]
+        plt.plot(t_plan, u_seq, 'r-', alpha=0.13, lw=2)
+
+    # 3. Виділити декілька планів пунктиром
+    for k in [0, len(all_u_sequences)//2, len(all_u_sequences)-1]:
+        u_seq = all_u_sequences[k]
+        start = control_steps[k]
+        t_plan = [start + j for j in range(len(u_seq))]
+        plt.plot(t_plan,
+                 u_seq,
+                 '--',
+                 lw=2,
+                 label=f'План MPC (крок {start})')
+
+    plt.xlabel('Крок симуляції')
+    plt.ylabel(var_name)
+    plt.legend()
+    plt.grid(True)
+    plt.title(f"Факт та оптимальні плани MPC для {var_name}")
+    plt.tight_layout()
+    plt.show()
