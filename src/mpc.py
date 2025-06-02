@@ -81,45 +81,42 @@ class MPCController:
         if self.x_hist is None:
             raise RuntimeError("Спочатку викличте MPCController.fit().")
 
-        # змінна управління довжини Nc
+        # 1) Змінна управління довжини Nc
         u_var = cp.Variable(self.Nc)
 
-        # обмеження на u_var
+        # 2) Обмеження на u_var та Δu
         cons = [
             u_var >= self.u_min,
             u_var <= self.u_max,
             cp.abs(u_var[0] - u_prev) <= self.delta_u_max
         ]
-        # Δu тільки між вільними керуваннями
         for k in range(1, self.Nc):
             cons.append(cp.abs(u_var[k] - u_var[k-1]) <= self.delta_u_max)
 
-        # підготовка історії як список рядків
-        xk_list = [list(row) for row in self.x_hist]
+        # 3) Побудова прогнозів на всьому Np кроків
+        xk_list = [list(row) for row in self.x_hist]  # копія історії
+        pred_fe   = []  # сюди збиратимемо conc_fe_preds
+        pred_mass = []  # сюди — conc_mass_preds
 
-        cost_terms = []
-
-        # формуємо ціль по Np кроків
         for k in range(self.Np):
-            # вибір u_k: якщо k < Nc – оптимізоване, інакше – останнє з u_var
+            # вибираємо керування: перші Nc – оптимізовані, далі – останній
             uk = u_var[k] if k < self.Nc else u_var[self.Nc - 1]
 
-            # 1) будуємо вектор ознак Xk: L+1 рядків попередньої історії
+            # Будуємо вектор ознак Xk
             flat = []
             for row in xk_list:
                 for v in row:
                     flat.append(v if isinstance(v, cp.Expression) else float(v))
             Xk_cvx = cp.hstack(flat)  # shape = (n_features,)
 
-            # 2) прогноз лінійною моделлю: yk = Xk·W + b
+            # Прогноз лінійною моделлю: yk = Xk·W + b
             yk = Xk_cvx @ self.W_c + self.b_c  # shape = (n_targets,)
 
-            # 3) додаємо вклад у вартість через objective
-            prev_uk = u_prev if k == 0 else (u_var[k-1] if k < self.Nc else u_var[self.Nc - 1])
-            y_pred  = [yk[i] for i in range(self.model.intercept_.shape[0])]
-            cost_terms.append(self.objective.cost_term(y_pred, uk, prev_uk))
+            # Збираємо перший та третій компоненти
+            pred_fe.append(   yk[0] )
+            pred_mass.append( yk[2] )
 
-            # 4) оновлюємо список історії на наступний крок
+            # Оновлюємо історію для наступного кроку
             feed_fe, ore_flow = d_seq[k]
             xk_list.pop(0)
             xk_list.append([
@@ -128,9 +125,20 @@ class MPCController:
                 uk
             ])
 
-        # QP: мінімізуємо суму термів
-        total_cost = cp.sum(cp.hstack(cost_terms))
-        problem    = cp.Problem(cp.Minimize(total_cost), cons)
+        # 4) Формуємо вектори прогнозів
+        conc_fe_preds   = cp.hstack(pred_fe)    # shape = (Np,)
+        conc_mass_preds = cp.hstack(pred_mass)  # shape = (Np,)
+
+        # 5) Закликаємо векторизовану ціль
+        total_cost = self.objective.cost_full(
+            conc_fe_preds=conc_fe_preds,
+            conc_mass_preds=conc_mass_preds,
+            u_seq=u_var,
+            u_prev=u_prev
+        )
+
+        # 6) Розв’язуємо QP
+        problem = cp.Problem(cp.Minimize(total_cost), cons)
         problem.solve(solver=cp.OSQP)
 
         return u_var.value

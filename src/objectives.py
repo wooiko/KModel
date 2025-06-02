@@ -1,31 +1,39 @@
 # objectives.py
 
+import numpy as np
+
 from abc import ABC, abstractmethod
 import cvxpy as cp
 
 class ControlObjective(ABC):
     """
-    Базовий інтерфейс для цільових функцій MPC.
-    Реалізації повинні повертати CVXPY-вираз вартості для одного кроку.
+    Базовий клас для цільових функцій MPC.
+    Старий метод cost_term лишається для зворотної сумісності, 
+    але тепер він просто викликає cost_full або кидає помилку.
     """
 
     @abstractmethod
+    def cost_full(self,
+                  conc_fe_preds: cp.Expression,
+                  conc_mass_preds: cp.Expression,
+                  u_seq: cp.Expression,
+                  u_prev: cp.Expression) -> cp.Expression:
+        """
+        Обов’язково треба реалізувати:
+        векторизована ціль на весь горизонт.
+        """
+
     def cost_term(self,
                   y_pred: list,
                   u_k: cp.Expression,
                   u_prev: cp.Expression) -> cp.Expression:
         """
-        Формує терм цільової функції для одного кроку прогнозу.
-
-        Args:
-            y_pred: список [conc_fe, tail_fe, conc_mass, tail_mass] — CVXPY-вирази
-            u_k:     змінна керування в кроці k (CVXPY Expression)
-            u_prev:  змінна керування в кроці k-1 або скаляр (CVXPY Expression)
-
-        Повертає:
-            CVXPY Expression – вклад у сумарну вартість
+        Депрекейтед: для зворотньої сумісності, 
+        але якщо викликають – кидаємо помилку або транслюємо в cost_full.
         """
-        raise NotImplementedError("Метод cost_term() треба реалізувати в підкласі.")
+        raise NotImplementedError(
+            "Метод cost_term застарів, використовуйте cost_full(conc_fe_preds, conc_mass_preds, u_seq, u_prev)"
+        )
 
 
 class MaxIronMassObjective(ControlObjective):
@@ -64,8 +72,7 @@ class MaxIronMassObjective(ControlObjective):
     
 class MaxIronMassTrackingObjective(ControlObjective):
     """
-    Прагнемо conc_fe→ref_fe і conc_mass→ref_mass,
-    але з можливістю задати пріоритети через w_fe, w_mass.
+    Ціль з квадратичним трекінгом, гладкістю Δu та інтегральним штрафом.
     """
 
     def __init__(self,
@@ -73,33 +80,53 @@ class MaxIronMassTrackingObjective(ControlObjective):
                  ref_mass: float,
                  w_fe: float = 1.0,
                  w_mass: float = 1.0,
-                 λ: float = 0.1):
-        """
-        Args:
-            ref_fe:   цільове (максимальне) значення conc_fe
-            ref_mass: цільове (максимальне) значення conc_mass
-            w_fe:     вага помилки по conc_fe
-            w_mass:   вага помилки по conc_mass
-            λ:        коефіцієнт штрафу за різкі зміни керування
-        """
+                 λ: float = 0.1,
+                 K_I: float = 0.01):
+        super().__init__()
         self.ref_fe   = ref_fe
         self.ref_mass = ref_mass
         self.w_fe     = w_fe
         self.w_mass   = w_mass
         self.λ        = λ
+        self.K_I      = K_I
 
-    def cost_term(self,
-                  y_pred: list,
-                  u_k: cp.Expression,
+    def cost_full(self,
+                  conc_fe_preds: cp.Expression,
+                  conc_mass_preds: cp.Expression,
+                  u_seq: cp.Expression,
                   u_prev: cp.Expression) -> cp.Expression:
-        # Розпаковуємо прогнозовані виходи
-        conc_fe, _, conc_mass, _ = y_pred
+        Np = conc_fe_preds.shape[0]
+        Nc = u_seq.shape[0]
 
-        # Вага-квадратична помилка до цілей
-        tracking_term = (self.w_fe   * cp.square(conc_fe   - self.ref_fe)
-                       + self.w_mass * cp.square(conc_mass - self.ref_mass))
+        # 1) помилки
+        err_fe   = conc_fe_preds   - self.ref_fe    # (Np,)
+        err_mass = conc_mass_preds - self.ref_mass  # (Np,)
 
-        # Штраф за різку зміну керування
-        smoothing_term = self.λ * cp.square(u_k - u_prev)
+        # 2) tracking у вигляді квадратичної форми з Q_full
+        # — збираємо в один вектор довжини 2*Np
+        err_stack = cp.hstack([err_fe, err_mass])   # (2*Np,)
 
-        return tracking_term + smoothing_term
+        # — вагова матриця для одного кроку
+        Q_stage = np.diag([self.w_fe, self.w_mass])        # (2×2)
+        # — Q_full = kron(I_Np, Q_stage)
+        Q_full  = np.kron(np.eye(Np), Q_stage)             # (2Np×2Np)
+
+        cost_track = cp.quad_form(err_stack, Q_full)
+
+        # 3) smoothness: Δu
+        du0     = u_seq[0] - u_prev                        # scalar
+        du_rest = u_seq[1:] - u_seq[:-1]                   # (Nc-1,)
+        Du_ext  = cp.hstack([du0, du_rest])                # (Nc,)
+
+        R_full      = self.λ * np.eye(Nc)                  # (Nc×Nc)
+        cost_smooth = cp.quad_form(Du_ext, R_full)
+
+        # 4) інтегральний штраф
+        L     = np.tril(np.ones((Np, Np)))
+        Q_int = L.T @ L                                    # (Np×Np)
+        cost_int = self.K_I * (
+            cp.quad_form(err_fe,   Q_int) +
+            cp.quad_form(err_mass, Q_int)
+        )
+
+        return cost_track + cost_smooth + cost_int

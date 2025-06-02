@@ -12,8 +12,8 @@ from utils import compute_metrics, train_val_test_time_series, analyze_sensitivi
 
 def simulate_mpc(
     reference_df: pd.DataFrame,
-    N_data: int = 500,
-    control_pts: int = 100,
+    N_data: int = 5000,
+    control_pts: int = 1000,
     lag: int = 2,
     # horizon: int = 6,
     Np: int = 6,       # prediction horizon
@@ -24,15 +24,16 @@ def simulate_mpc(
     alpha: float = 1.0,
     gamma: float = None,
     λ_obj: float = 0.1,
-    w_fe: float = 1.0,
+    K_I: float = 0.01,
+    w_fe: float = 7.0,
     w_mass: float = 1.0,
     ref_fe: float = 54.5,
     ref_mass: float = 58.0,
     train_size: float = 0.7,
     val_size: float   = 0.15,
     test_size: float  = 0.15,
-    u_min: float  = 22.0, 
-    u_max: float  = 38.0, 
+    u_min: float  = 20.0, 
+    u_max: float  = 40.0, 
     delta_u_max: float  = 1.0,
     progress_callback: Callable[[int, int, str], None] = None
 ):
@@ -56,7 +57,8 @@ def simulate_mpc(
         w_fe=w_fe, 
         w_mass=w_mass,
         ref_fe=ref_fe, 
-        ref_mass=ref_mass
+        ref_mass=ref_mass,
+        K_I=K_I
     )
     
     mpc = MPCController(
@@ -93,6 +95,7 @@ def simulate_mpc(
     # 5c–5f. Замкнений цикл MPC тільки на тесті
     records, pred_records = [], []
     all_u_sequences, control_steps = [], []
+    u_applied = []
     u_prev = float(hist0[-1, 2])
 
     for t in range(T_sim):
@@ -110,6 +113,7 @@ def simulate_mpc(
         all_u_sequences.append(u_seq)
         control_steps.append(t)   
         u_cur = float(u_seq[0])
+        u_applied.append(u_cur)
 
         inp    = pd.DataFrame([[ *d_all[t+1], u_cur ]], columns=cols_state)
         y_pred = true_gen._predict_outputs(inp)
@@ -164,19 +168,18 @@ def simulate_mpc(
     }
 
 
-    columns=['solid_feed_percent']
-    # plot_historical_data(results_df)
+    columns=['conc_fe', 'conc_mass']
+    plot_historical_data(results_df, columns= columns)
     
-    # analize_errors(results_df, ref_fe, ref_mass)
+    analize_errors(results_df, ref_fe, ref_mass)
     
-    plot_control_and_disturbances(u_seq, d_all)
+    # 1) порівняльний графік планів MPC vs факт
+    # plot_fact_vs_mpc_plans(results_df, all_u_sequences, control_steps)
 
-
-    plot_fact_vs_mpc_plans(
-        results_df,
-        all_u_sequences,
-        control_steps,
-        var_name="solid_feed_percent"
+    # 2) фактичний applied-u + збурення в стилі step
+    plot_control_and_disturbances(
+        np.array(u_applied),
+        d_all[1:1+len(u_applied)]
     )
 
     print("=" * 50)   
