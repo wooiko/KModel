@@ -4,87 +4,90 @@
 import numpy as np
 import cvxpy as cp
 from model import KernelModel
+from observer import KalmanDisturbanceObserver
+from noise_constants import (
+    ERROR_PERCENTS_NULL,
+    ERROR_PERCENTS_LOW,
+    ERROR_PERCENTS_MEDIUM,
+    ERROR_PERCENTS_HIGH,
+    ERROR_RATIOS,
+    Y_MEANS,
+)
 
 
 class MPCController:
     def __init__(self,
                  model: KernelModel,
                  objective,
-                 horizon: int        = 6,
+                 horizon: int         = 6,
                  control_horizon: int = None,
-                 lag: int            = 2,
-                 u_min: float        = 25.0,
-                 u_max: float        = 35.0,
-                 delta_u_max: float  = 1.0):
-        """
-        MPC-контролер з лінійним KernelRidge.
-
-        model             – натренований KernelModel з model_type='krr' та kernel='linear'
-        objective         – об’єкт, що має метод cost_term(y_pred:list, u, u_prev)
-        horizon           – прогнозний горизонт Np
-        control_horizon   – горизонт керування Nc (Nc ≤ Np). Якщо None, то Nc = Np
-        lag               – довжина історії L (x_hist має L+1 рядків по 3 стовпці)
-        u_min, u_max      – межі для змінної u
-        delta_u_max       – максимум зміни між кроками
-        """
+                 lag: int             = 2,
+                 u_min: float         = 25.0,
+                 u_max: float         = 35.0,
+                 delta_u_max: float   = 1.0):
+        # Перевірка моделі
         if model.model_type != 'krr' or model.kernel != 'linear':
             raise ValueError("MPCController підтримує тільки model_type='krr' та kernel='linear'")
-        self.model        = model
-        self.objective    = objective
-        # прогнозний та контрольний горизонти
-        self.Np           = horizon
-        self.Nc           = control_horizon if control_horizon is not None else horizon
-        if self.Nc > self.Np:
-            raise ValueError("control_horizon (Nc) не може бути більше за horizon (Np)")
-        self.L            = lag
-        self.u_min        = u_min
-        self.u_max        = u_max
-        self.delta_u_max  = delta_u_max
-        self.x_hist       = None    # shape = (L+1, 3)
+        self.model     = model
+        self.objective = objective
+
+        # MPC-параметри
+        self.Np = horizon
+        self.Nc = control_horizon or horizon
+        self.L  = lag
+        self.u_min, self.u_max, self.delta_u_max = u_min, u_max, delta_u_max
+        self.x_hist = None
+
+        # Спостерігач: матриці A, C для лінійної моделі
+        output_size = 3  # concentrate_fe, concentrate_mass_flow, tailings_fe
+        A = np.eye(output_size)
+        C = np.eye(output_size)
+
+        self.observer = KalmanDisturbanceObserver(
+            A, C,
+            ERROR_PERCENTS_LOW, ERROR_RATIOS, Y_MEANS,
+            lowpass_alpha=0.3, anomaly_thresh=5.0,
+            r_scale=100.0,          # зменшити довіру до вимірювань
+            q_state_scale=0.1,     # залишити шум стану
+            q_dist_scale=1e-5      # жорстко обмежити збурення
+        )
+
 
     def reset_history(self, initial_history: np.ndarray):
-        """
-        initial_history: numpy array форми (L+1, 3)
-        кожний рядок = [conc_fe, ore_flow, u_applied]
-        """
         expected = (self.L + 1, 3)
         if initial_history.shape != expected:
-            raise ValueError(f"initial_history має форму {expected}, отримано {initial_history.shape}")
+            raise ValueError(f"initial_history має форму {expected}, "
+                             f"отримано {initial_history.shape}")
         self.x_hist = initial_history.copy()
 
     def fit(self,
             X_train: np.ndarray,
             Y_train: np.ndarray,
             x0_hist: np.ndarray):
-        """
-        Навчає KernelModel та ініціалізує історію.
-        Після цього можна викликати optimize().
-        """
-        # навчаємо модель
         self.model.fit(X_train, Y_train)
-
-        # зберігаємо коефіцієнти лінійної регресії як константи CVXPY
-        self.W_c = cp.Constant(self.model.coef_)      # shape=(n_features, n_targets)
-        self.b_c = cp.Constant(self.model.intercept_) # shape=(n_targets,)
-
-        # ініціалізуємо історію
+        # Зберігаємо коефіцієнти як CVXPY-константи
+        self.W_c = cp.Constant(self.model.coef_)    # shape (3, input_size)
+        self.b_c = cp.Constant(self.model.intercept_)  # shape (3,)
         self.reset_history(x0_hist)
 
     def optimize(self,
                  d_seq: np.ndarray,
-                 u_prev: float) -> np.ndarray:
-        """
-        d_seq: масив форми (Np, 2) – послідовність зовнішніх впливів [(feed_fe, ore_flow), …]
-        u_prev: попереднє прикладене керування (скаляр)
-        Повертає оптимальний вектор u довжини Nc.
-        """
+                 u_prev: float,
+                 y_meas: np.ndarray) -> np.ndarray:
         if self.x_hist is None:
-            raise RuntimeError("Спочатку викличте MPCController.fit().")
+            raise RuntimeError("Спочатку викличте fit()")
 
-        # 1) Змінна управління довжини Nc
+        # 1) Оновлення спостерігача
+        self.observer.predict(np.array([u_prev]))
+        xbar = self.observer.update(y_meas)
+        d_hat = xbar[self.observer.n:]  # оцінене збурення
+        
+        xbar = self.observer.update(y_meas)
+        d_hat = xbar[self.observer.n:]
+        print(f"Оцінене збурення d̂ = {d_hat}")  
+
+        # 2) Формуємо змінні і обмеження
         u_var = cp.Variable(self.Nc)
-
-        # 2) Обмеження на u_var та Δu
         cons = [
             u_var >= self.u_min,
             u_var <= self.u_max,
@@ -93,52 +96,41 @@ class MPCController:
         for k in range(1, self.Nc):
             cons.append(cp.abs(u_var[k] - u_var[k-1]) <= self.delta_u_max)
 
-        # 3) Побудова прогнозів на всьому Np кроків
-        xk_list = [list(row) for row in self.x_hist]  # копія історії
-        pred_fe   = []  # сюди збиратимемо conc_fe_preds
-        pred_mass = []  # сюди — conc_mass_preds
+        # 3) Прогнозування за горизонтом
+        pred_fe, pred_mass = [], []
+        # Копіюємо історію у список списків
+        xk_list = [list(row) for row in self.x_hist]
 
         for k in range(self.Np):
-            # вибираємо керування: перші Nc – оптимізовані, далі – останній
-            uk = u_var[k] if k < self.Nc else u_var[self.Nc - 1]
-
-            # Будуємо вектор ознак Xk
-            flat = []
-            for row in xk_list:
-                for v in row:
-                    flat.append(v if isinstance(v, cp.Expression) else float(v))
-            Xk_cvx = cp.hstack(flat)  # shape = (n_features,)
-
-            # Прогноз лінійною моделлю: yk = Xk·W + b
-            yk = Xk_cvx @ self.W_c + self.b_c  # shape = (n_targets,)
-
-            # Збираємо перший та третій компоненти
-            pred_fe.append(   yk[0] )
-            pred_mass.append( yk[2] )
-
-            # Оновлюємо історію для наступного кроку
+            uk = u_var[k] if k < self.Nc else u_var[self.Nc-1]
+    
+            # збираємо вектор ознак довжини (L+1)*3
+            feats = [elem for row in xk_list for elem in row]
+            Xk_cvx = cp.hstack(feats)   # CVXPY вектор форми (n_features,)
+    
+            # прогноз (переставили місцями)
+            yk = Xk_cvx @ self.W_c + self.b_c   # (n_outputs,)
+    
+            # корегуємо прогнози
+            alpha_ff = 0.5   # 0…1
+            pred_fe.append(   yk[0] - d_hat[0] )
+            pred_mass.append( yk[1] - alpha_ff*d_hat[1] )
+    
+            # оновлюємо історію
             feed_fe, ore_flow = d_seq[k]
             xk_list.pop(0)
-            xk_list.append([
-                float(feed_fe),
-                float(ore_flow),
-                uk
-            ])
+            xk_list.append([feed_fe, ore_flow, uk])
 
-        # 4) Формуємо вектори прогнозів
-        conc_fe_preds   = cp.hstack(pred_fe)    # shape = (Np,)
-        conc_mass_preds = cp.hstack(pred_mass)  # shape = (Np,)
+        conc_fe_preds   = cp.hstack(pred_fe)
+        conc_mass_preds = cp.hstack(pred_mass)
 
-        # 5) Закликаємо векторизовану ціль
+        # 4) Обчислення вартості і рішення
         total_cost = self.objective.cost_full(
-            conc_fe_preds=conc_fe_preds,
-            conc_mass_preds=conc_mass_preds,
-            u_seq=u_var,
-            u_prev=u_prev
+            conc_fe_preds, conc_mass_preds, u_var, u_prev
         )
-
-        # 6) Розв’язуємо QP
         problem = cp.Problem(cp.Minimize(total_cost), cons)
         problem.solve(solver=cp.OSQP)
 
-        return u_var.value
+        if u_var.value is None:
+            raise RuntimeError("MPC optimization failed: no solution")
+        return u_var.value.flatten()

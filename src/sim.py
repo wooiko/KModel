@@ -12,7 +12,7 @@ from utils import compute_metrics, train_val_test_time_series, analyze_sensitivi
 
 def simulate_mpc(
     reference_df: pd.DataFrame,
-    N_data: int = 900,
+    N_data: int =500,
     control_pts: int = 200,
     noise_level: str = 'none', # none, low, medium, high
     lag: int = 2,
@@ -117,7 +117,10 @@ def simulate_mpc(
             d_seq = np.vstack([d_seq, pad])
 
         # оптимізація та реальний крок
-        u_seq = mpc.optimize(d_seq, u_prev)
+        y_meas = np.array([df_true.loc[t, 'concentrate_fe_percent'], 
+                           df_true.loc[t, 'concentrate_mass_flow'],
+                           df_true.loc[t, 'tailings_fe_percent']])  # або інші потрібні вимірювання
+        u_seq = mpc.optimize(d_seq, u_prev, y_meas)        
         all_u_sequences.append(u_seq)
         control_steps.append(t)   
         u_cur = float(u_seq[0])
