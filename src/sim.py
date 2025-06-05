@@ -8,13 +8,20 @@ from data_gen import DataGenerator
 from model import KernelModel
 from objectives import  MaxIronMassTrackingObjective
 from mpc import MPCController
-from utils import compute_metrics, train_val_test_time_series, analyze_sensitivity, analize_errors, plot_control_and_disturbances, plot_historical_data, plot_fact_vs_mpc_plans
+from utils import (compute_metrics,
+                   train_val_test_time_series,
+                   analyze_sensitivity,
+                   analize_errors,
+                   plot_control_and_disturbances,
+                   plot_historical_data,
+                   plot_fact_vs_mpc_plans
+                  )
 
 def simulate_mpc(
     reference_df: pd.DataFrame,
     N_data: int =500,
     control_pts: int = 200,
-    noise_level: str = 'none', # none, low, medium, high
+    noise_level: str = 'none', # low, low, medium, high
     lag: int = 2,
     # horizon: int = 6,
     Np: int = 6,       # prediction horizon
@@ -27,7 +34,7 @@ def simulate_mpc(
     λ_obj: float = 0.1,
     K_I: float = 0.01,
     w_fe: float = 7.0,
-    w_mass: float = 1.0,
+    w_mass: float = 3.0,
     ref_fe: float = 54.5,
     ref_mass: float = 58.0,
     train_size: float = 0.7,
@@ -47,8 +54,8 @@ def simulate_mpc(
         test_frac=test_size,
         seed=42
     )
-    df_true  = true_gen.generate(N_data, int(N_data * 0.2), n_neighbors, noise_level=noise_level,anomaly_config=anomaly_config)
-
+    df_true  = true_gen.generate(N_data, int(N_data * 0.2), n_neighbors, noise_level=noise_level,anomaly_config=None)
+    
     # 2. Лаговані X, Y і послідовне розбиття на train/val/test
     X, Y = DataGenerator.create_lagged_dataset(df_true, lags=lag)
     X_train, Y_train, X_val, Y_val, X_test, Y_test = \
@@ -99,6 +106,9 @@ def simulate_mpc(
     df_run = df_true.iloc[test_idx:]
     d_all  = df_run[['feed_fe_percent','ore_mass_flow']].values
     T_sim  = len(df_run) - (lag + 1)
+
+    # plot_historical_data(df_true, columns=['feed_fe_percent','ore_mass_flow','solid_feed_percent'])
+    # plot_historical_data(df_true, columns=['concentrate_fe_percent','concentrate_mass_flow', 'tailings_fe_percent'])
 
     # 5c–5f. Замкнений цикл MPC тільки на тесті
     records, pred_records = [], []
@@ -205,5 +215,5 @@ if __name__ == '__main__':
        
     res, mets = simulate_mpc(hist_df, progress_callback=my_progress)
     print("=" * 50)
-    print("Метрики:", mets)
+    # print("Метрики:", mets)
     res.to_parquet('mpc_simulation_results.parquet')

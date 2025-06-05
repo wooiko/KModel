@@ -40,16 +40,20 @@ class MPCController:
 
         # Спостерігач: матриці A, C для лінійної моделі
         output_size = 3  # concentrate_fe, concentrate_mass_flow, tailings_fe
-        A = np.eye(output_size)
-        C = np.eye(output_size)
+        A_bar = np.eye(output_size)
+        C_bar = np.eye(output_size)
 
         self.observer = KalmanDisturbanceObserver(
-            A, C,
+            A_bar, C_bar,
             ERROR_PERCENTS_LOW, ERROR_RATIOS, Y_MEANS,
             lowpass_alpha=0.3, anomaly_thresh=5.0,
-            r_scale=100.0,          # зменшити довіру до вимірювань
-            q_state_scale=0.1,     # залишити шум стану
-            q_dist_scale=1e-5      # жорстко обмежити збурення
+            r_scale=0.1,
+            q_state_scale=0.01,
+            q_dist_scales={
+                'concentrate_fe_percent': 1.0e-3,   # сильно пригальмувати перший канал
+                'concentrate_mass_flow':    1.0e-3, # пом’якшити середній канал
+                'tailings_fe_percent':      1.0e-3, # пригальмувати третій канал
+            }
         )
 
 
@@ -81,10 +85,7 @@ class MPCController:
         self.observer.predict(np.array([u_prev]))
         xbar = self.observer.update(y_meas)
         d_hat = xbar[self.observer.n:]  # оцінене збурення
-        
-        xbar = self.observer.update(y_meas)
-        d_hat = xbar[self.observer.n:]
-        print(f"Оцінене збурення d̂ = {d_hat}")  
+        print(f"Оцінене збурення d̂ = {d_hat}") 
 
         # 2) Формуємо змінні і обмеження
         u_var = cp.Variable(self.Nc)
@@ -103,19 +104,19 @@ class MPCController:
 
         for k in range(self.Np):
             uk = u_var[k] if k < self.Nc else u_var[self.Nc-1]
-    
-            # збираємо вектор ознак довжини (L+1)*3
+        
+            # збираємо вектор ознак із історії
             feats = [elem for row in xk_list for elem in row]
             Xk_cvx = cp.hstack(feats)   # CVXPY вектор форми (n_features,)
-    
-            # прогноз (переставили місцями)
+        
+            # прогноз (лінійна модель)
             yk = Xk_cvx @ self.W_c + self.b_c   # (n_outputs,)
-    
-            # корегуємо прогнози
+        
+            # КОРЕКТНО: додаємо оцінене збурення!
             alpha_ff = 0.5   # 0…1
-            pred_fe.append(   yk[0] - d_hat[0] )
-            pred_mass.append( yk[1] - alpha_ff*d_hat[1] )
-    
+            pred_fe.append(   yk[0] + d_hat[0] )
+            pred_mass.append( yk[1] + alpha_ff*d_hat[1] )
+        
             # оновлюємо історію
             feed_fe, ore_flow = d_seq[k]
             xk_list.pop(0)
