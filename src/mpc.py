@@ -4,7 +4,7 @@
 import numpy as np
 import cvxpy as cp
 from model import KernelModel
-
+from kalman_observer import DisturbanceObserverKalman
 
 class MPCController:
     def __init__(self,
@@ -41,6 +41,9 @@ class MPCController:
         self.u_max        = u_max
         self.delta_u_max  = delta_u_max
         self.x_hist       = None    # shape = (L+1, 3)
+        
+        self.d_obs_fe = DisturbanceObserverKalman()
+        self.d_obs_mass = DisturbanceObserverKalman()
 
     def reset_history(self, initial_history: np.ndarray):
         """
@@ -70,21 +73,11 @@ class MPCController:
         # ініціалізуємо історію
         self.reset_history(x0_hist)
 
-    def optimize(self,
-                 d_seq: np.ndarray,
-                 u_prev: float) -> np.ndarray:
-        """
-        d_seq: масив форми (Np, 2) – послідовність зовнішніх впливів [(feed_fe, ore_flow), …]
-        u_prev: попереднє прикладене керування (скаляр)
-        Повертає оптимальний вектор u довжини Nc.
-        """
+    def optimize(self, d_seq: np.ndarray, u_prev: float) -> np.ndarray:
         if self.x_hist is None:
             raise RuntimeError("Спочатку викличте MPCController.fit().")
 
-        # 1) Змінна управління довжини Nc
         u_var = cp.Variable(self.Nc)
-
-        # 2) Обмеження на u_var та Δu
         cons = [
             u_var >= self.u_min,
             u_var <= self.u_max,
@@ -93,30 +86,38 @@ class MPCController:
         for k in range(1, self.Nc):
             cons.append(cp.abs(u_var[k] - u_var[k-1]) <= self.delta_u_max)
 
-        # 3) Побудова прогнозів на всьому Np кроків
-        xk_list = [list(row) for row in self.x_hist]  # копія історії
-        pred_fe   = []  # сюди збиратимемо conc_fe_preds
-        pred_mass = []  # сюди — conc_mass_preds
+        xk_list   = [list(row) for row in self.x_hist]
+        pred_fe   = []
+        pred_mass = []
 
         for k in range(self.Np):
-            # вибираємо керування: перші Nc – оптимізовані, далі – останній
             uk = u_var[k] if k < self.Nc else u_var[self.Nc - 1]
 
-            # Будуємо вектор ознак Xk
+            # Формуємо Xk
             flat = []
             for row in xk_list:
                 for v in row:
                     flat.append(v if isinstance(v, cp.Expression) else float(v))
-            Xk_cvx = cp.hstack(flat)  # shape = (n_features,)
+            Xk_cvx = cp.hstack(flat)
 
-            # Прогноз лінійною моделлю: yk = Xk·W + b
-            yk = Xk_cvx @ self.W_c + self.b_c  # shape = (n_targets,)
+            # Базовий прогноз
+            yk = Xk_cvx @ self.W_c + self.b_c
 
-            # Збираємо перший та третій компоненти
-            pred_fe.append(   yk[0] )
-            pred_mass.append( yk[2] )
+            # Додаємо offset від Калман-спостерігача
+            d_fe_const   = cp.Constant(self.d_obs_fe.d_est)
+            d_mass_const = cp.Constant(self.d_obs_mass.d_est)
+            yk_augmented = cp.hstack([
+                yk[0] + d_fe_const,
+                yk[1],
+                yk[2] + d_mass_const,
+                yk[3]
+            ])
 
-            # Оновлюємо історію для наступного кроку
+            # Збираємо скориговані прогнози
+            pred_fe.append(   yk_augmented[0] )
+            pred_mass.append( yk_augmented[2] )
+
+            # Оновлення історії
             feed_fe, ore_flow = d_seq[k]
             xk_list.pop(0)
             xk_list.append([
@@ -125,11 +126,9 @@ class MPCController:
                 uk
             ])
 
-        # 4) Формуємо вектори прогнозів
-        conc_fe_preds   = cp.hstack(pred_fe)    # shape = (Np,)
-        conc_mass_preds = cp.hstack(pred_mass)  # shape = (Np,)
+        conc_fe_preds   = cp.hstack(pred_fe)
+        conc_mass_preds = cp.hstack(pred_mass)
 
-        # 5) Закликаємо векторизовану ціль
         total_cost = self.objective.cost_full(
             conc_fe_preds=conc_fe_preds,
             conc_mass_preds=conc_mass_preds,
@@ -137,7 +136,6 @@ class MPCController:
             u_prev=u_prev
         )
 
-        # 6) Розв’язуємо QP
         problem = cp.Problem(cp.Minimize(total_cost), cons)
         problem.solve(solver=cp.OSQP)
 
