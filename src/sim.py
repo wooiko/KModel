@@ -182,7 +182,7 @@ def simulate_mpc(
         d_all[1:1+len(u_applied)]
     )
 
-    print("=" * 50)   
+    # print("=" * 50)   
     
     return results_df, metrics
 
