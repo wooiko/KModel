@@ -193,7 +193,7 @@ if __name__ == '__main__':
     hist_df = pd.read_parquet('processed.parquet')
     
     N_data = 500 
-    control_pts = int(N_data * 0.2) 
+    control_pts = int(N_data * 0.2)  
     
     res, mets = simulate_mpc(hist_df, progress_callback=my_progress, N_data=N_data, control_pts=control_pts)
     
