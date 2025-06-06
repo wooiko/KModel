@@ -12,9 +12,8 @@ from utils import compute_metrics, train_val_test_time_series, analyze_sensitivi
 
 def simulate_mpc(
     reference_df: pd.DataFrame,
-    N_data: int = 900,
-    control_pts: int = 200,
-    noise_level: str = 'none', # none, low, medium, high
+    N_data: int = 5000,
+    control_pts: int = 1000,
     lag: int = 2,
     # horizon: int = 6,
     Np: int = 6,       # prediction horizon
@@ -33,21 +32,14 @@ def simulate_mpc(
     train_size: float = 0.7,
     val_size: float   = 0.15,
     test_size: float  = 0.15,
-    u_min: float  = 23.0, 
-    u_max: float  = 37.0, 
+    u_min: float  = 20.0, 
+    u_max: float  = 40.0, 
     delta_u_max: float  = 1.0,
     progress_callback: Callable[[int, int, str], None] = None
 ):
     # 1. «справжній» генератор
     true_gen = DataGenerator(reference_df, ore_flow_var_pct=3.0)
-    
-    anomaly_config = DataGenerator.generate_anomaly_config(
-        N_data,train_frac=train_size,
-        val_frac=val_size,
-        test_frac=test_size,
-        seed=42
-    )
-    df_true  = true_gen.generate(N_data, int(N_data * 0.2), n_neighbors, noise_level=noise_level,anomaly_config=anomaly_config)
+    df_true  = true_gen.generate(N_data, control_pts, n_neighbors)
 
     # 2. Лаговані X, Y і послідовне розбиття на train/val/test
     X, Y = DataGenerator.create_lagged_dataset(df_true, lags=lag)
