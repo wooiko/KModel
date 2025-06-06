@@ -1,24 +1,9 @@
-# data_gen.py
-
 import numpy as np
 import pandas as pd
 from scipy.interpolate import interp1d
 from sklearn.neighbors import KNeighborsRegressor
-from noise_constants import ERROR_PERCENTS_NULL, ERROR_PERCENTS_LOW, ERROR_PERCENTS_MEDIUM, ERROR_PERCENTS_HIGH, ERROR_RATIOS
 
 class DataGenerator:
-<<<<<<< HEAD
-
-
-    # Мапінг назв рівнів шуму до словників похибок
-    _noise_levels_map = {
-        'none': ERROR_PERCENTS_NULL,
-        'low': ERROR_PERCENTS_LOW,
-        'medium': ERROR_PERCENTS_MEDIUM,
-        'high': ERROR_PERCENTS_HIGH
-    }
-=======
->>>>>>> parent of 9319728 (2025.06.04 20:19)
     """
     Генератор синтетичних даних для системи прогнозуючого керування:
     - формує згладжені часові ряди вхідних сигналів
@@ -121,32 +106,6 @@ class DataGenerator:
         m_conc_fe= df.concentrate_mass_flow * df.concentrate_fe_percent/100
         df['fe_recovery_percent'] = (m_conc_fe / m_in_fe) * 100
         return df
-<<<<<<< HEAD
-    
-    def add_noise(self, data: pd.DataFrame, noise_level: str='none') -> pd.DataFrame:
-        df = data.copy()
-        if noise_level not in self._noise_levels_map:
-            return df
-        errs = self._noise_levels_map[noise_level]
-        for col, ratio_tuple in ERROR_RATIOS.items():
-            if col not in df or errs.get(col, 0) == 0:
-                continue
-            r_abs, r_rel = ratio_tuple[0], ratio_tuple[1]  # беремо лише 2 перші значення
-            base_pct = errs[col] / 100
-            param_mean = self.original_dataset[col].mean()
-            sigma = base_pct * (r_abs * param_mean + r_rel * df[col])
-            sigma = sigma.clip(lower=1e-9)
-            noise = np.random.normal(loc=0, scale=sigma)
-            df[col] = df[col] + noise
-            # clamp по діапазону
-            if col == 'ore_mass_flow':
-                lo, hi = self._input_ranges[col]
-            else:
-                lo, hi = self._parameter_ranges_for_clamping[col]
-            df[col] = df[col].clip(lo, hi)
-        return df
-=======
->>>>>>> parent of 9319728 (2025.06.04 20:19)
 
     def generate(self,
                  T: int,

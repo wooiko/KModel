@@ -8,25 +8,12 @@ from data_gen import DataGenerator
 from model import KernelModel
 from objectives import  MaxIronMassTrackingObjective
 from mpc import MPCController
-from utils import (compute_metrics,
-                   train_val_test_time_series,
-                   analyze_sensitivity,
-                   analize_errors,
-                   plot_control_and_disturbances,
-                   plot_historical_data,
-                   plot_fact_vs_mpc_plans
-                  )
+from utils import compute_metrics, train_val_test_time_series, analyze_sensitivity, analize_errors, plot_control_and_disturbances, plot_historical_data, plot_fact_vs_mpc_plans
 
 def simulate_mpc(
     reference_df: pd.DataFrame,
-<<<<<<< HEAD
-    N_data: int =500,
-    control_pts: int = 200,
-    noise_level: str = 'none', # low, low, medium, high
-=======
     N_data: int = 5000,
     control_pts: int = 1000,
->>>>>>> parent of 9319728 (2025.06.04 20:19)
     lag: int = 2,
     # horizon: int = 6,
     Np: int = 6,       # prediction horizon
@@ -39,7 +26,7 @@ def simulate_mpc(
     λ_obj: float = 0.1,
     K_I: float = 0.01,
     w_fe: float = 7.0,
-    w_mass: float = 3.0,
+    w_mass: float = 1.0,
     ref_fe: float = 54.5,
     ref_mass: float = 58.0,
     train_size: float = 0.7,
@@ -52,20 +39,8 @@ def simulate_mpc(
 ):
     # 1. «справжній» генератор
     true_gen = DataGenerator(reference_df, ore_flow_var_pct=3.0)
-<<<<<<< HEAD
-    
-    anomaly_config = DataGenerator.generate_anomaly_config(
-        N_data,train_frac=train_size,
-        val_frac=val_size,
-        test_frac=test_size,
-        seed=42
-    )
-    df_true  = true_gen.generate(N_data, int(N_data * 0.2), n_neighbors, noise_level=noise_level,anomaly_config=None)
-    
-=======
     df_true  = true_gen.generate(N_data, control_pts, n_neighbors)
 
->>>>>>> parent of 9319728 (2025.06.04 20:19)
     # 2. Лаговані X, Y і послідовне розбиття на train/val/test
     X, Y = DataGenerator.create_lagged_dataset(df_true, lags=lag)
     X_train, Y_train, X_val, Y_val, X_test, Y_test = \
@@ -117,9 +92,6 @@ def simulate_mpc(
     d_all  = df_run[['feed_fe_percent','ore_mass_flow']].values
     T_sim  = len(df_run) - (lag + 1)
 
-    # plot_historical_data(df_true, columns=['feed_fe_percent','ore_mass_flow','solid_feed_percent'])
-    # plot_historical_data(df_true, columns=['concentrate_fe_percent','concentrate_mass_flow', 'tailings_fe_percent'])
-
     # 5c–5f. Замкнений цикл MPC тільки на тесті
     records, pred_records = [], []
     all_u_sequences, control_steps = [], []
@@ -137,10 +109,7 @@ def simulate_mpc(
             d_seq = np.vstack([d_seq, pad])
 
         # оптимізація та реальний крок
-        y_meas = np.array([df_true.loc[t, 'concentrate_fe_percent'], 
-                           df_true.loc[t, 'concentrate_mass_flow'],
-                           df_true.loc[t, 'tailings_fe_percent']])  # або інші потрібні вимірювання
-        u_seq = mpc.optimize(d_seq, u_prev, y_meas)        
+        u_seq = mpc.optimize(d_seq, u_prev)
         all_u_sequences.append(u_seq)
         control_steps.append(t)   
         u_cur = float(u_seq[0])
@@ -222,10 +191,8 @@ if __name__ == '__main__':
         print(f"[{step}/{total}] {msg}")
 
     hist_df = pd.read_parquet('processed.parquet')
-    
-    N_data = 500
-    
-    res, mets = simulate_mpc(hist_df, progress_callback=my_progress, N_data=N_data, control_pts=int(N_data*0.2))
+       
+    res, mets = simulate_mpc(hist_df, progress_callback=my_progress)
     print("=" * 50)
-    # print("Метрики:", mets)
+    print("Метрики:", mets)
     res.to_parquet('mpc_simulation_results.parquet')
