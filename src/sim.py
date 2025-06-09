@@ -19,6 +19,7 @@ def simulate_mpc(
     Np: int = 6,       # prediction horizon
     Nc: int = 3,       # control horizon, Nc <= Np
     n_neighbors: int = 5,
+    noise_level: str = 'low', # none, low, medium, high
     model_type: str = 'krr',
     kernel: str = 'linear',
     alpha: float = 1.0,
@@ -39,7 +40,7 @@ def simulate_mpc(
 ):
     # 1. «справжній» генератор
     true_gen = DataGenerator(reference_df, ore_flow_var_pct=3.0)
-    df_true  = true_gen.generate(N_data, control_pts, n_neighbors)
+    df_true  = true_gen.generate(N_data, control_pts, n_neighbors, noise_level=noise_level)
 
     # 2. Лаговані X, Y і послідовне розбиття на train/val/test
     X, Y = DataGenerator.create_lagged_dataset(df_true, lags=lag)
@@ -191,8 +192,9 @@ if __name__ == '__main__':
         print(f"[{step}/{total}] {msg}")
 
     hist_df = pd.read_parquet('processed.parquet')
-       
-    res, mets = simulate_mpc(hist_df, progress_callback=my_progress)
+    
+    N_data=500
+    res, mets = simulate_mpc(hist_df, progress_callback=my_progress, N_data=N_data, control_pts = int(N_data*0.1))
     print("=" * 50)
-    print("Метрики:", mets)
+    # print("Метрики:", mets)
     res.to_parquet('mpc_simulation_results.parquet')
