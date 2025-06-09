@@ -2,6 +2,7 @@
 
 import numpy as np
 import pandas as pd
+import seaborn as sns
 
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 import matplotlib.pyplot as plt
@@ -459,4 +460,59 @@ def plot_fact_vs_mpc_plans(results_df, all_u_sequences, control_steps, var_name=
     plt.grid(True)
     plt.title(f"Факт та оптимальні плани MPC для {var_name}")
     plt.tight_layout()
+    plt.show()
+    
+def plot_disturbance_estimation(dist_history_df: pd.DataFrame):
+    """
+    Візуалізує якість роботи оцінювача збурень.
+    
+    Створює графіки для кожної з оцінених компонент збурення (`d_hat`),
+    показуючи їх динаміку протягом симуляції. Це демонструє, як
+    контролер виявляє стале відхилення моделі від реальності.
+
+    Args:
+        dist_history_df (pd.DataFrame): DataFrame з історією оцінок збурень.
+    """
+    if dist_history_df.empty:
+        print("Історія збурень порожня, візуалізація роботи оцінювача неможлива.")
+        return
+
+    # Назви для графіків
+    output_names = {
+        'd_conc_fe': 'Fe в концентраті (%)',
+        'd_tail_fe': 'Fe в хвостах (%)',
+        'd_conc_mass': 'Потік концентрату (т/год)',
+        'd_tail_mass': 'Потік хвостів (т/год)'
+    }
+    
+    num_plots = len(dist_history_df.columns)
+    if num_plots == 0:
+        return
+        
+    fig, axes = plt.subplots(num_plots, 1, figsize=(14, num_plots * 3.5), sharex=True)
+    if num_plots == 1:
+        axes = [axes]
+        
+    fig.suptitle('Динаміка оціненого збурення (d_hat = y_real - y_model)', fontsize=18, y=0.99)
+    sns.set_theme(style="whitegrid")
+
+    for i, col in enumerate(dist_history_df.columns):
+        ax = axes[i]
+        sns.lineplot(data=dist_history_df, x=dist_history_df.index, y=col, ax=ax, 
+                     label='Оцінка збурення d_hat', color='darkorange', linewidth=2)
+        
+        # Розрахунок середнього значення для візуалізації сталого зміщення
+        mean_dist = dist_history_df[col].mean()
+        ax.axhline(0, color='r', linestyle='--', lw=1.5, label='Нульовий зсув')
+        ax.axhline(mean_dist, color='b', linestyle=':', lw=1.5, 
+                   label=f'Середнє = {mean_dist:.2f}')
+        
+        title_text = output_names.get(col, col)
+        ax.set_title(f'Збурення для виходу: «{title_text}»', fontsize=14)
+        ax.set_ylabel('Величина зсуву')
+        ax.legend()
+        ax.grid(True, which='both', linestyle='--', linewidth=0.5)
+
+    axes[-1].set_xlabel('Крок симуляції на тестових даних (t)', fontsize=12)
+    plt.tight_layout(rect=[0, 0.02, 1, 0.96])
     plt.show()
