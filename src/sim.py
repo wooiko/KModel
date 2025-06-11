@@ -95,23 +95,31 @@ def simulate_mpc(
     hist0 = df_true[cols_state].iloc[test_idx - (lag + 1): test_idx].values
     mpc.reset_history(hist0) # Встановлюємо історію для початку симуляції
 
-    # Самі «тестові» дані
+    # Самі «тестові» дані (нефільтровані, "сирі")
     df_run = df_true.iloc[test_idx:]
     d_all = df_run[['feed_fe_percent','ore_mass_flow']].values
     T_sim = len(df_run) - (lag + 1)
 
-    # 5. Замкнений цикл MPC
-    records, pred_records = [], []
-    u_applied = []
-    u_prev = float(hist0[-1, 2])
+    # 5c. Ініціалізація станів фільтрів та змінних для симуляції
     
-    # Створюємо список для зберігання історії оцінок збурення
-    disturbance_history = []
+    # Коефіцієнт для фільтрації вхідних збурень (feed_fe, ore_mass_flow)
+    alpha_input_filter = 0.1 
+    # Початковий стан фільтра = перше значення з тестового набору
+    d_filtered_state = d_all[0, :].copy()
 
+    # Списки для збору результатів
+    records = []
+    u_applied = []
+    disturbance_history = []
+    u_prev = float(hist0[-1, 2])
+
+    # 5d. Замкнений цикл MPC (симуляція онлайн-роботи)
     for t in range(T_sim):
         if progress_callback:
             progress_callback(t, T_sim, f"Крок {t+1}/{T_sim}")
 
+        # Оновлюємо оцінку збурення на виході (d_hat)
+        # Примітка: цей метод має всередині реалізовувати фільтрацію d_hat
         if t > 0 and mpc.use_disturbance_estimator:
             y_meas_prev = np.array([
                 records[-1]['conc_fe'], records[-1]['tail_fe'],
@@ -119,26 +127,39 @@ def simulate_mpc(
             ])
             mpc.update_disturbance(y_meas_prev)
         
-        # Зберігаємо копію поточної оцінки збурення
+        # Зберігаємо історію оцінки збурення (після її можливої фільтрації)
         if mpc.use_disturbance_estimator:
             disturbance_history.append(mpc.d_hat.copy())
 
-        d_seq = d_all[t+1 : t+1 + Np]
-        if len(d_seq) < Np:
-            pad = np.repeat(d_seq[-1][None, :], Np - len(d_seq), axis=0)
-            d_seq = np.vstack([d_seq, pad])
-
-        u_seq = mpc.optimize(d_seq, u_prev)
+        # --- Каузальна фільтрація вхідних збурень ---
+        # 1. Отримуємо новий "сирий" замір з датчиків для поточного кроку
+        d_raw_current = d_all[t+1, :]
         
+        # 2. Оновлюємо відфільтроване значення за допомогою рекурсивної формули
+        d_filtered_state = alpha_input_filter * d_raw_current + (1 - alpha_input_filter) * d_filtered_state
+        
+        # 3. Формуємо послідовність для MPC, припускаючи, що поточне
+        #    відфільтроване значення збережеться на весь горизонт прогнозу Np
+        d_seq = np.repeat(d_filtered_state[None, :], Np, axis=0)
+        
+        # --- Розрахунок керуючої дії ---
+        u_seq = mpc.optimize(d_seq, u_prev)
         u_cur = u_prev if u_seq is None else float(u_seq[0])
         u_applied.append(u_cur)
 
+        # --- Симуляція реального процесу ---
+        # Для розрахунку реакції "справжнього" процесу (true_gen)
+        # використовуємо оригінальний, нефільтрований вхід d_all[t+1].
         inp = pd.DataFrame([[*d_all[t+1], u_cur]], columns=cols_state)
+        
+        # Розраховуємо виходи "реального" процесу
         y_pred_from_gen = true_gen._predict_outputs(inp)
         y_corr = true_gen._apply_mass_balance(inp, y_pred_from_gen)
         y_corr['ore_mass_flow'] = inp.ore_mass_flow.values
         y_corr['feed_fe_percent'] = inp.feed_fe_percent.values
         y_full = true_gen._derive(y_corr)
+        
+        # Зберігаємо результати кроку
         records.append({
             'feed_fe_percent': inp.feed_fe_percent.iloc[0], 'ore_mass_flow': inp.ore_mass_flow.iloc[0],
             'solid_feed_percent': u_cur, 'conc_fe': y_full.concentrate_fe_percent.iloc[0],
@@ -147,6 +168,7 @@ def simulate_mpc(
             'fe_recovery_pct': y_full.fe_recovery_percent.iloc[0],
         })
 
+        # Оновлюємо історію стану для MPC на наступний крок
         new_state = np.array([records[-1]['feed_fe_percent'], records[-1]['ore_mass_flow'], records[-1]['solid_feed_percent']])
         xk = np.roll(mpc.x_hist, -1, axis=0)
         xk[-1] = new_state
