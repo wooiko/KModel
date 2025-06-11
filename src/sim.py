@@ -38,6 +38,13 @@ def simulate_mpc(
     u_max: float  = 40.0, 
     delta_u_max: float  = 1.0,
     use_disturbance_estimator: bool = True,
+    # >>> Додаємо нові параметри для м'яких обмежень з значеннями за замовчуванням
+    y_max_fe: float = 54.0,
+    y_max_mass: float = 57.5,
+    rho_y_penalty: float = 1e6,
+    rho_du_penalty: float = 1e4,
+    use_soft_constraints: bool = True,
+    # <<<
     progress_callback: Callable[[int, int, str], None] = None
 ):
     # 1. «Справжній» генератор процесу
@@ -66,8 +73,11 @@ def simulate_mpc(
         lag=lag,
         u_min=u_min, u_max=u_max,
         delta_u_max=delta_u_max,
-        # Передаємо прапорець використання оцінювача
-        use_disturbance_estimator=use_disturbance_estimator
+        use_disturbance_estimator=use_disturbance_estimator,
+        # >>> Передаємо нові параметри в контролер
+        y_max=[y_max_fe, y_max_mass] if use_soft_constraints else None,
+        rho_y=rho_y_penalty,
+        rho_delta_u=rho_du_penalty
     )
 
     # 5a. Навчаємо модель на train і ініціалізуємо історію для навчання
@@ -151,9 +161,9 @@ def simulate_mpc(
     metrics = { 'avg_iron_mass': (results_df.conc_fe * results_df.conc_mass / 100).mean() }
 
     # 7. ВІЗУАЛІЗАЦІЯ РЕЗУЛЬТАТІВ
-    # plot_historical_data(results_df, columns=['conc_fe', 'conc_mass'])
-    # analize_errors(results_df, ref_fe, ref_mass)
-    # plot_control_and_disturbances(np.array(u_applied), d_all[1:1+len(u_applied)])
+    plot_historical_data(results_df, columns=['conc_fe', 'conc_mass'])
+    analize_errors(results_df, ref_fe, ref_mass)
+    plot_control_and_disturbances(np.array(u_applied), d_all[1:1+len(u_applied)])
     
     # ВИКЛИК НОВОГО МЕТОДУ ВІЗУАЛІЗАЦІЇ
     if use_disturbance_estimator:
@@ -176,13 +186,15 @@ if __name__ == '__main__':
     res, mets = simulate_mpc(
         hist_df, 
         progress_callback=my_progress, 
-        N_data=100, 
-        control_pts=20,
+        N_data=500, 
+        control_pts=50,
         noise_level='low', # Додамо трохи шуму для реалістичності
-        use_disturbance_estimator=True
+        use_disturbance_estimator=True,
+        λ_obj = 0.1,
+        delta_u_max = 1.0
     )
     
     print("Результати симуляції (останні 5 кроків):")
-    print(res.tail())
-    print("\nМетрики:", mets)
+    # print(res.tail())
+    # print("\nМетрики:", mets)
     res.to_parquet('mpc_simulation_results.parquet')
