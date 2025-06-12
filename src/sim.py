@@ -18,17 +18,18 @@ def simulate_mpc(
     control_pts: int = 1000,
     lag: int = 2,
     Np: int = 6,
-    Nc: int = 3,
+    Nc: int = 4,
     n_neighbors: int = 5,
     noise_level: str = 'none',
     model_type: str = 'krr',
     kernel: str = 'linear',
     alpha: float = 1.0,
     gamma: float = None,
-    λ_obj: float = 0.1,
-    K_I: float = 0.01,
+    find_optimal_params: bool = True,
+    λ_obj: float = 0.3,
+    K_I: float = 0.05,
     w_fe: float = 7.0,
-    w_mass: float = 1.0,
+    w_mass: float = 1.5,
     ref_fe: float = 54.5,
     ref_mass: float = 58.0,
     train_size: float = 0.7,
@@ -36,7 +37,7 @@ def simulate_mpc(
     test_size: float  = 0.15,
     u_min: float  = 20.0, 
     u_max: float  = 40.0, 
-    delta_u_max: float  = 1.0,
+    delta_u_max: float  = 1.1,
     use_disturbance_estimator: bool = True,
     # >>> Додаємо нові параметри для м'яких обмежень з значеннями за замовчуванням
     y_max_fe: float = 54.0,
@@ -59,7 +60,14 @@ def simulate_mpc(
         train_val_test_time_series(X, Y, train_size, val_size, test_size)
 
     # 3–4. Модель і MPC-контролер
-    km = KernelModel(model_type=model_type, kernel=kernel, alpha=alpha, gamma=gamma)
+    km = KernelModel(
+        model_type=model_type,
+        kernel=kernel,
+        alpha=alpha,
+        gamma=gamma,
+        # >>> Передайте прапорець в конструктор моделі
+        find_optimal_params=find_optimal_params
+    )
     
     obj = MaxIronMassTrackingObjective(
         λ=λ_obj, w_fe=w_fe, w_mass=w_mass, ref_fe=ref_fe, ref_mass=ref_mass, K_I=K_I
@@ -74,7 +82,6 @@ def simulate_mpc(
         u_min=u_min, u_max=u_max,
         delta_u_max=delta_u_max,
         use_disturbance_estimator=use_disturbance_estimator,
-        # >>> Передаємо нові параметри в контролер
         y_max=[y_max_fe, y_max_mass] if use_soft_constraints else None,
         rho_y=rho_y_penalty,
         rho_delta_u=rho_du_penalty
@@ -99,8 +106,6 @@ def simulate_mpc(
     df_run = df_true.iloc[test_idx:]
     d_all = df_run[['feed_fe_percent','ore_mass_flow']].values
     T_sim = len(df_run) - (lag + 1)
-
-    plot_historical_data(df_run, columns=['feed_fe_percent','ore_mass_flow'])
 
     # 5c. Ініціалізація станів фільтрів та змінних для симуляції
     
@@ -186,10 +191,10 @@ def simulate_mpc(
 
     # 7. ВІЗУАЛІЗАЦІЯ РЕЗУЛЬТАТІВ
     # plot_historical_data(results_df, columns=['conc_fe', 'conc_mass'])
-    # analize_errors(results_df, ref_fe, ref_mass)
-    # plot_control_and_disturbances(np.array(u_applied), d_all[1:1+len(u_applied)])
+    analize_errors(results_df, ref_fe, ref_mass)
+    plot_control_and_disturbances(np.array(u_applied), d_all[1:1+len(u_applied)])
     
-    # # ВИКЛИК НОВОГО МЕТОДУ ВІЗУАЛІЗАЦІЇ
+    # ВИКЛИК НОВОГО МЕТОДУ ВІЗУАЛІЗАЦІЇ
     # if use_disturbance_estimator:
     #     dist_df = pd.DataFrame(disturbance_history, columns=['d_conc_fe', 'd_tail_fe', 'd_conc_mass', 'd_tail_mass'])
     #     plot_disturbance_estimation(dist_df)
