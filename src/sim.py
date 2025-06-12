@@ -9,7 +9,7 @@ from model import KernelModel
 from objectives import  MaxIronMassTrackingObjective
 from mpc import MPCController
 from utils import (compute_metrics, train_val_test_time_series, analyze_sensitivity,
-                   analize_errors, plot_control_and_disturbances, 
+                   analize_errors, plot_control_and_disturbances, plot_delta_u_histogram, 
                    plot_historical_data, plot_fact_vs_mpc_plans, plot_disturbance_estimation)
 
 def simulate_mpc(
@@ -52,7 +52,7 @@ def simulate_mpc(
     
     anomaly_config = None # DataGenerator.generate_anomaly_config(N_data=N_data, train_frac=train_size, val_frac=val_size, test_frac=test_size)
     df_true  = true_gen.generate(N_data, control_pts, n_neighbors, noise_level=noise_level, anomaly_config=anomaly_config)
-
+    
     # 2. Лаговані X, Y і послідовне розбиття на train/val/test
     X, Y = DataGenerator.create_lagged_dataset(df_true, lags=lag)
     X_train, Y_train, X_val, Y_val, X_test, Y_test = \
@@ -99,6 +99,8 @@ def simulate_mpc(
     df_run = df_true.iloc[test_idx:]
     d_all = df_run[['feed_fe_percent','ore_mass_flow']].values
     T_sim = len(df_run) - (lag + 1)
+
+    plot_historical_data(df_run, columns=['feed_fe_percent','ore_mass_flow'])
 
     # 5c. Ініціалізація станів фільтрів та змінних для симуляції
     
@@ -183,15 +185,15 @@ def simulate_mpc(
     metrics = { 'avg_iron_mass': (results_df.conc_fe * results_df.conc_mass / 100).mean() }
 
     # 7. ВІЗУАЛІЗАЦІЯ РЕЗУЛЬТАТІВ
-    plot_historical_data(results_df, columns=['conc_fe', 'conc_mass'])
-    analize_errors(results_df, ref_fe, ref_mass)
-    plot_control_and_disturbances(np.array(u_applied), d_all[1:1+len(u_applied)])
+    # plot_historical_data(results_df, columns=['conc_fe', 'conc_mass'])
+    # analize_errors(results_df, ref_fe, ref_mass)
+    # plot_control_and_disturbances(np.array(u_applied), d_all[1:1+len(u_applied)])
     
-    # ВИКЛИК НОВОГО МЕТОДУ ВІЗУАЛІЗАЦІЇ
-    if use_disturbance_estimator:
-        dist_df = pd.DataFrame(disturbance_history, columns=['d_conc_fe', 'd_tail_fe', 'd_conc_mass', 'd_tail_mass'])
-        plot_disturbance_estimation(dist_df)
-
+    # # ВИКЛИК НОВОГО МЕТОДУ ВІЗУАЛІЗАЦІЇ
+    # if use_disturbance_estimator:
+    #     dist_df = pd.DataFrame(disturbance_history, columns=['d_conc_fe', 'd_tail_fe', 'd_conc_mass', 'd_tail_mass'])
+    #     plot_disturbance_estimation(dist_df)
+        
     print("=" * 50)   
     return results_df, metrics
 

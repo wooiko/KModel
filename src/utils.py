@@ -57,12 +57,12 @@ def train_val_test_time_series(X, Y,
 
     return X_train, Y_train, X_val, Y_val, X_test, Y_test
 
-def add_noise(arr: np.ndarray, noise_std: float):
-    """
-    Додає до масиву гаусівський шум зі σ = noise_std.
-    Повертає новий масив.
-    """
-    return arr + np.random.randn(*arr.shape) * noise_std
+# def add_noise(arr: np.ndarray, noise_std: float):
+#     """
+#     Додає до масиву гаусівський шум зі σ = noise_std.
+#     Повертає новий масив.
+#     """
+#     return arr + np.random.randn(*arr.shape) * noise_std
 
 
 def compute_metrics(y_true, y_pred):
@@ -274,41 +274,41 @@ def plot_delta_u_histogram(u: np.ndarray, bins: int = 20) -> None:
     plt.grid(True)
     plt.show()
 
-def plot_control_vs_disturbance(u: np.ndarray,
-                                d: np.ndarray,
-                                time: np.ndarray = None
-                                ) -> None:
-    """
-    Візуалізує u(t) разом з збуреннями d(t).
-    Параметри:
-      u     – масив керування довжини T
-      d     – масив збурень форми (T, 2): [feed_fe_percent, ore_mass_flow]
-      time  – ось часу (довжина T), якщо None – використовує np.arange(T)
-    """
-    T = len(u)
-    if time is None:
-        time = np.arange(T)
+# def plot_control_vs_disturbance(u: np.ndarray,
+#                                 d: np.ndarray,
+#                                 time: np.ndarray = None
+#                                 ) -> None:
+#     """
+#     Візуалізує u(t) разом з збуреннями d(t).
+#     Параметри:
+#       u     – масив керування довжини T
+#       d     – масив збурень форми (T, 2): [feed_fe_percent, ore_mass_flow]
+#       time  – ось часу (довжина T), якщо None – використовує np.arange(T)
+#     """
+#     T = len(u)
+#     if time is None:
+#         time = np.arange(T)
 
-    fig, ax1 = plt.subplots()
-    ax1.step(time, u, where='post', color='tab:blue', label='u (solid_feed_percent)')
-    ax1.set_xlabel('Крок симуляції')
-    ax1.set_ylabel('u', color='tab:blue')
-    ax1.tick_params(axis='y', labelcolor='tab:blue')
+#     fig, ax1 = plt.subplots()
+#     ax1.step(time, u, where='post', color='tab:blue', label='u (solid_feed_percent)')
+#     ax1.set_xlabel('Крок симуляції')
+#     ax1.set_ylabel('u', color='tab:blue')
+#     ax1.tick_params(axis='y', labelcolor='tab:blue')
 
-    ax2 = ax1.twinx()
-    ax2.plot(time, d[:T,0], '--', color='tab:green', label='feed_fe_percent')
-    ax2.plot(time, d[:T,1], '--', color='tab:orange', label='ore_mass_flow')
-    ax2.set_ylabel('Збурення', color='tab:green')
-    ax2.tick_params(axis='y', labelcolor='tab:green')
+#     ax2 = ax1.twinx()
+#     ax2.plot(time, d[:T,0], '--', color='tab:green', label='feed_fe_percent')
+#     ax2.plot(time, d[:T,1], '--', color='tab:orange', label='ore_mass_flow')
+#     ax2.set_ylabel('Збурення', color='tab:green')
+#     ax2.tick_params(axis='y', labelcolor='tab:green')
 
-    # легенда з обох осей
-    lines1, labels1 = ax1.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
-    ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
+#     # легенда з обох осей
+#     lines1, labels1 = ax1.get_legend_handles_labels()
+#     lines2, labels2 = ax2.get_legend_handles_labels()
+#     ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
 
-    plt.title('Керування u та збурення d')
-    fig.tight_layout()
-    plt.show()
+#     plt.title('Керування u та збурення d')
+#     fig.tight_layout()
+#     plt.show()
 
 def plot_control_and_disturbances(u_seq: np.ndarray,
                                   d: np.ndarray,

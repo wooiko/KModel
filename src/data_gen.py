@@ -80,7 +80,7 @@ class DataGenerator:
                  ore_flow_var_pct: float = 3.0,
                  seed: int = 0):
         # 1) Відтворюваність
-        np.random.seed(seed)
+        # np.random.seed(seed)
 
         # 2) Зберігаємо оригінальні дані та вставляємо ore_mass_flow, якщо немає
         self.original_dataset = reference_df.copy().reset_index(drop=True)
