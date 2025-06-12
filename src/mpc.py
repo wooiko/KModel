@@ -24,8 +24,9 @@ class MPCController:
                  rho_delta_u: float = 1e4     # Штраф за порушення обмежень по Δu
                  # >>> КІНЕЦЬ НОВИХ ПАРАМЕТРІВ
                  ):
-        if model.model_type != 'krr' or model.kernel != 'linear':
-            raise ValueError("MPCController підтримує тільки model_type='krr' та kernel='linear'")
+        # if model.model_type != 'krr' or model.kernel != 'linear':
+        #     raise ValueError("MPCController підтримує тільки model_type='krr' та kernel='linear'")
+ 
         self.model = model
         self.objective = objective
         self.Np = horizon
@@ -74,8 +75,8 @@ class MPCController:
         Навчає KernelModel та ініціалізує історію і оцінювач збурень.
         """
         self.model.fit(X_train, Y_train)
-        self.W_c = cp.Constant(self.model.coef_)
-        self.b_c = cp.Constant(self.model.intercept_)
+        # self.W_c = cp.Constant(self.model.coef_)
+        # self.b_c = cp.Constant(self.model.intercept_)
         self.reset_history(x0_hist)
 
         # 3. Ініціалізація оцінювача
@@ -111,67 +112,83 @@ class MPCController:
     def optimize(self,
                  d_seq: np.ndarray,
                  u_prev: float) -> np.ndarray:
+        """
+        Знаходить оптимальну послідовність керування.
+        Для нелінійних моделей виконує лінеаризацію на поточному кроці.
+        Використовує м'які обмеження для уникнення нездійсненності.
+        """
         if self.x_hist is None:
             raise RuntimeError("Спочатку викличте MPCController.fit().")
 
-        # 1. Основна керована змінна
+        # 1. Лінеаризація моделі в поточній робочій точці
+        # Цей крок забезпечує роботу з будь-яким ядром (linear, rbf, etc.)
+        X0_current = self.x_hist.flatten().reshape(1, -1)
+        W_local, b_local = self.model.linearize(X0_current)
+        W_c = cp.Constant(W_local)
+        b_c = cp.Constant(b_local)
+
+        # 2. Оголошення змінних оптимізації
         u_var = cp.Variable(self.Nc)
 
-        # 2. Створюємо змінні ослаблення (Slack Variables)
+        # Змінні ослаблення (slack variables) для м'яких обмежень
         eps_delta_u = cp.Variable(self.Nc, nonneg=True)
         eps_y_upper = cp.Variable((self.Np, 2), nonneg=True) if self.y_max is not None else None
         eps_y_lower = cp.Variable((self.Np, 2), nonneg=True) if self.y_min is not None else None
 
-        # 3. Жорсткі обмеження (залишаємо тільки на саму змінну u)
+        # 3. Формування обмежень
+        # Жорсткі обмеження на фізичні ліміти керування
         cons = [
             u_var >= self.u_min,
             u_var <= self.u_max,
         ]
 
-        # Побудова прогнозів
+        # Побудова прогнозів на горизонті Np з використанням ЛОКАЛЬНОЇ моделі
         d_hat_c = cp.Constant(self.d_hat) if self.use_disturbance_estimator and self.d_hat is not None else cp.Constant(np.zeros(self.n_targets))
         xk_list = [list(row) for row in self.x_hist]
         pred_fe, pred_mass = [], []
+
         for k in range(self.Np):
             uk = u_var[k] if k < self.Nc else u_var[self.Nc - 1]
             flat = [v if isinstance(v, cp.Expression) else float(v) for row in xk_list for v in row]
             Xk_cvx = cp.hstack(flat)
-            yk = Xk_cvx @ self.W_c + self.b_c + d_hat_c
+            # Прогноз за локальною лінійною моделлю
+            yk = Xk_cvx @ W_c + b_c + d_hat_c
             pred_fe.append(yk[0])
             pred_mass.append(yk[2])
             feed_fe, ore_flow = d_seq[k]
             xk_list.pop(0)
             xk_list.append([float(feed_fe), float(ore_flow), uk])
+        
         conc_fe_preds = cp.hstack(pred_fe)
         conc_mass_preds = cp.hstack(pred_mass)
 
-        # 4. Додаємо м'які обмеження
-        # Обмеження на Δu
+        # Додавання м'яких обмежень до списку
+        # Обмеження на Δu (розкладено на два для уникнення cp.abs)
         du0 = u_var[0] - u_prev
-        # ▼▼▼ ВИПРАВЛЕНИЙ РЯДОК ▼▼▼
         du_rest = u_var[1:] - u_var[:-1] if self.Nc > 1 else []
-        # ▲▲▲ ВИПРАВЛЕНИЙ РЯДОК ▲▲▲
         Du_ext = cp.hstack([du0] + ([du_rest] if self.Nc > 1 else []))
-        cons.append(cp.abs(Du_ext) <= self.delta_u_max + eps_delta_u)
+        bound = self.delta_u_max + eps_delta_u
+        cons.append(Du_ext <= bound)
+        cons.append(Du_ext >= -bound)
         
         # Обмеження на виходи Y
-        y_preds_stacked = cp.vstack([conc_fe_preds, conc_mass_preds]).T 
+        y_preds_stacked = cp.vstack([conc_fe_preds, conc_mass_preds]).T
         if eps_y_upper is not None:
             cons.append(y_preds_stacked <= self.y_max + eps_y_upper)
         if eps_y_lower is not None:
             cons.append(y_preds_stacked >= self.y_min - eps_y_lower)
 
-        # 5. Розрахунок основної цільової функції
+        # 4. Формування цільової функції
+        # Основна вартість (трекінг, згладжування, інтегральний член)
         base_cost = self.objective.cost_full(
             conc_fe_preds=conc_fe_preds,
             conc_mass_preds=conc_mass_preds,
-            u_seq=u_var, # тут u_var передається в аргумент u_seq
+            u_seq=u_var,
             u_prev=u_prev
         )
 
-        # 6. Додаємо штрафи за ослаблення до цільової функції
+        # Штрафи за порушення м'яких обмежень
         penalty_cost = self.rho_delta_u * cp.sum_squares(eps_delta_u)
-        
         if eps_y_upper is not None:
             penalty_cost += self.rho_y * cp.sum_squares(eps_y_upper)
         if eps_y_lower is not None:
@@ -179,21 +196,27 @@ class MPCController:
             
         total_cost = base_cost + penalty_cost
         
-        # 7. Розв'язуємо задачу
+        # 5. Розв'язання задачі оптимізації
         problem = cp.Problem(cp.Minimize(total_cost), cons)
-        problem.solve(solver=cp.OSQP, warm_start=True)
-
-        # ▼▼▼ ДОДАЙТЕ ЦЕЙ БЛОК ДЛЯ ДІАГНОСТИКИ ▼▼▼
+        # problem.solve(solver=cp.OSQP, warm_start=True)
+        
+        problem.solve(solver=cp.OSQP, 
+                      warm_start=True,
+                      verbose=True,      # Просимо солвер виводити детальну інформацію
+                      max_iter=15000,    # Збільшуємо максимальну кількість ітерацій
+                      eps_abs=1e-4,      # Трохи послаблюємо вимоги до абсолютної точності
+                      eps_rel=1e-4)      # і відносної точності
+        
+        # 6. Діагностика та повернення результату
         if problem.status not in ["infeasible", "unbounded"]:
-            # Перевіряємо, чи були використані змінні ослаблення для Y
+            # Діагностичний вивід для перевірки роботи м'яких обмежень
             if eps_y_upper is not None and np.any(eps_y_upper.value > 1e-4):
-                print(f"  -> УВАГА: Порушено верхнє обмеження Y! ε_y_upper = {np.round(eps_y_upper.value.flatten(), 3)}")
-            # Перевіряємо, чи були використані змінні ослаблення для Δu
-            if np.any(eps_delta_u.value > 1e-4):
-                print(f"  -> УВАГА: Порушено обмеження Δu! ε_Δu = {np.round(eps_delta_u.value, 3)}")
-        # ▲▲▲ КІНЕЦЬ ДІАГНОСТИЧНОГО БЛОКУ ▲▲▲
-
-        if problem.status in ["infeasible", "unbounded"]:
+                # print(f"  -> УВАГА: Порушено верхнє обмеження Y! ε_y_upper = {np.round(eps_y_upper.value.flatten(), 3)}")
+                print()
+            if eps_delta_u is not None and np.any(eps_delta_u.value > 1e-4):
+                # print(f"  -> УВАГА: Порушено обмеження Δu! ε_Δu = {np.round(eps_delta_u.value, 3)}")
+                print()
+        else:
              print("ПОПЕРЕДЖЕННЯ: Задача оптимізації не має розв'язку. Використовується попереднє керування.")
              return np.array([u_prev] * self.Nc)
 

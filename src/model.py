@@ -32,6 +32,7 @@ class KernelModel:
         self.coef_ = None
         self.intercept_ = None
 
+
     def fit(self, X: np.ndarray, Y: np.ndarray):
         """
         Навчає модель. Якщо find_optimal_params=True, виконує пошук по сітці
@@ -115,3 +116,48 @@ class KernelModel:
         
         # Для KRR використовуємо вбудований метод predict навченої моделі
         return self.models.predict(X)
+    
+    def linearize(self, X0: np.ndarray) -> (np.ndarray, np.ndarray):
+        """
+        Обчислює лінійну апроксимацію моделі y ≈ Wx + b навколо точки X0.
+        Повертає локальну матрицю ваг W та зсув b.
+        """
+        if self.model_type != 'krr':
+            raise NotImplementedError("Лінеаризація реалізована тільки для KRR.")
+
+        # Якщо модель вже лінійна, просто повертаємо її глобальні параметри
+        if self.kernel == 'linear':
+            # intercept_ тут нульовий згідно з вашою реалізацією
+            return self.coef_, self.intercept_ 
+
+        if self.kernel == 'rbf':
+            # Для RBF-ядра y(X) = K(X, X_train) @ dual_coef_
+            # W = d(y)/d(X) | в точці X0
+            
+            # Переконуємось, що X0 має правильну форму (1, n_features)
+            if X0.ndim == 1:
+                X0 = X0.reshape(1, -1)
+            
+            # Обчислення Якобіана (градієнта)
+            # d(K_ij)/d(X_i) = -2 * gamma * (X_i - X_train_j) * K_ij
+            diffs = X0[:, None, :] - self.X_train_[None, :, :]
+            sq_diffs = np.sum(diffs**2, axis=-1)
+            K_row = np.exp(-self.gamma * sq_diffs)
+            
+            # Градієнт ядра по відношенню до X0
+            # (n_targets, n_samples, n_features)
+            dK_dX = -2 * self.gamma * diffs * K_row[..., None]
+            
+            # Локальна матриця ваг W (Якобіан)
+            # W_ji = sum_k(dK_ik/dX_j * dual_coef_k) -> W_ij = sum_k(dK_ik/dX_i * dual_coef_k)
+            # (n_features, n_targets)
+            W_local = np.einsum('ijk,ji->ki', dK_dX, self.dual_coef_)
+            
+            # Обчислення локального зсуву b, щоб апроксимація була точною в точці X0
+            # y0 = W_local * X0 + b_local  =>  b_local = y0 - W_local * X0
+            y0 = self.predict(X0)
+            b_local = y0 - X0 @ W_local
+            
+            return W_local, b_local.flatten()
+
+        raise NotImplementedError(f"Лінеаризація для ядра '{self.kernel}' не реалізована.")

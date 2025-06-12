@@ -22,7 +22,7 @@ def simulate_mpc(
     n_neighbors: int = 5,
     noise_level: str = 'none',
     model_type: str = 'krr',
-    kernel: str = 'linear',
+    kernel: str = 'rbf',
     alpha: float = 1.0,
     gamma: float = None,
     find_optimal_params: bool = True,
@@ -39,13 +39,11 @@ def simulate_mpc(
     u_max: float  = 40.0, 
     delta_u_max: float  = 1.1,
     use_disturbance_estimator: bool = True,
-    # >>> Додаємо нові параметри для м'яких обмежень з значеннями за замовчуванням
     y_max_fe: float = 54.0,
     y_max_mass: float = 57.5,
     rho_y_penalty: float = 1e6,
     rho_du_penalty: float = 1e4,
     use_soft_constraints: bool = True,
-    # <<<
     progress_callback: Callable[[int, int, str], None] = None
 ):
     # 1. «Справжній» генератор процесу
@@ -63,9 +61,6 @@ def simulate_mpc(
     km = KernelModel(
         model_type=model_type,
         kernel=kernel,
-        alpha=alpha,
-        gamma=gamma,
-        # >>> Передайте прапорець в конструктор моделі
         find_optimal_params=find_optimal_params
     )
     
@@ -215,12 +210,15 @@ if __name__ == '__main__':
     res, mets = simulate_mpc(
         hist_df, 
         progress_callback=my_progress, 
-        N_data=500, 
-        control_pts=50,
-        noise_level='low', # Додамо трохи шуму для реалістичності
-        use_disturbance_estimator=True,
-        λ_obj = 0.1,
-        delta_u_max = 1.0
+        N_data=100, 
+        control_pts=20,
+        noise_level='low',
+        kernel='rbf', # Використовуємо RBF
+        use_soft_constraints=True,
+        y_max_fe=52.0,
+        # ▼▼▼ ЗМЕНШУЄМО ЗНАЧЕННЯ ШТРАФІВ ▼▼▼
+        rho_y_penalty=1e4,      # Було 1e6
+        rho_du_penalty=1e2      # Було 1e4
     )
     
     print("Результати симуляції (останні 5 кроків):")
