@@ -3,6 +3,7 @@
 import numpy as np
 import pandas as pd
 from typing import Callable
+from sklearn.preprocessing import StandardScaler 
 
 from data_gen import DataGenerator
 from model import KernelModel
@@ -46,6 +47,14 @@ def simulate_mpc(
     use_soft_constraints: bool = True,
     progress_callback: Callable[[int, int, str], None] = None
 ):
+
+    # Базова вага - середня вага трекінгу
+    avg_tracking_weight = (w_fe + w_mass) / 2.   
+    # Штраф за порушення виходів має бути на 2-3 порядки більшим
+    rho_y_val = avg_tracking_weight * 100 
+    # Штраф за порушення дельти керування має бути співмірним з λ
+    rho_du_val = λ_obj * 100
+    
     # 1. «Справжній» генератор процесу
     true_gen = DataGenerator(reference_df, ore_flow_var_pct=3.0)
     
@@ -56,37 +65,83 @@ def simulate_mpc(
     X, Y = DataGenerator.create_lagged_dataset(df_true, lags=lag)
     X_train, Y_train, X_val, Y_val, X_test, Y_test = \
         train_val_test_time_series(X, Y, train_size, val_size, test_size)
+        
+    # ================== ПОЧАТОК БЛОКУ НОРМАЛІЗАЦІЇ ==================
+    
+    # 2a. Створюємо та навчаємо скалери ТІЛЬКИ на тренувальних даних
+    x_scaler = StandardScaler()
+    y_scaler = StandardScaler()
+    
+    X_train_scaled = x_scaler.fit_transform(X_train)
+    Y_train_scaled = y_scaler.fit_transform(Y_train)
+    
+    # 2b. Трансформуємо валідаційні та тестові дані за допомогою навчених скалерів
+    X_val_scaled = x_scaler.transform(X_val)
+    Y_val_scaled = y_scaler.transform(Y_val)
+    X_test_scaled = x_scaler.transform(X_test)
+    Y_test_scaled = y_scaler.transform(Y_test) # Для фінальної оцінки якості моделі
+    
+    # =================== КІНЕЦЬ БЛОКУ НОРМАЛІЗАЦІЇ ===================
 
     # 3–4. Модель і MPC-контролер
+    # Модель тепер буде працювати зі змасштабованими даними
     km = KernelModel(
         model_type=model_type,
         kernel=kernel,
         find_optimal_params=find_optimal_params
     )
     
+    # ================== ПОЧАТОК ЗМІН ПАРАМЕТРІВ MPC ==================
+    
+    # 4a. Масштабуємо уставки та обмеження для MPC, щоб вони відповідали
+    # масштабу виходів Y, на яких навчалась модель.
+    # ref_point - це [conc_fe, tail_fe, conc_mass, tail_mass]
+    # Нам потрібні 1-й та 3-й елементи
+    ref_point_original = np.array([[ref_fe, 0, ref_mass, 0]]) # Створюємо 2D-масив
+    ref_point_scaled = y_scaler.transform(ref_point_original)
+    ref_fe_scaled = ref_point_scaled[0, 0]
+    ref_mass_scaled = ref_point_scaled[0, 2]
+
+    y_max_original = np.array([[y_max_fe, 0, y_max_mass, 0]])
+    y_max_scaled_full = y_scaler.transform(y_max_original)
+    y_max_fe_scaled = y_max_scaled_full[0, 0]
+    y_max_mass_scaled = y_max_scaled_full[0, 2]
+    
+    # 4b. Створюємо об'єкт цілі з новими, масштабованими уставками
     obj = MaxIronMassTrackingObjective(
-        λ=λ_obj, w_fe=w_fe, w_mass=w_mass, ref_fe=ref_fe, ref_mass=ref_mass, K_I=K_I
+        λ=λ_obj, w_fe=w_fe, w_mass=w_mass, 
+        ref_fe=ref_fe_scaled, 
+        ref_mass=ref_mass_scaled, 
+        K_I=K_I
     )
     
+    # 4c. Створюємо контролер, передаючи йому скалер для вхідних даних
     mpc = MPCController(
         model=km,
         objective=obj,
+        x_scaler=x_scaler,  # <<< ДОДАЙТЕ ЦЕЙ РЯДОК
         horizon=Np,
         control_horizon=Nc,
         lag=lag,
         u_min=u_min, u_max=u_max,
         delta_u_max=delta_u_max,
         use_disturbance_estimator=use_disturbance_estimator,
-        y_max=[y_max_fe, y_max_mass] if use_soft_constraints else None,
-        rho_y=rho_y_penalty,
-        rho_delta_u=rho_du_penalty
+        y_max=[y_max_fe_scaled, y_max_mass_scaled] if use_soft_constraints else None,
+        rho_y=rho_y_val, # Використовуємо адаптивні ваги
+        rho_delta_u=rho_du_val
     )
 
-    # 5a. Навчаємо модель на train і ініціалізуємо історію для навчання
-    cols_state = ['feed_fe_percent','ore_mass_flow','solid_feed_percent']
-    hist_train = df_true[cols_state].iloc[:lag+1].values
-    mpc.fit(X_train, Y_train, hist_train)
+    # =================== КІНЕЦЬ ЗМІН ПАРАМЕТРІВ MPC ===================
 
+    # 5a. Навчаємо модель на МАСШТАБОВАНИХ даних
+    cols_state = ['feed_fe_percent','ore_mass_flow','solid_feed_percent']
+    # Історія для mpc.fit() має бути також масштабована
+    # Для цього нам потрібен "історичний" скалер, навчений на даних до X_train
+    # АБО, що простіше, передаємо вже масштабовані дані
+    # mpc.fit(X_train_scaled, Y_train_scaled, x_scaler.transform(hist_train_unscaled))
+    # Проте mpc.fit зараз не використовує історію, тому передаємо масштабовані X, Y
+    mpc.fit(X_train_scaled, Y_train_scaled, None) # Історію встановимо пізніше
+    
     # 5b. Визначаємо початок тестової ділянки у df_true
     n = X.shape[0]
     n_train = int(train_size * n)
@@ -94,8 +149,10 @@ def simulate_mpc(
     test_idx = (lag + 1) + n_train + n_val
 
     # Історія для симуляції (lag+1 точок перед тестом)
-    hist0 = df_true[cols_state].iloc[test_idx - (lag + 1): test_idx].values
-    mpc.reset_history(hist0) # Встановлюємо історію для початку симуляції
+    # ВАЖЛИВО: mpc.x_hist має зберігати дані в ОРИГІНАЛЬНОМУ масштабі,
+    # оскільки в циклі ми будемо їх масштабувати перед передачею в модель
+    hist0_unscaled = df_true[cols_state].iloc[test_idx - (lag + 1): test_idx].values
+    mpc.reset_history(hist0_unscaled)
 
     # Самі «тестові» дані (нефільтровані, "сирі")
     df_run = df_true.iloc[test_idx:]
@@ -113,7 +170,7 @@ def simulate_mpc(
     records = []
     u_applied = []
     disturbance_history = []
-    u_prev = float(hist0[-1, 2])
+    u_prev = float(hist0_unscaled[-1, 2])
 
     # 5d. Замкнений цикл MPC (симуляція онлайн-роботи)
     for t in range(T_sim):
@@ -210,15 +267,15 @@ if __name__ == '__main__':
     res, mets = simulate_mpc(
         hist_df, 
         progress_callback=my_progress, 
-        N_data=100, 
-        control_pts=20,
+        N_data=500, 
+        control_pts=50,
         noise_level='low',
         kernel='rbf', # Використовуємо RBF
         use_soft_constraints=True,
         y_max_fe=52.0,
         # ▼▼▼ ЗМЕНШУЄМО ЗНАЧЕННЯ ШТРАФІВ ▼▼▼
-        rho_y_penalty=1e4,      # Було 1e6
-        rho_du_penalty=1e2      # Було 1e4
+        # rho_y_penalty=1e4,      # Було 1e6
+        # rho_du_penalty=1e2      # Було 1e4
     )
     
     print("Результати симуляції (останні 5 кроків):")

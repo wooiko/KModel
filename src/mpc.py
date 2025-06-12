@@ -4,12 +4,14 @@ import warnings
 import numpy as np
 import cvxpy as cp
 from model import KernelModel
+from sklearn.preprocessing import StandardScaler 
 
 
 class MPCController:
     def __init__(self,
                  model: KernelModel,
                  objective,
+                 x_scaler: StandardScaler,
                  horizon: int = 6,
                  control_horizon: int = None,
                  lag: int = 2,
@@ -49,6 +51,8 @@ class MPCController:
         self.rho_y = rho_y
         self.rho_delta_u = rho_delta_u
 
+        self.x_scaler = x_scaler
+        
         # Приховати конкретне попередження UserWarning від cvxpy щодо бекенду
         warnings.filterwarnings(
             "ignore",
@@ -70,16 +74,17 @@ class MPCController:
     def fit(self,
             X_train: np.ndarray,
             Y_train: np.ndarray,
-            x0_hist: np.ndarray):
+            x0_hist: np.ndarray = None): # <<< Додаємо значення за замовчуванням
         """
-        Навчає KernelModel та ініціалізує історію і оцінювач збурень.
+        Навчає KernelModel та опціонально ініціалізує історію і оцінювач збурень.
         """
         self.model.fit(X_train, Y_train)
-        # self.W_c = cp.Constant(self.model.coef_)
-        # self.b_c = cp.Constant(self.model.intercept_)
-        self.reset_history(x0_hist)
+        
+        # Перевіряємо, чи була надана історія, перед тим як її встановлювати
+        if x0_hist is not None:
+            self.reset_history(x0_hist)
 
-        # 3. Ініціалізація оцінювача
+        # Ініціалізація оцінювача збурень
         if self.use_disturbance_estimator:
             self.n_targets = Y_train.shape[1]
             self.d_hat = np.zeros(self.n_targets)
@@ -122,8 +127,9 @@ class MPCController:
 
         # 1. Лінеаризація моделі в поточній робочій точці
         # Цей крок забезпечує роботу з будь-яким ядром (linear, rbf, etc.)
-        X0_current = self.x_hist.flatten().reshape(1, -1)
-        W_local, b_local = self.model.linearize(X0_current)
+        X0_current_unscaled = self.x_hist.flatten().reshape(1, -1)
+        X0_current_scaled = self.x_scaler.transform(X0_current_unscaled) # <<< МАСШТАБУВАННЯ
+        W_local, b_local = self.model.linearize(X0_current_scaled)
         W_c = cp.Constant(W_local)
         b_c = cp.Constant(b_local)
 

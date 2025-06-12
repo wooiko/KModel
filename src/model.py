@@ -4,7 +4,6 @@ import numpy as np
 from sklearn.kernel_ridge import KernelRidge
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C
-# Новий імпорт для пошуку по сітці
 from sklearn.model_selection import GridSearchCV
 
 
