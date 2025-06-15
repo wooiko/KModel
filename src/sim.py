@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from typing import Callable
 from sklearn.preprocessing import StandardScaler 
+from sklearn.metrics import mean_squared_error, mean_absolute_error
 
 from data_gen import DataGenerator
 from model import KernelModel
@@ -27,23 +28,24 @@ def simulate_mpc(
     alpha: float = 1.0,
     gamma: float = None,
     find_optimal_params: bool = True,
-    λ_obj: float = 0.3,
-    K_I: float = 0.05,
+    λ_obj: float = 0.1,
+    K_I: float = 0.01,
     w_fe: float = 7.0,
-    w_mass: float = 1.5,
-    ref_fe: float = 54.5,
-    ref_mass: float = 58.0,
+    w_mass: float = 1.0,
+    ref_fe: float = 53.5,
+    ref_mass: float = 57.0,
     train_size: float = 0.7,
     val_size: float   = 0.15,
     test_size: float  = 0.15,
     u_min: float  = 20.0, 
     u_max: float  = 40.0, 
-    delta_u_max: float  = 1.1,
+    delta_u_max: float  = 1.0,
     use_disturbance_estimator: bool = True,
-    y_max_fe: float = 54.0,
-    y_max_mass: float = 57.5,
-    rho_y_penalty: float = 1e6,
-    rho_du_penalty: float = 1e4,
+    y_max_fe: float = 54.5,
+    y_max_mass: float = 58.0,
+    # rho_y_penalty: float = 1e6,
+    # rho_du_penalty: float = 1e4,
+    rho_trust: float = 0.1,
     use_soft_constraints: bool = True,
     progress_callback: Callable[[int, int, str], None] = None
 ):
@@ -51,7 +53,7 @@ def simulate_mpc(
     # Базова вага - середня вага трекінгу
     avg_tracking_weight = (w_fe + w_mass) / 2.   
     # Штраф за порушення виходів має бути на 2-3 порядки більшим
-    rho_y_val = avg_tracking_weight * 100 
+    rho_y_val = avg_tracking_weight * 1000 
     # Штраф за порушення дельти керування має бути співмірним з λ
     rho_du_val = λ_obj * 100
     
@@ -119,7 +121,9 @@ def simulate_mpc(
     mpc = MPCController(
         model=km,
         objective=obj,
-        x_scaler=x_scaler,  # <<< ДОДАЙТЕ ЦЕЙ РЯДОК
+        x_scaler=x_scaler,  
+        y_scaler=y_scaler,
+        n_targets=Y_train_scaled.shape[1],
         horizon=Np,
         control_horizon=Nc,
         lag=lag,
@@ -135,12 +139,52 @@ def simulate_mpc(
 
     # 5a. Навчаємо модель на МАСШТАБОВАНИХ даних
     cols_state = ['feed_fe_percent','ore_mass_flow','solid_feed_percent']
-    # Історія для mpc.fit() має бути також масштабована
-    # Для цього нам потрібен "історичний" скалер, навчений на даних до X_train
-    # АБО, що простіше, передаємо вже масштабовані дані
-    # mpc.fit(X_train_scaled, Y_train_scaled, x_scaler.transform(hist_train_unscaled))
-    # Проте mpc.fit зараз не використовує історію, тому передаємо масштабовані X, Y
-    mpc.fit(X_train_scaled, Y_train_scaled, None) # Історію встановимо пізніше
+    mpc.fit(X_train_scaled, Y_train_scaled, None)
+    
+    # ================== ПОЧАТОК БЛОКУ ОЦІНКИ МОДЕЛІ (ВИПРАВЛЕНО ТА РОЗШИРЕНО) ==================
+    
+    # Імпортуємо необхідні метрики
+    
+    print("\n" + "="*20 + " Оцінка якості моделі " + "="*20)
+    
+    # 1. Прогноз на валідаційних даних
+    y_val_pred_scaled = mpc.model.predict(X_val_scaled)
+    y_val_pred_orig = y_scaler.inverse_transform(y_val_pred_scaled)
+    Y_val_orig = y_scaler.inverse_transform(Y_val_scaled)
+    val_mse = mean_squared_error(Y_val_orig, y_val_pred_orig)
+    print(f"-> Загальна помилка моделі на валідаційних даних (MSE): {val_mse:.4f}")
+    
+    # 2. Прогноз на тестових даних (фінальна оцінка)
+    y_test_pred_scaled = mpc.model.predict(X_test_scaled)
+    y_test_pred_orig = y_scaler.inverse_transform(y_test_pred_scaled)
+    Y_test_orig = y_scaler.inverse_transform(Y_test_scaled)
+    test_mse = mean_squared_error(Y_test_orig, y_test_pred_orig)
+    print(f"-> Загальна помилка моделі на тестових даних (MSE): {test_mse:.4f}\n")
+
+    # 3. Детальний аналіз помилок на ТЕСТОВИХ даних для кожного виходу
+    print("--- Детальний аналіз помилок на ТЕСТОВИХ даних ---")
+    output_columns = ['conc_fe', 'tail_fe', 'conc_mass', 'tail_mass']
+    
+    for i, col_name in enumerate(output_columns):
+        # Розраховуємо RMSE та MAE для кожного виходу окремо
+        rmse = np.sqrt(mean_squared_error(Y_test_orig[:, i], y_test_pred_orig[:, i]))
+        mae = mean_absolute_error(Y_test_orig[:, i], y_test_pred_orig[:, i])
+        
+        units = "%" if "fe" in col_name else "т/год"
+        print(f"-> {col_name}:")
+        print(f"     RMSE = {rmse:.3f} {units}")
+        print(f"     MAE  = {mae:.3f} {units}")
+
+    print("="*64 + "\n")
+    
+    # 4. Додаємо ключові метрики якості моделі до результатів
+    metrics = {
+        'validation_mse_total': val_mse,
+        'test_mse_total': test_mse
+        # Можна додати й інші метрики, якщо потрібно
+    }
+    
+    # =================== КІНЕЦЬ БЛОКУ ОЦІНКИ МОДЕЛІ ===================
     
     # 5b. Визначаємо початок тестової ділянки у df_true
     n = X.shape[0]
@@ -239,7 +283,8 @@ def simulate_mpc(
 
     # 6. Збір результатів і метрик
     results_df = pd.DataFrame(records)
-    metrics = { 'avg_iron_mass': (results_df.conc_fe * results_df.conc_mass / 100).mean() }
+    # Додаємо метрику ефективності керування до існуючих метрик моделі
+    metrics['avg_iron_mass'] = (results_df.conc_fe * results_df.conc_mass / 100).mean()
 
     # 7. ВІЗУАЛІЗАЦІЯ РЕЗУЛЬТАТІВ
     # plot_historical_data(results_df, columns=['conc_fe', 'conc_mass'])
@@ -264,21 +309,33 @@ if __name__ == '__main__':
         print("Помилка: файл 'processed.parquet' не знайдено.")
         exit()
     
+    # Запускаємо симуляцію з оновленими, більш стабільними параметрами
     res, mets = simulate_mpc(
         hist_df, 
         progress_callback=my_progress, 
-        N_data=500, 
-        control_pts=50,
+        N_data=1000, 
+        control_pts=100,
         noise_level='low',
-        kernel='rbf', # Використовуємо RBF
+        kernel='linear', 
+        find_optimal_params=True,
         use_soft_constraints=True,
-        y_max_fe=52.0,
-        # ▼▼▼ ЗМЕНШУЄМО ЗНАЧЕННЯ ШТРАФІВ ▼▼▼
-        # rho_y_penalty=1e4,      # Було 1e6
-        # rho_du_penalty=1e2      # Було 1e4
+
+        # 1. Збільшуємо вагу регіону довіри (найважливіша зміна)
+        rho_trust = 50.0, # Почніть звідси, можна збільшувати до 50-100
+
+        # 2. Збалансовуємо ваги цілі для масштабованих даних
+        w_fe = 1.0,
+        w_mass = 1.0,
+
+        # 3. Задаємо уставки та м'які обмеження
+        ref_fe = 54.0,
+        ref_mass = 58.0,
+        y_max_fe = 55.0,
+        y_max_mass = 60.0
     )
     
-    print("Результати симуляції (останні 5 кроків):")
-    # print(res.tail())
-    # print("\nМетрики:", mets)
+    print("\nРезультати симуляції:")
+    print(res.tail())
+    print("\nМетрики:")
+    print(mets)
     res.to_parquet('mpc_simulation_results.parquet')
