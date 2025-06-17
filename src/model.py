@@ -3,7 +3,7 @@
 import numpy as np
 from sklearn.kernel_ridge import KernelRidge
 from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C
+from sklearn.gaussian_process.kernels import RBF, Product, Sum, ConstantKernel as C
 from sklearn.model_selection import GridSearchCV
 
 
@@ -120,43 +120,83 @@ class KernelModel:
         """
         Обчислює лінійну апроксимацію моделі y ≈ Wx + b навколо точки X0.
         Повертає локальну матрицю ваг W та зсув b.
+        Працює для KRR та GPR.
         """
-        if self.model_type != 'krr':
-            raise NotImplementedError("Лінеаризація реалізована тільки для KRR.")
+        # Переконуємось, що X0 має правильну форму (1, n_features)
+        if X0.ndim == 1:
+            X0 = X0.reshape(1, -1)
+            
+        # --- Лінеаризація для Kernel Ridge Regression ---
+        if self.model_type == 'krr':
+            if self.kernel == 'linear':
+                return self.coef_, self.intercept_
 
-        # Якщо модель вже лінійна, просто повертаємо її глобальні параметри
-        if self.kernel == 'linear':
-            # intercept_ тут нульовий згідно з вашою реалізацією
-            return self.coef_, self.intercept_ 
+            if self.kernel == 'rbf':
+                # Аналітичний градієнт для RBF ядра (як і раніше)
+                diffs = X0[:, None, :] - self.X_train_[None, :, :]
+                sq_diffs = np.sum(diffs**2, axis=-1)
+                K_row = np.exp(-self.gamma * sq_diffs)
+                
+                dK_dX = -2 * self.gamma * diffs * K_row[..., None]
+                W_local = np.einsum('ijk,ji->ki', dK_dX, self.dual_coef_)
+                
+                y0 = self.predict(X0)
+                b_local = y0 - X0 @ W_local
+                
+                return W_local, b_local.flatten()
 
-        if self.kernel == 'rbf':
-            # Для RBF-ядра y(X) = K(X, X_train) @ dual_coef_
-            # W = d(y)/d(X) | в точці X0
-            
-            # Переконуємось, що X0 має правильну форму (1, n_features)
-            if X0.ndim == 1:
-                X0 = X0.reshape(1, -1)
-            
-            # Обчислення Якобіана (градієнта)
-            # d(K_ij)/d(X_i) = -2 * gamma * (X_i - X_train_j) * K_ij
-            diffs = X0[:, None, :] - self.X_train_[None, :, :]
-            sq_diffs = np.sum(diffs**2, axis=-1)
-            K_row = np.exp(-self.gamma * sq_diffs)
-            
-            # Градієнт ядра по відношенню до X0
-            # (n_targets, n_samples, n_features)
-            dK_dX = -2 * self.gamma * diffs * K_row[..., None]
-            
-            # Локальна матриця ваг W (Якобіан)
-            # W_ji = sum_k(dK_ik/dX_j * dual_coef_k) -> W_ij = sum_k(dK_ik/dX_i * dual_coef_k)
-            # (n_features, n_targets)
-            W_local = np.einsum('ijk,ji->ki', dK_dX, self.dual_coef_)
-            
-            # Обчислення локального зсуву b, щоб апроксимація була точною в точці X0
-            # y0 = W_local * X0 + b_local  =>  b_local = y0 - W_local * X0
-            y0 = self.predict(X0)
-            b_local = y0 - X0 @ W_local
-            
-            return W_local, b_local.flatten()
+            raise NotImplementedError(f"Лінеаризація для KRR з ядром '{self.kernel}' не реалізована.")
 
-        raise NotImplementedError(f"Лінеаризація для ядра '{self.kernel}' не реалізована.")
+        elif self.model_type == 'gpr':
+            W_columns = []
+            b_elements = []
+
+            # Ітеруємо по кожній моделі GPR (для кожного вихідного таргету)
+            for gpr_model in self.models:
+                # ▼▼▼ ПОЧАТОК ЗМІН ▼▼▼
+                # Використовуємо гнучкий пошук RBF-компонента
+                rbf_kernel = self._find_rbf_kernel(gpr_model.kernel_)
+                if rbf_kernel is None:
+                    raise TypeError("Не вдалося знайти компонент RBF у ядрі моделі GPR.")
+                
+                gamma = 1.0 / (2 * rbf_kernel.length_scale ** 2)
+                # ▲▲▲ КІНЕЦЬ ЗМІН ▲▲▲
+
+                X_train_ = gpr_model.X_train_
+                alpha_ = gpr_model.alpha_
+
+                # Логіка обчислення градієнта ідентична KRR
+                diffs = X0[:, None, :] - X_train_[None, :, :]
+                sq_diffs = np.sum(diffs**2, axis=-1)
+                K_row = np.exp(-gamma * sq_diffs)
+                
+                dK_dX = -2 * gamma * diffs * K_row[..., None]
+                
+                W_col = np.einsum('ji,j->i', dK_dX.squeeze(axis=0), alpha_.flatten()).reshape(-1, 1)
+
+                y0_col = gpr_model.predict(X0)
+                b_col = y0_col - X0 @ W_col
+                
+                W_columns.append(W_col)
+                b_elements.append(b_col)
+
+            W_local = np.hstack(W_columns)
+            b_local = np.array(b_elements).flatten()
+            
+            return W_local, b_local
+
+        raise NotImplementedError(f"Лінеаризація для типу моделі '{self.model_type}' не реалізована.")
+
+    def _find_rbf_kernel(self, kernel):
+        """Рекурсивно шукає компонент RBF всередині складного ядра."""
+        if isinstance(kernel, RBF):
+            return kernel
+        elif isinstance(kernel, (Product, Sum)):
+            # Рекурсивний пошук в обох компонентах (k1 та k2)
+            rbf_in_k1 = self._find_rbf_kernel(kernel.k1)
+            if rbf_in_k1:
+                return rbf_in_k1
+            rbf_in_k2 = self._find_rbf_kernel(kernel.k2)
+            if rbf_in_k2:
+                return rbf_in_k2
+        return None

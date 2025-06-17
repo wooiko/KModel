@@ -291,7 +291,6 @@ def simulate_mpc(
     analize_errors(results_df, ref_fe, ref_mass)
     plot_control_and_disturbances(np.array(u_applied), d_all[1:1+len(u_applied)])
     
-    # ВИКЛИК НОВОГО МЕТОДУ ВІЗУАЛІЗАЦІЇ
     # if use_disturbance_estimator:
     #     dist_df = pd.DataFrame(disturbance_history, columns=['d_conc_fe', 'd_tail_fe', 'd_conc_mass', 'd_tail_mass'])
     #     plot_disturbance_estimation(dist_df)
@@ -313,10 +312,11 @@ if __name__ == '__main__':
     res, mets = simulate_mpc(
         hist_df, 
         progress_callback=my_progress, 
-        N_data=1000, 
-        control_pts=100,
+        N_data=500, 
+        control_pts=50,
         noise_level='low',
-        kernel='linear', 
+        model_type = 'gpr',
+        kernel='rbf', 
         find_optimal_params=True,
         use_soft_constraints=True,
 
@@ -329,7 +329,7 @@ if __name__ == '__main__':
 
         # 3. Задаємо уставки та м'які обмеження
         ref_fe = 54.0,
-        ref_mass = 58.0,
+        ref_mass = 58.2,
         y_max_fe = 55.0,
         y_max_mass = 60.0
     )
