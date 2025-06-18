@@ -80,7 +80,7 @@ class DataGenerator:
                  ore_flow_var_pct: float = 3.0,
                  seed: int = 0):
         # 1) Відтворюваність
-        # np.random.seed(seed)
+        self.rng = np.random.default_rng(seed)
 
         # 2) Зберігаємо оригінальні дані та вставляємо ore_mass_flow, якщо немає
         self.original_dataset = reference_df.copy().reset_index(drop=True)
@@ -144,9 +144,9 @@ class DataGenerator:
             lo, hi = self.ranges[c]
             # обрати контрольні точки
             pts = sorted(np.concatenate(([0],
-                         np.random.choice(np.arange(1,T-1), max(0,control_pts-2), replace=False),
+                         self.rng.choice(np.arange(1,T-1), max(0,control_pts-2), replace=False),
                          [T-1])))
-            vals = np.random.uniform(lo, hi, len(pts))
+            vals = self.rng.uniform(lo, hi, len(pts))
             kind = 'cubic' if len(pts)>=4 else 'quadratic' if len(pts)==3 else 'linear'
             f = interp1d(pts, vals, kind=kind, fill_value='extrapolate')
             v = f(t)
@@ -197,7 +197,7 @@ class DataGenerator:
             param_mean = self.original_dataset[col].mean()
             sigma = base_pct * (r_abs * param_mean + r_rel * df[col])
             sigma = sigma.clip(lower=1e-9)
-            noise = np.random.normal(loc=0, scale=sigma)
+            noise = self.rng.normal(loc=0, scale=sigma)
             df[col] = df[col] + noise
             # clamp по діапазону
             if col == 'ore_mass_flow':

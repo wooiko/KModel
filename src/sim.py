@@ -22,6 +22,7 @@ def simulate_mpc(
     Np: int = 6,
     Nc: int = 4,
     n_neighbors: int = 5,
+    seed: int = 0,
     noise_level: str = 'none',
     model_type: str = 'krr',
     kernel: str = 'rbf',
@@ -58,7 +59,7 @@ def simulate_mpc(
     rho_du_val = λ_obj * 100
     
     # 1. «Справжній» генератор процесу
-    true_gen = DataGenerator(reference_df, ore_flow_var_pct=3.0)
+    true_gen = DataGenerator(reference_df, ore_flow_var_pct=3.0, seed=1)
     
     anomaly_config = None # DataGenerator.generate_anomaly_config(N_data=N_data, train_frac=train_size, val_frac=val_size, test_frac=test_size)
     df_true  = true_gen.generate(N_data, control_pts, n_neighbors, noise_level=noise_level, anomaly_config=anomaly_config)
@@ -287,8 +288,8 @@ def simulate_mpc(
     metrics['avg_iron_mass'] = (results_df.conc_fe * results_df.conc_mass / 100).mean()
 
     # 7. ВІЗУАЛІЗАЦІЯ РЕЗУЛЬТАТІВ
-    # plot_historical_data(results_df, columns=['conc_fe', 'conc_mass'])
-    analize_errors(results_df, ref_fe, ref_mass)
+    # plot_historical_data(results_df, columns=['feed_fe_percent','ore_mass_flow'])
+    # analize_errors(results_df, ref_fe, ref_mass)
     plot_control_and_disturbances(np.array(u_applied), d_all[1:1+len(u_applied)])
     
     # if use_disturbance_estimator:
@@ -312,10 +313,16 @@ if __name__ == '__main__':
     res, mets = simulate_mpc(
         hist_df, 
         progress_callback=my_progress, 
-        N_data=500, 
-        control_pts=50,
+        N_data=5000, 
+        control_pts=500,
+        seed=42,
+        
+        train_size = 0.7,
+        val_size   = 0.15,
+        test_size  = 0.15,
+
         noise_level='low',
-        model_type = 'gpr',
+        model_type = 'krr',
         kernel='rbf', 
         find_optimal_params=True,
         use_soft_constraints=True,
