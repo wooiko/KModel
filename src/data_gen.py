@@ -78,10 +78,25 @@ class DataGenerator:
     def __init__(self,
                  reference_df: pd.DataFrame,
                  ore_flow_var_pct: float = 3.0,
-                 seed: int = 0):
+                 seed: int = 0,
+                 # >>> НОВІ ПАРАМЕТРИ ДИНАМІКИ <<<
+                 time_step_s: float = 5.0,
+                 time_constant_s: float = 8.0,
+                 dead_time_s: float = 20.0
+                ):
         # 1) Відтворюваність
+        # Рекомендовано перейти на новий підхід для ізоляції стану
         self.rng = np.random.default_rng(seed)
 
+        # >>> Зберігаємо параметри динаміки, переведені у кроки симуляції <<<
+        self.time_step_s = time_step_s
+        # Кількість кроків затримки
+        self.dead_time_steps = round(dead_time_s / time_step_s)
+        # Коефіцієнт для фільтра першого порядку (інерційності)
+        # alpha приблизно дорівнює dt/T для T >> dt
+        time_constant_steps = time_constant_s / time_step_s
+        self.lag_filter_alpha = 1.0 / (time_constant_steps + 1.0)
+        
         # 2) Зберігаємо оригінальні дані та вставляємо ore_mass_flow, якщо немає
         self.original_dataset = reference_df.copy().reset_index(drop=True)
         if 'ore_mass_flow' not in self.original_dataset.columns:
@@ -176,6 +191,34 @@ class DataGenerator:
         df.tailings_fe_percent = df.tailings_fe_percent.clip(0,100)
         return df
 
+    def _apply_dynamics(self, df_ideal: pd.DataFrame) -> pd.DataFrame:
+        """
+        Застосовує динаміку першого порядку із запізненням до виходів.
+        df_ideal: датафрейм з "ідеальними" миттєвими виходами.
+        """
+        df_dynamic = df_ideal.copy()
+        
+        # Застосовуємо динаміку тільки до вихідних колонок
+        for col in self.output_cols:
+            ideal_output = df_ideal[col].values
+            dynamic_output = np.zeros_like(ideal_output)
+            
+            # 1. Застосовуємо запізнення (dead time)
+            # Вихід в момент t залежить від ідеального виходу в момент (t - dead_time)
+            delayed_output = pd.Series(ideal_output).shift(self.dead_time_steps).bfill().values
+            
+            # 2. Застосовуємо інерційність (first-order lag)
+            # y(t) = a * y_ideal(t) + (1-a) * y(t-1)
+            # Початкове значення = перше значення після затримки
+            dynamic_output[0] = delayed_output[0] 
+            for t in range(1, len(ideal_output)):
+                dynamic_output[t] = (self.lag_filter_alpha * delayed_output[t] +
+                                     (1 - self.lag_filter_alpha) * dynamic_output[t-1])
+            
+            df_dynamic[col] = dynamic_output
+            
+        return df_dynamic
+
     def _derive(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
         df['mass_pull_percent'] = df.concentrate_mass_flow / df.ore_mass_flow * 100
@@ -249,13 +292,24 @@ class DataGenerator:
         self._fit_knn(n_neighbors)
         inp = self._generate_inputs(T, control_pts)
         out = self._predict_outputs(inp)
-        out = self._apply_mass_balance(inp, out)
-        full = pd.concat([inp, out], axis=1)
-        full = self._derive(full)
+        
+        # Розраховуємо ідеальні, збалансовані виходи
+        out_balanced = self._apply_mass_balance(inp, out)
+        
+        # >>> ЗАСТОСОВУЄМО ДИНАМІКУ ПРОЦЕСУ <<<
+        # Тепер out_dynamic - це те, що ми б "виміряли" на реальному заводі
+        out_dynamic = self._apply_dynamics(out_balanced)
+        
+        # Об'єднуємо входи з новими, динамічними виходами
+        full = pd.concat([inp, out_dynamic], axis=1)
+        full = self._derive(full) # Перераховуємо mass pull і recovery
+        
+        # Шум і аномалії додаємо до вже динамічного процесу
         if noise_level!='none':
             full = self.add_noise(full, noise_level)
         if anomaly_config:
             full = self.generate_anomalies(full, anomaly_config)
+            
         return full
 
     @staticmethod

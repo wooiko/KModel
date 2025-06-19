@@ -290,7 +290,7 @@ def simulate_mpc(
     # 7. ВІЗУАЛІЗАЦІЯ РЕЗУЛЬТАТІВ
     # plot_historical_data(results_df, columns=['feed_fe_percent','ore_mass_flow'])
     # analize_errors(results_df, ref_fe, ref_mass)
-    # plot_control_and_disturbances(np.array(u_applied), d_all[1:1+len(u_applied)])
+    plot_control_and_disturbances(np.array(u_applied), d_all[1:1+len(u_applied)])
     # plot_mpc_diagnostics(results_df, w_fe, w_mass, λ_obj)
     # analyze_correlation(results_df)
     # plot_delta_u_histogram(u_applied)
