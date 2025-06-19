@@ -10,8 +10,8 @@ from data_gen import DataGenerator
 from model import KernelModel
 from objectives import  MaxIronMassTrackingObjective
 from mpc import MPCController
-from utils import (compute_metrics, train_val_test_time_series, analyze_sensitivity,
-                   analize_errors, plot_control_and_disturbances, plot_delta_u_histogram, 
+from utils import (compute_metrics, train_val_test_time_series, analyze_sensitivity, plot_mpc_diagnostics,
+                   analize_errors, plot_control_and_disturbances, plot_delta_u_histogram, analyze_correlation,
                    plot_historical_data, plot_fact_vs_mpc_plans, plot_disturbance_estimation)
 
 def simulate_mpc(
@@ -290,7 +290,10 @@ def simulate_mpc(
     # 7. ВІЗУАЛІЗАЦІЯ РЕЗУЛЬТАТІВ
     # plot_historical_data(results_df, columns=['feed_fe_percent','ore_mass_flow'])
     # analize_errors(results_df, ref_fe, ref_mass)
-    plot_control_and_disturbances(np.array(u_applied), d_all[1:1+len(u_applied)])
+    # plot_control_and_disturbances(np.array(u_applied), d_all[1:1+len(u_applied)])
+    # plot_mpc_diagnostics(results_df, w_fe, w_mass, λ_obj)
+    # analyze_correlation(results_df)
+    # plot_delta_u_histogram(u_applied)
     
     # if use_disturbance_estimator:
     #     dist_df = pd.DataFrame(disturbance_history, columns=['d_conc_fe', 'd_tail_fe', 'd_conc_mass', 'd_tail_mass'])
@@ -313,8 +316,8 @@ if __name__ == '__main__':
     res, mets = simulate_mpc(
         hist_df, 
         progress_callback=my_progress, 
-        N_data=5000, 
-        control_pts=500,
+        N_data=500, 
+        control_pts=50,
         seed=42,
         
         train_size = 0.7,
