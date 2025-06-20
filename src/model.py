@@ -88,9 +88,6 @@ class KernelModel:
             # The best model found during the search
             krr_model = random_search.best_estimator_
 
-            self.X_train_ = X.copy()
-            self.dual_coef_ = krr_model.dual_coef_
-
             # Update instance attributes with the found optimal values
             self.alpha = krr_model.alpha
             if hasattr(krr_model, 'gamma'): # gamma might not exist for linear kernel
