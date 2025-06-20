@@ -114,7 +114,7 @@ class ExtendedKalmanFilter:
         # де d(x_phys_scaled)/d(x_phys_unscaled) = diag(1/x_scaler.scale_)
         # Оскільки W_local_scaled має форму (n_phys, n_dist), для отримання d(y_scaled)/d(x_phys_scaled)
         # нам потрібна її транспонована версія (n_dist, n_phys).
-        H_k[:, :self.n_phys] = W_local_scaled.T @ np.diag(1/self.x_scaler.scale_) 
+        H_k[:, :self.n_phys] = W_local_scaled.T @ np.diag(1.0 / self.x_scaler.scale_[:self.n_phys])
         
         # Другий блок H_k (H_k[:, self.n_phys:]) є якобіаном вимірювання по відношенню до збурень.
         # Оскільки h(x) = ... + d_scaled, то d(h)/d(d_scaled) = I (одинична матриця)

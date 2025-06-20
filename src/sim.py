@@ -95,7 +95,7 @@ def simulate_mpc(
     Y_val_scaled = y_scaler.transform(Y_val)
     X_test_scaled = x_scaler.transform(X_test)
     Y_test_scaled = y_scaler.transform(Y_test) # Для фінальної оцінки якості моделі
-    
+
     # =================== КІНЕЦЬ БЛОКУ НОРМАЛІЗАЦІЇ ===================
 
     # 3–4. Модель і MPC-контролер
@@ -190,23 +190,30 @@ def simulate_mpc(
     # ================== ІНІЦІАЛІЗАЦІЯ EKF ==================
     n_phys = (lag + 1) * 3
     n_dist = 2 # Тепер n_dist = 2, оскільки ми відстежуємо лише Fe і Mass концентрату
-    
+
     # Початковий розширений стан: фізична частина (немасштабована) + нульові збурення
     x0_aug = np.hstack([hist0_unscaled.flatten(), np.zeros(n_dist)]) 
-    
+
     # Початкова коваріація: висока невизначеність для збурень, низька для стану
     P0 = np.eye(n_phys + n_dist) * 1e-2
     P0[n_phys:, n_phys:] *= 1000 # Встановлюємо значно вищу невизначеність для збурень
-    
+
     # Матриці шумів (ключові параметри для тюнінгу!)
     # Шум процесу: малий для фізичного стану, більший для збурень
     Q_phys = np.eye(n_phys) * 1e-6 
     Q_dist = np.eye(n_dist) * 1e-4 
     Q = np.block([[Q_phys, np.zeros((n_phys, n_dist))], [np.zeros((n_dist, n_phys)), Q_dist]])
-    
+
     # Шум вимірювань (в масштабованому просторі)
-    R = np.eye(n_dist) * 0.1 # R тепер матиме розмірність (2,2)
-    
+    # --- ВИПРАВЛЕНО ЗГІДНО З РЕКОМЕНДАЦІЯМИ ---
+    # R = np.eye(n_dist) * 0.1 # Старе значення
+
+    # Використовуємо дисперсію масштабованих тренувальних даних
+    # Y_train_scaled має бути доступний тут
+    eta_R = 0.5 # Коефіцієнт для R
+    R = np.diag(np.var(Y_train_scaled, axis=0)) * eta_R 
+    # --- КІНЕЦЬ ВИПРАВЛЕННЯ ---
+
     ekf = ExtendedKalmanFilter(mpc.model, x_scaler, y_scaler, x0_aug, P0, Q, R, lag)
     
     # Встановлюємо історію в MPC один раз для коректної ініціалізації
