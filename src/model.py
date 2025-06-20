@@ -82,6 +82,9 @@ class KernelModel:
                 verbose=1 # More verbose output during search
             )
             random_search.fit(X, Y)
+            
+            self.X_train_ = X.copy()
+            self.dual_coef_ = krr_model.dual_coef_
 
             print(f"-> Найкращі параметри знайдено: {random_search.best_params_}")
             
