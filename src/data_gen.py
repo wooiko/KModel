@@ -5,6 +5,7 @@ import random
 from scipy.interpolate import interp1d
 from sklearn.neighbors import KNeighborsRegressor
 from sklearn.ensemble import RandomForestRegressor
+from collections import deque
 
 class DataGenerator:
 
@@ -436,8 +437,80 @@ class DataGenerator:
     
         return config
     
-if __name__ == '__main__':
-    hist_df = pd.read_parquet('processed.parquet')
-    true_gen=DataGenerator(hist_df, 3)
-    data = true_gen.generate(100, 20, 5)
-    print(data.head(10))
+class StatefulPlantMixin:
+    """
+    Додає до DataGenerator інкрементальний метод step().
+    Використовує FIFO-буфер для dead-time та first-order-lag.
+    """
+    def reset_state(self, init_history: np.ndarray):
+        """
+        init_history shape: (L+1, 3) — останні L+1 векторів [feed_fe, ore_flow, u]
+        Буфер запізнення заповнюємо останнім елементом.
+        """
+        # Переконайтесь, що self.dead_time_steps та self.lag_filter_alpha 
+        # існують (ініціалізуються в DataGenerator або тут)
+        
+        feed_fe, ore_flow, u_last = init_history[-1]
+        
+        # _predict_raw повертає (inp_df, y_bal_df)
+        inp_df_init, y_bal_df_init = self._predict_raw(feed_fe, ore_flow, u_last)
+        
+        # Це початкове значення для динамічного фільтра (lag)
+        # Вибираємо тільки вихідні стовпці для _prev_output
+        self._prev_output = y_bal_df_init[self.output_cols].copy() 
+        
+        # Dead-time FIFO (зберігаємо тільки concentrate/tailing блок)
+        # Заповнюємо буфер значеннями, які б пройшли через "мертвий час"
+        self._delay_fifo = deque(
+            [y_bal_df_init[self.output_cols].copy()] * self.dead_time_steps, # Зберігаємо лише вихідні стовпці
+            maxlen=self.dead_time_steps
+        )
+
+    # --- приватні допоміжні ---
+    def _predict_raw(self, feed_fe, ore_flow, u):
+        """
+        Обчислює ідеальні (без затримки та інерції) виходи.
+        """
+        inp = pd.DataFrame([[feed_fe, ore_flow, u]],
+                           columns=self.input_cols)
+        y_ideal = self._predict_outputs(inp) # Це метод з DataGenerator
+        y_bal   = self._apply_mass_balance(inp, y_ideal) # Це метод з DataGenerator
+        return inp, y_bal
+
+    def _ideal_to_dynamic(self, inp_df, y_bal_df):
+        """
+        Застосовує dead-time та first-order-lag до ідеальних виходів.
+        """
+        # 1. Dead-time
+        # Дістаємо найстаріший елемент з FIFO-буфера. Якщо dead_time_steps=0, то це просто поточний y_bal_df.
+        delayed_output_for_this_step = self._delay_fifo.popleft() if self.dead_time_steps > 0 else y_bal_df[self.output_cols]
+        # Додаємо поточні ідеальні виходи в кінець FIFO-буфера
+        self._delay_fifo.append(y_bal_df[self.output_cols].copy()) # Зберігаємо тільки вихідні стовпці
+
+        # 2. First-order lag
+        dyn_output = delayed_output_for_this_step.copy()
+        alpha = self.lag_filter_alpha # Коефіцієнт інерції
+        
+        for col in self.output_cols:
+            dyn_output[col].iloc[0] = (alpha * delayed_output_for_this_step[col].iloc[0] + 
+                                       (1 - alpha) * self._prev_output[col].iloc[0])
+        
+        self._prev_output = dyn_output.copy() # Оновлюємо попередній вихід для наступного кроку
+
+        # Комбінуємо входи та динамічні виходи, потім обчислюємо похідні величини
+        full = pd.concat([inp_df, dyn_output], axis=1) # dyn_output тепер лише вихідні стовпці
+        full = self._derive(full) # Метод з DataGenerator, що додає fe_recovery, mass_pull
+        return full
+
+    def step(self, feed_fe, ore_flow, u):
+        """
+        Повертає DataFrame з одним рядком виміряних величин на поточному кроці.
+        Приймає поточні вхідні змінні та керуючу дію.
+        """
+        inp_df, y_bal_df = self._predict_raw(feed_fe, ore_flow, u)
+        return self._ideal_to_dynamic(inp_df, y_bal_df)
+
+# Наслідуємо від обох класів, щоб отримати функціональність Plant (динаміку)
+# та DataGenerator (базові моделі та масовий баланс)
+class StatefulDataGenerator(StatefulPlantMixin, DataGenerator):
+    pass
