@@ -83,13 +83,13 @@ class KernelModel:
             )
             random_search.fit(X, Y)
             
-            self.X_train_ = X.copy()
-            self.dual_coef_ = krr_model.dual_coef_
-
             print(f"-> Найкращі параметри знайдено: {random_search.best_params_}")
             
             # The best model found during the search
             krr_model = random_search.best_estimator_
+
+            self.X_train_ = X.copy()
+            self.dual_coef_ = krr_model.dual_coef_
 
             # Update instance attributes with the found optimal values
             self.alpha = krr_model.alpha
