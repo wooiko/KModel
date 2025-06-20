@@ -13,7 +13,7 @@ from mpc import MPCController
 from utils import (compute_metrics, train_val_test_time_series, analyze_sensitivity, plot_mpc_diagnostics,
                    analize_errors, plot_control_and_disturbances, plot_delta_u_histogram, analyze_correlation,
                    plot_historical_data, plot_fact_vs_mpc_plans, plot_disturbance_estimation)
-from ekf import ExtendedKalmanFilter # <<< НОВИЙ ІМПОРТ
+from ekf import ExtendedKalmanFilter
 
 def simulate_mpc(
     reference_df: pd.DataFrame,
@@ -45,8 +45,6 @@ def simulate_mpc(
     use_disturbance_estimator: bool = True,
     y_max_fe: float = 54.5,
     y_max_mass: float = 58.0,
-    # rho_y_penalty: float = 1e6,
-    # rho_du_penalty: float = 1e4,
     rho_trust: float = 0.1,
     use_soft_constraints: bool = True,
     plant_model_type: str = 'rf',
@@ -64,17 +62,22 @@ def simulate_mpc(
     true_gen = DataGenerator(
         reference_df,
         ore_flow_var_pct=3.0,
-        # >>> ПЕРЕДАЄМО ПАРАМЕТРИ ДИНАМІКИ ТА ТИПУ МОДЕЛІ <<<
         time_step_s=5.0,
         time_constant_s=8.0,
         dead_time_s=20.0,
         true_model_type=plant_model_type
     )    
-    anomaly_config = None # DataGenerator.generate_anomaly_config(N_data=N_data, train_frac=train_size, val_frac=val_size, test_frac=test_size)
+    anomaly_config = None 
     df_true  = true_gen.generate(N_data, control_pts, n_neighbors, noise_level=noise_level, anomaly_config=anomaly_config)
     
     # 2. Лаговані X, Y і послідовне розбиття на train/val/test
-    X, Y = DataGenerator.create_lagged_dataset(df_true, lags=lag)
+    # DataGenerator.create_lagged_dataset повертає numpy.ndarray
+    X, Y_full_np = DataGenerator.create_lagged_dataset(df_true, lags=lag) #
+    
+    # Вибираємо тільки потрібні виходи для моделювання та MPC (Fe та Mass концентрату) за індексами
+    # concentrate_fe_percent - індекс 0, concentrate_mass_flow - індекс 2
+    Y = Y_full_np[:, [0, 2]] #
+    
     X_train, Y_train, X_val, Y_val, X_test, Y_test = \
         train_val_test_time_series(X, Y, train_size, val_size, test_size)
         
@@ -107,17 +110,16 @@ def simulate_mpc(
     
     # 4a. Масштабуємо уставки та обмеження для MPC, щоб вони відповідали
     # масштабу виходів Y, на яких навчалась модель.
-    # ref_point - це [conc_fe, tail_fe, conc_mass, tail_mass]
-    # Нам потрібні 1-й та 3-й елементи
-    ref_point_original = np.array([[ref_fe, 0, ref_mass, 0]]) # Створюємо 2D-масив
+    # ref_point - це [conc_fe, conc_mass]
+    ref_point_original = np.array([[ref_fe, ref_mass]]) # Створюємо 2D-масив
     ref_point_scaled = y_scaler.transform(ref_point_original)
     ref_fe_scaled = ref_point_scaled[0, 0]
-    ref_mass_scaled = ref_point_scaled[0, 2]
+    ref_mass_scaled = ref_point_scaled[0, 1] # Індекс 1, оскільки тільки 2 цільові
 
-    y_max_original = np.array([[y_max_fe, 0, y_max_mass, 0]])
+    y_max_original = np.array([[y_max_fe, y_max_mass]]) #
     y_max_scaled_full = y_scaler.transform(y_max_original)
     y_max_fe_scaled = y_max_scaled_full[0, 0]
-    y_max_mass_scaled = y_max_scaled_full[0, 2]
+    y_max_mass_scaled = y_max_scaled_full[0, 1] # Індекс 1
     
     # 4b. Створюємо об'єкт цілі з новими, масштабованими уставками
     obj = MaxIronMassTrackingObjective(
@@ -133,7 +135,7 @@ def simulate_mpc(
         objective=obj,
         x_scaler=x_scaler,  
         y_scaler=y_scaler,
-        n_targets=Y_train_scaled.shape[1],
+        n_targets=Y_train_scaled.shape[1], # Тепер Y_train_scaled матиме лише 2 стовпці
         horizon=Np,
         control_horizon=Nc,
         lag=lag,
@@ -141,8 +143,9 @@ def simulate_mpc(
         delta_u_max=delta_u_max,
         use_disturbance_estimator=use_disturbance_estimator,
         y_max=[y_max_fe_scaled, y_max_mass_scaled] if use_soft_constraints else None,
-        rho_y=rho_y_val, # Використовуємо адаптивні ваги
-        rho_delta_u=rho_du_val
+        rho_y=rho_y_val, 
+        rho_delta_u=rho_du_val,
+        rho_trust=rho_trust # Передаємо вагу регіону довіри
     )
 
     # =================== КІНЕЦЬ ЗМІН ПАРАМЕТРІВ MPC ===================
@@ -165,10 +168,12 @@ def simulate_mpc(
     test_mse = mean_squared_error(Y_test_orig, y_test_pred_orig)
     print(f"-> Загальна помилка моделі на тестових даних (MSE): {test_mse:.4f}\n")
     print("--- Детальний аналіз помилок на ТЕСТОВИХ даних ---")
-    output_columns = ['conc_fe', 'tail_fe', 'conc_mass', 'tail_mass']
-    for i, col_name in enumerate(output_columns):
-        rmse = np.sqrt(mean_squared_error(Y_test_orig[:, i], y_test_pred_orig[:, i]))
-        mae = mean_absolute_error(Y_test_orig[:, i], y_test_pred_orig[:, i])
+    # Оновлено: output_columns для оцінки моделі тепер тільки 2
+    output_columns = ['conc_fe', 'conc_mass'] #
+    # Y_test_orig також має лише 2 стовпці тепер.
+    for i, col_name in enumerate(output_columns): #
+        rmse = np.sqrt(mean_squared_error(Y_test_orig[:, i], y_test_pred_orig[:, i])) #
+        mae = mean_absolute_error(Y_test_orig[:, i], y_test_pred_orig[:, i]) #
         units = "%" if "fe" in col_name else "т/год"
         print(f"-> {col_name}:\n     RMSE = {rmse:.3f} {units}\n     MAE  = {mae:.3f} {units}")
     print("="*64 + "\n")
@@ -184,7 +189,7 @@ def simulate_mpc(
     
     # ================== ІНІЦІАЛІЗАЦІЯ EKF ==================
     n_phys = (lag + 1) * 3
-    n_dist = Y_train.shape[1]
+    n_dist = 2 # Тепер n_dist = 2, оскільки ми відстежуємо лише Fe і Mass концентрату
     
     # Початковий розширений стан: фізична частина (немасштабована) + нульові збурення
     x0_aug = np.hstack([hist0_unscaled.flatten(), np.zeros(n_dist)]) 
@@ -195,14 +200,12 @@ def simulate_mpc(
     
     # Матриці шумів (ключові параметри для тюнінгу!)
     # Шум процесу: малий для фізичного стану, більший для збурень
-    # Збільшення Q (особливо Q_dist) змусить фільтр швидше реагувати на зміни, але зробить оцінку більш "нервовою".
     Q_phys = np.eye(n_phys) * 1e-6 
     Q_dist = np.eye(n_dist) * 1e-4 
     Q = np.block([[Q_phys, np.zeros((n_phys, n_dist))], [np.zeros((n_dist, n_phys)), Q_dist]])
     
     # Шум вимірювань (в масштабованому просторі)
-    # Збільшення R змусить фільтр більше довіряти моделі і менше — зашумленим вимірюванням, роблячи оцінку гладкішою.
-    R = np.eye(n_dist) * 0.1
+    R = np.eye(n_dist) * 0.1 # R тепер матиме розмірність (2,2)
     
     ekf = ExtendedKalmanFilter(mpc.model, x_scaler, y_scaler, x0_aug, P0, Q, R, lag)
     
@@ -228,7 +231,7 @@ def simulate_mpc(
 
         # 1. КРОК ПРОГНОЗУ EKF
         # Прогнозуємо стан на поточний крок k, використовуючи керування з кроку k-1
-        d_raw_current = d_all[t, :] # Використовуємо збурення, що діяло на попередньому кроці
+        d_raw_current = d_all[t, :] 
         ekf.predict(u_prev, d_raw_current)
         
         # 2. ОТРИМУЄМО ОЦІНКИ СТАНУ ТА ЗБУРЕНЬ ВІД EKF
@@ -262,8 +265,8 @@ def simulate_mpc(
         y_full = true_gen._derive(y_corr)
         
         # 5. КРОК КОРЕКЦІЇ EKF
-        # Отримуємо реальне вимірювання і передаємо його в EKF для корекції
-        y_meas_unscaled = y_full[['concentrate_fe_percent', 'tailings_fe_percent', 'concentrate_mass_flow', 'tailings_mass_flow']].values.flatten()
+        # Отримуємо реальне вимірювання і передаємо його в EKF для корекції (тепер тільки conc_fe, conc_mass)
+        y_meas_unscaled = y_full[['concentrate_fe_percent', 'concentrate_mass_flow']].values.flatten() #
         ekf.update(y_meas_unscaled)
 
         # Зберігаємо результати кроку та оновлюємо u_prev
@@ -284,16 +287,9 @@ def simulate_mpc(
     metrics['avg_iron_mass'] = (results_df.conc_fe * results_df.conc_mass / 100).mean()
     
     # 7. ВІЗУАЛІЗАЦІЯ РЕЗУЛЬТАТІВ
-    # plot_historical_data(results_df, columns=['feed_fe_percent','ore_mass_flow'])
     analize_errors(results_df, ref_fe, ref_mass)
     plot_control_and_disturbances(np.array(u_applied), d_all[1:1+len(u_applied)])
     plot_mpc_diagnostics(results_df, w_fe, w_mass, λ_obj)
-    # analyze_correlation(results_df)
-    # plot_delta_u_histogram(u_applied)
-    
-    # if use_disturbance_estimator:
-    #     dist_df = pd.DataFrame(disturbance_history, columns=['d_conc_fe', 'd_tail_fe', 'd_conc_mass', 'd_tail_mass'])
-    #     plot_disturbance_estimation(dist_df)
         
     print("=" * 50)   
     return results_df, metrics

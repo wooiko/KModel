@@ -24,7 +24,6 @@ class MPCController:
                  y_min: list = None,
                  rho_y: float = 1e6,
                  rho_delta_u: float = 1e4,
-                 # <<< НОВИЙ ПАРАМЕТР для регіону довіри
                  rho_trust: float = 0.1
                 ):
         self.Np = horizon
@@ -51,13 +50,13 @@ class MPCController:
         self.y_min = np.array(y_min) if y_min is not None else None
         self.rho_y = rho_y
         self.rho_delta_u = rho_delta_u
-        self.rho_trust = rho_trust # <<< Зберігаємо вагу регіону довіри
+        self.rho_trust = rho_trust # Зберігаємо вагу регіону довіри
 
         # Ініціалізація історії та оцінки збурень
         self.x_hist = None
         self.d_hat = np.zeros(self.n_targets) if self.use_disturbance_estimator else None
 
-        # <<< Атрибути для збереження задачі CVXPY
+        # Атрибути для збереження задачі CVXPY
         self.problem = None
         self.variables = {}
         self.parameters = {}
@@ -78,11 +77,15 @@ class MPCController:
         """
         # 1. Змінні оптимізації
         u_var = cp.Variable(self.Nc, name="u_seq")
-        eps_delta_u = cp.Variable(self.Nc, nonneg=True, name="eps_delta_u")
+        # Змінено: окремі змінні для верхніх та нижніх порушень дельти u
+        eps_delta_u_upper = cp.Variable(self.Nc, nonneg=True, name="eps_delta_u_upper") #
+        eps_delta_u_lower = cp.Variable(self.Nc, nonneg=True, name="eps_delta_u_lower") #
         eps_y_upper = cp.Variable((self.Np, 2), nonneg=True, name="eps_y_upper") if self.y_max is not None else None
         eps_y_lower = cp.Variable((self.Np, 2), nonneg=True, name="eps_y_lower") if self.y_min is not None else None
         self.variables = {
-            'u': u_var, 'eps_delta_u': eps_delta_u,
+            'u': u_var, 
+            'eps_delta_u_upper': eps_delta_u_upper, #
+            'eps_delta_u_lower': eps_delta_u_lower, #
             'eps_y_upper': eps_y_upper, 'eps_y_lower': eps_y_lower
         }
 
@@ -117,18 +120,18 @@ class MPCController:
             # Формуємо вектор стану Xk в ОРИГІНАЛЬНОМУ масштабі
             Xk_unscaled = cp.hstack(xk_unscaled_list)
             
-            # >>> КОРЕКТНЕ МАСШТАБУВАННЯ ВЕКТОРА СТАНУ <<<
+            # КОРЕКТНЕ МАСШТАБУВАННЯ ВЕКТОРА СТАНУ
             Xk_scaled = (Xk_unscaled - mean_c) / scale_c
             
             # Прогноз за локальною лінійною моделлю
             yk = Xk_scaled @ W_param + b_param + d_hat_param
             pred_fe.append(yk[0])
-            pred_mass.append(yk[2]) # Індекси відповідають [conc_fe, tail_fe, conc_mass, tail_mass]
+            pred_mass.append(yk[1]) # Індекс 1 для concentrate_mass_flow, оскільки n_targets = 2
 
-            # >>> ШТРАФ РЕГІОНУ ДОВІРИ (TRUST REGION) <<<
-            # Штрафуємо за відхилення прогнозованого стану від точки лінеаризації
-            if self.model.kernel != 'linear':
-                 trust_region_cost += self.rho_trust * cp.sum_squares(Xk_scaled - x0_scaled_param)
+            # ШТРАФ РЕГІОНУ ДОВІРИ (TRUST REGION)
+            # Штрафуємо за відхилення прогнозованого стану від точки лінеаризації ТІЛЬКИ на першому кроці
+            if k == 0 and self.model.kernel != 'linear': #
+                 trust_region_cost += self.rho_trust * cp.sum_squares(Xk_scaled - x0_scaled_param) #
 
             # Оновлюємо стан для наступного кроку
             feed_fe, ore_flow = d_seq_param[k, 0], d_seq_param[k, 1]
@@ -143,8 +146,12 @@ class MPCController:
         du0 = u_var[0] - u_prev_param
         du_rest = u_var[1:] - u_var[:-1] if self.Nc > 1 else []
         Du_ext = cp.hstack([du0] + ([du_rest] if self.Nc > 1 else []))
-        bound = self.delta_u_max + eps_delta_u
-        cons.extend([Du_ext <= bound, Du_ext >= -bound])
+        
+        # Обмеження на Du_ext з м'якими змінними (виправлено)
+        cons.extend([
+            Du_ext <= self.delta_u_max + eps_delta_u_upper, #
+            Du_ext >= -self.delta_u_max - eps_delta_u_lower #
+        ])
 
         y_preds_stacked = cp.vstack([conc_fe_preds, conc_mass_preds]).T
         if eps_y_upper is not None:
@@ -157,7 +164,8 @@ class MPCController:
             conc_fe_preds=conc_fe_preds, conc_mass_preds=conc_mass_preds,
             u_seq=u_var, u_prev=u_prev_param
         )
-        penalty_cost = self.rho_delta_u * cp.sum_squares(eps_delta_u)
+        # Штраф за порушення Du (виправлено)
+        penalty_cost = self.rho_delta_u * (cp.sum_squares(eps_delta_u_upper) + cp.sum_squares(eps_delta_u_lower)) #
         if eps_y_upper is not None:
             penalty_cost += self.rho_y * cp.sum_squares(eps_y_upper)
         if eps_y_lower is not None:
@@ -204,14 +212,14 @@ class MPCController:
         # 4. Діагностика та повернення результату
         if self.problem.status not in ["infeasible", "unbounded"]:
             u_optimal = self.variables['u'].value
-            # Діагностичний вивід
+            # Діагностичний вивід (виправлено для двох eps змінних)
             if (self.variables['eps_y_upper'] is not None and 
                 np.any(self.variables['eps_y_upper'].value > 1e-4)):
                 print(f"  -> УВАГА: Порушено верхнє обмеження Y! ε_y_upper = {np.round(self.variables['eps_y_upper'].value.flatten(), 3)}")
             
-            if (self.variables['eps_delta_u'] is not None and 
-                np.any(self.variables['eps_delta_u'].value > 1e-4)):
-                print(f"  -> УВАГА: Порушено обмеження Δu! ε_Δu = {np.round(self.variables['eps_delta_u'].value, 3)}")
+            if (self.variables['eps_delta_u_upper'] is not None and np.any(self.variables['eps_delta_u_upper'].value > 1e-4)) or \
+               (self.variables['eps_delta_u_lower'] is not None and np.any(self.variables['eps_delta_u_lower'].value > 1e-4)):
+                print(f"  -> УВАГА: Порушено обмеження Δu! ε_Δu_upper = {np.round(self.variables['eps_delta_u_upper'].value, 3)}, ε_Δu_lower = {np.round(self.variables['eps_delta_u_lower'].value, 3)}") #
         else:
             print(f"ПОПЕРЕДЖЕННЯ: Задача оптимізації не має розв'язку (статус: {self.problem.status}). Використовується попереднє керування.")
             return np.array([u_prev] * self.Nc)
@@ -231,7 +239,7 @@ class MPCController:
     def fit(self,
             X_train: np.ndarray,
             Y_train: np.ndarray,
-            x0_hist: np.ndarray = None): # <<< Додаємо значення за замовчуванням
+            x0_hist: np.ndarray = None):
         """
         Навчає KernelModel та опціонально ініціалізує історію і оцінювач збурень.
         """
@@ -245,29 +253,3 @@ class MPCController:
         if self.use_disturbance_estimator:
             self.n_targets = Y_train.shape[1]
             self.d_hat = np.zeros(self.n_targets)
-
-    # 4. Новий метод для оновлення оцінки
-    # def update_disturbance(self, y_meas_k_unscaled: np.ndarray):
-    #     """
-    #     Оновлює оцінку збурення. Всі розрахунки відбуваються в масштабованому просторі.
-    #     """
-    #     if not self.use_disturbance_estimator or self.d_hat is None:
-    #         return
-    
-    #     # 1. Беремо історію в оригінальному масштабі і масштабуємо її
-    #     Xk_minus_1_unscaled = self.x_hist.flatten().reshape(1, -1)
-    #     Xk_minus_1_scaled = self.x_scaler.transform(Xk_minus_1_unscaled)
-    
-    #     # 2. Робимо прогноз на масштабованих даних, отримуємо масштабований вихід
-    #     y_pred_k_scaled = self.model.predict(Xk_minus_1_scaled)[0]
-    
-    #     # 3. Масштабуємо реальне вимірювання, щоб воно було в тому ж просторі
-    #     y_meas_k_scaled = self.y_scaler.transform(y_meas_k_unscaled.reshape(1, -1))[0]
-    
-    #     # 4. Розраховуємо збурення в МАСШТАБОВАНОМУ просторі
-    #     raw_disturbance = y_meas_k_scaled - y_pred_k_scaled
-    
-    #     # 5. Застосовуємо фільтр (d_hat також зберігається в масштабованому вигляді)
-    #     alpha_filter = 0.1 
-    #     self.d_hat = alpha_filter * raw_disturbance + (1 - alpha_filter) * self.d_hat
-
