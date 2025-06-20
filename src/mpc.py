@@ -218,9 +218,6 @@ class MPCController:
 
         return u_optimal
 
-    # Інші методи класу (reset_history, fit, update_disturbance) залишаються без змін
-    # ... (скопіюйте сюди решту методів з вашого файлу)
-
     def reset_history(self, initial_history: np.ndarray):
         """
         initial_history: numpy array форми (L+1, 3)
@@ -250,27 +247,27 @@ class MPCController:
             self.d_hat = np.zeros(self.n_targets)
 
     # 4. Новий метод для оновлення оцінки
-    def update_disturbance(self, y_meas_k_unscaled: np.ndarray):
-        """
-        Оновлює оцінку збурення. Всі розрахунки відбуваються в масштабованому просторі.
-        """
-        if not self.use_disturbance_estimator or self.d_hat is None:
-            return
+    # def update_disturbance(self, y_meas_k_unscaled: np.ndarray):
+    #     """
+    #     Оновлює оцінку збурення. Всі розрахунки відбуваються в масштабованому просторі.
+    #     """
+    #     if not self.use_disturbance_estimator or self.d_hat is None:
+    #         return
     
-        # 1. Беремо історію в оригінальному масштабі і масштабуємо її
-        Xk_minus_1_unscaled = self.x_hist.flatten().reshape(1, -1)
-        Xk_minus_1_scaled = self.x_scaler.transform(Xk_minus_1_unscaled)
+    #     # 1. Беремо історію в оригінальному масштабі і масштабуємо її
+    #     Xk_minus_1_unscaled = self.x_hist.flatten().reshape(1, -1)
+    #     Xk_minus_1_scaled = self.x_scaler.transform(Xk_minus_1_unscaled)
     
-        # 2. Робимо прогноз на масштабованих даних, отримуємо масштабований вихід
-        y_pred_k_scaled = self.model.predict(Xk_minus_1_scaled)[0]
+    #     # 2. Робимо прогноз на масштабованих даних, отримуємо масштабований вихід
+    #     y_pred_k_scaled = self.model.predict(Xk_minus_1_scaled)[0]
     
-        # 3. Масштабуємо реальне вимірювання, щоб воно було в тому ж просторі
-        y_meas_k_scaled = self.y_scaler.transform(y_meas_k_unscaled.reshape(1, -1))[0]
+    #     # 3. Масштабуємо реальне вимірювання, щоб воно було в тому ж просторі
+    #     y_meas_k_scaled = self.y_scaler.transform(y_meas_k_unscaled.reshape(1, -1))[0]
     
-        # 4. Розраховуємо збурення в МАСШТАБОВАНОМУ просторі
-        raw_disturbance = y_meas_k_scaled - y_pred_k_scaled
+    #     # 4. Розраховуємо збурення в МАСШТАБОВАНОМУ просторі
+    #     raw_disturbance = y_meas_k_scaled - y_pred_k_scaled
     
-        # 5. Застосовуємо фільтр (d_hat також зберігається в масштабованому вигляді)
-        alpha_filter = 0.1 
-        self.d_hat = alpha_filter * raw_disturbance + (1 - alpha_filter) * self.d_hat
+    #     # 5. Застосовуємо фільтр (d_hat також зберігається в масштабованому вигляді)
+    #     alpha_filter = 0.1 
+    #     self.d_hat = alpha_filter * raw_disturbance + (1 - alpha_filter) * self.d_hat
 
