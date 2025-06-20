@@ -4,6 +4,7 @@ import random
 
 from scipy.interpolate import interp1d
 from sklearn.neighbors import KNeighborsRegressor
+from sklearn.ensemble import RandomForestRegressor
 
 class DataGenerator:
 
@@ -79,21 +80,17 @@ class DataGenerator:
                  reference_df: pd.DataFrame,
                  ore_flow_var_pct: float = 3.0,
                  seed: int = 0,
-                 # >>> НОВІ ПАРАМЕТРИ ДИНАМІКИ <<<
                  time_step_s: float = 5.0,
                  time_constant_s: float = 8.0,
-                 dead_time_s: float = 20.0
+                 dead_time_s: float = 20.0,
+                 # >>> НОВИЙ ПАРАМЕТР <<<
+                 true_model_type: str = 'rf' # 'rf' або 'knn'
                 ):
-        # 1) Відтворюваність
-        # Рекомендовано перейти на новий підхід для ізоляції стану
         self.rng = np.random.default_rng(seed)
+        self.seed = seed # Зберігаємо для відтворюваності RandomForest
 
-        # >>> Зберігаємо параметри динаміки, переведені у кроки симуляції <<<
         self.time_step_s = time_step_s
-        # Кількість кроків затримки
         self.dead_time_steps = round(dead_time_s / time_step_s)
-        # Коефіцієнт для фільтра першого порядку (інерційності)
-        # alpha приблизно дорівнює dt/T для T >> dt
         time_constant_steps = time_constant_s / time_step_s
         self.lag_filter_alpha = 1.0 / (time_constant_steps + 1.0)
         
@@ -123,8 +120,9 @@ class DataGenerator:
         ]
 
         # 5) Навчаємо kNN на чистих даних
-        self._fit_knn()
-
+        self.true_model_type = true_model_type
+        self._fit_model() # <<< ЗАМІНЮЄМО ВИКЛИК
+        
         # 6) Діапазони генерації вхідних сигналів
         base_flow = self.ref['ore_mass_flow'].mean()
         dv = base_flow * ore_flow_var_pct / 100.0
@@ -146,10 +144,33 @@ class DataGenerator:
                 col_series.max()
             )
         
-    def _fit_knn(self, n_neighbors: int = 5):
+    # def _fit_knn(self, n_neighbors: int = 5):
+    #     X = self.ref[self.input_cols]
+    #     y = self.ref[self.output_cols]
+    #     self._model = KNeighborsRegressor(n_neighbors=n_neighbors)
+    #     self._model.fit(X, y)
+
+    def _fit_model(self, n_neighbors: int = 5):
+        """
+        Навчає модель "реального процесу" (plant model).
+        Може бути або KNeighborsRegressor, або RandomForestRegressor.
+        """
         X = self.ref[self.input_cols]
         y = self.ref[self.output_cols]
-        self._model = KNeighborsRegressor(n_neighbors=n_neighbors)
+        
+        if self.true_model_type == 'knn':
+            print("INFO: 'true_gen' (plant) використовує модель KNeighborsRegressor.")
+            self._model = KNeighborsRegressor(n_neighbors=n_neighbors)
+            
+        elif self.true_model_type == 'rf':
+            print("INFO: 'true_gen' (plant) використовує модель RandomForestRegressor.")
+            self._model = RandomForestRegressor(
+                n_estimators=100,      # Стандартна кількість дерев
+                random_state=self.seed # Для відтворюваності
+            )
+        else:
+            raise ValueError(f"Невідомий тип моделі для true_gen: '{self.true_model_type}'")
+            
         self._model.fit(X, y)
 
     def _generate_inputs(self, T: int, control_pts: int) -> pd.DataFrame:
@@ -289,7 +310,7 @@ class DataGenerator:
 
     def generate(self, T:int, control_pts:int, n_neighbors:int=5,
                  noise_level:str='none', anomaly_config:dict=None) -> pd.DataFrame:
-        self._fit_knn(n_neighbors)
+        # self._fit_knn(n_neighbors)
         inp = self._generate_inputs(T, control_pts)
         out = self._predict_outputs(inp)
         

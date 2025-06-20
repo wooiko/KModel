@@ -48,6 +48,7 @@ def simulate_mpc(
     # rho_du_penalty: float = 1e4,
     rho_trust: float = 0.1,
     use_soft_constraints: bool = True,
+    plant_model_type: str = 'rf',
     progress_callback: Callable[[int, int, str], None] = None
 ):
 
@@ -59,8 +60,15 @@ def simulate_mpc(
     rho_du_val = λ_obj * 100
     
     # 1. «Справжній» генератор процесу
-    true_gen = DataGenerator(reference_df, ore_flow_var_pct=3.0, seed=1)
-    
+    true_gen = DataGenerator(
+        reference_df,
+        ore_flow_var_pct=3.0,
+        # >>> ПЕРЕДАЄМО ПАРАМЕТРИ ДИНАМІКИ ТА ТИПУ МОДЕЛІ <<<
+        time_step_s=5.0,
+        time_constant_s=8.0,
+        dead_time_s=20.0,
+        true_model_type=plant_model_type
+    )    
     anomaly_config = None # DataGenerator.generate_anomaly_config(N_data=N_data, train_frac=train_size, val_frac=val_size, test_frac=test_size)
     df_true  = true_gen.generate(N_data, control_pts, n_neighbors, noise_level=noise_level, anomaly_config=anomaly_config)
     
@@ -316,8 +324,8 @@ if __name__ == '__main__':
     res, mets = simulate_mpc(
         hist_df, 
         progress_callback=my_progress, 
-        N_data=500, 
-        control_pts=50,
+        N_data=1000, 
+        control_pts=100,
         seed=42,
         
         train_size = 0.7,
