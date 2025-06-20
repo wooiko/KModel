@@ -492,7 +492,7 @@ class StatefulPlantMixin:
         alpha = self.lag_filter_alpha # Коефіцієнт інерції
         
         for col in self.output_cols:
-            dyn_output[col].iloc[0] = (alpha * delayed_output_for_this_step[col].iloc[0] + 
+            dyn_output.loc[0, col] = (alpha * delayed_output_for_this_step[col].iloc[0] + 
                                        (1 - alpha) * self._prev_output[col].iloc[0])
         
         self._prev_output = dyn_output.copy() # Оновлюємо попередній вихід для наступного кроку
