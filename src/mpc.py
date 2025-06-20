@@ -145,7 +145,11 @@ class MPCController:
         cons = [u_var >= self.u_min, u_var <= self.u_max]
         du0 = u_var[0] - u_prev_param
         du_rest = u_var[1:] - u_var[:-1] if self.Nc > 1 else []
-        Du_ext = cp.hstack([du0] + ([du_rest] if self.Nc > 1 else []))
+        # Du_ext = cp.hstack([du0] + ([du_rest] if self.Nc > 1 else []))
+        if self.Nc > 1:
+            Du_ext = cp.hstack([du0, du_rest])
+        else:
+            Du_ext = cp.hstack([du0])        
         
         # Обмеження на Du_ext з м'якими змінними (виправлено)
         cons.extend([
