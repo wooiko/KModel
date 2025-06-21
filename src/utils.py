@@ -585,9 +585,9 @@ def evaluate_ekf_performance(
         rmse_vec=rmse_vec, 
         rmse_normalized=rmse_normalized,
         rmse_total=rmse_tot,
-        nees=nees, 
+        # nees=nees, 
         nees_mean=nees_mean,
-        nis=nis,  
+        # nis=nis,  
         nis_mean=nis_mean,
         nees_cov=nees_cov, 
         nis_cov=nis_cov

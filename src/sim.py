@@ -197,14 +197,14 @@ def initialize_ekf(
     
     x0_aug = np.hstack([hist0_unscaled.flatten(), np.zeros(n_dist)])
     
-    P0 = np.eye(n_phys + n_dist) * 1e-3
+    P0 = np.eye(n_phys + n_dist) * 1e-6 #1e-3
     P0[n_phys:, n_phys:] *= 1000
 
-    Q_phys = np.eye(n_phys) * 1e-8
-    Q_dist = np.eye(n_dist) * 1e-6
+    Q_phys = np.eye(n_phys) * 0.285
+    Q_dist = np.eye(n_dist) * 1e-5
     Q = np.block([[Q_phys, np.zeros((n_phys, n_dist))], [np.zeros((n_dist, n_phys)), Q_dist]])
     
-    R = np.diag(np.var(Y_train_scaled, axis=0)) * 0.05
+    R = np.diag(np.var(Y_train_scaled, axis=0)) * 0.001
     
     return ExtendedKalmanFilter(mpc.model, x_scaler, y_scaler, x0_aug, P0, Q, R, lag)
 
@@ -368,9 +368,11 @@ def simulate_mpc(
     # 4. Аналіз результатів
     print("\nАналіз результатів симуляції:")
     # analize_errors(results_df, ref_fe, ref_mass)
-    # u_applied = results_df['solid_feed_percent'].values
-    # d_all_test = df_true.iloc[test_idx_start:][['feed_fe_percent','ore_mass_flow']].values
-    # plot_control_and_disturbances(u_applied, d_all_test[1:1+len(u_applied)])
+    # ---- MPC ----  
+    u_applied = results_df['solid_feed_percent'].values
+    d_all_test = df_true.iloc[test_idx_start:][['feed_fe_percent','ore_mass_flow']].values
+    plot_control_and_disturbances(u_applied, d_all_test[1:1+len(u_applied)])
+    # ----
     # plot_mpc_diagnostics(results_df, w_fe, w_mass, λ_obj)
     
     final_avg_iron_mass = (results_df.conc_fe * results_df.conc_mass / 100).mean()
@@ -400,8 +402,8 @@ if __name__ == '__main__':
     res, mets = simulate_mpc(
         hist_df, 
         progress_callback=my_progress, 
-        N_data=500, 
-        control_pts=10,
+        N_data=1000, 
+        control_pts=100,
         seed=42,
         
         train_size = 0.7,
