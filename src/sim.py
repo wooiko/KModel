@@ -367,15 +367,15 @@ def simulate_mpc(
     
     # 4. Аналіз результатів
     print("\nАналіз результатів симуляції:")
-    analize_errors(results_df, ref_fe, ref_mass)
-    u_applied = results_df['solid_feed_percent'].values
-    d_all_test = df_true.iloc[test_idx_start:][['feed_fe_percent','ore_mass_flow']].values
-    plot_control_and_disturbances(u_applied, d_all_test[1:1+len(u_applied)])
-    plot_mpc_diagnostics(results_df, w_fe, w_mass, λ_obj)
+    # analize_errors(results_df, ref_fe, ref_mass)
+    # u_applied = results_df['solid_feed_percent'].values
+    # d_all_test = df_true.iloc[test_idx_start:][['feed_fe_percent','ore_mass_flow']].values
+    # plot_control_and_disturbances(u_applied, d_all_test[1:1+len(u_applied)])
+    # plot_mpc_diagnostics(results_df, w_fe, w_mass, λ_obj)
     
     final_avg_iron_mass = (results_df.conc_fe * results_df.conc_mass / 100).mean()
     metrics['avg_iron_mass'] = final_avg_iron_mass
-    print(f"Середня маса заліза в концентраті: {final_avg_iron_mass:.2f} т/год")
+    # print(f"Середня маса заліза в концентраті: {final_avg_iron_mass:.2f} т/год")
     
     print("=" * 50)
     return results_df, metrics

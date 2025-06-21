@@ -487,6 +487,10 @@ def plot_disturbance_estimation(dist_history_df: pd.DataFrame):
     plt.tight_layout(rect=[0, 0.02, 1, 0.96])
     plt.show()
     
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.stats import chi2
+
 def evaluate_ekf_performance(
         x_true_hist: np.ndarray,
         x_hat_hist: np.ndarray,
@@ -497,7 +501,7 @@ def evaluate_ekf_performance(
 ):
     """
     Оцінка ефективності EKF з обчисленням показників та відповідних графіків.
-    
+
     x_true_hist : (T, n_x)  – реальний стан із генератора
     x_hat_hist  : (T, n_x_full)  – оцінка EKF після корекції, може містити більше стовпців
     P_hist      : (T, n_x_full, n_x_full) – коваріації після корекції
@@ -515,6 +519,11 @@ def evaluate_ekf_performance(
     # ---- RMSE ----
     rmse_vec = np.sqrt(((x_true_hist[:, :selected_columns] - x_hat_hist[:, :selected_columns])**2).mean(axis=0))
     rmse_tot = float(np.linalg.norm(rmse_vec) / np.sqrt(selected_columns))
+
+    # Нормалізація RMSE відносно мінімальних та максимальних значень
+    x_hat_min = np.min(x_hat_hist[:, :selected_columns], axis=0)
+    x_hat_max = np.max(x_hat_hist[:, :selected_columns], axis=0)
+    rmse_normalized = rmse_vec / (x_hat_max - x_hat_min + 1e-8)  # Додаємо мале значення для уникнення ділення на нуль
 
     # ---- NEES ----
     nees = np.empty(T)
@@ -545,6 +554,7 @@ def evaluate_ekf_performance(
     # ---- Вивід ----
     print("\n===== EKF PERFORMANCE =====")
     print(f"RMSE (each state): {np.round(rmse_vec, 4)}")
+    print(f"Normalized RMSE (each state): {np.round(rmse_normalized, 4)}")
     print(f"RMSE (total)     : {rmse_tot:.4f}")
     print(f"NEES mean        : {nees_mean:.2f}  (ideal ≈ {selected_columns})")
     print(f"NIS mean         : {nis_mean:.2f}  (ideal ≈ {n_y})")
@@ -573,6 +583,7 @@ def evaluate_ekf_performance(
 
     return dict(
         rmse_vec=rmse_vec, 
+        rmse_normalized=rmse_normalized,
         rmse_total=rmse_tot,
         nees=nees, 
         nees_mean=nees_mean,
