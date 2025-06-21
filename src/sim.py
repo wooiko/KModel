@@ -186,7 +186,8 @@ def initialize_ekf(
     scalers: Tuple[StandardScaler, StandardScaler],
     hist0_unscaled: np.ndarray,
     Y_train_scaled: np.ndarray,
-    lag: int
+    lag: int,
+    params: Dict[str, Any]
 ) -> ExtendedKalmanFilter:
     """
     Ініціалізує розширений фільтр Калмана (EKF).
@@ -204,10 +205,18 @@ def initialize_ekf(
     Q_dist = np.eye(n_dist) * 1e-5
     Q = np.block([[Q_phys, np.zeros((n_phys, n_dist))], [np.zeros((n_dist, n_phys)), Q_dist]])
     
-    R = np.diag(np.var(Y_train_scaled, axis=0)) * 0.001
+    # R = np.diag(np.var(Y_train_scaled, axis=0)) * 0.001
+    R = np.diag(np.var(Y_train_scaled, axis=0)) * 0.01
     
-    return ExtendedKalmanFilter(mpc.model, x_scaler, y_scaler, x0_aug, P0, Q, R, lag)
-
+    return ExtendedKalmanFilter(
+        mpc.model, x_scaler, y_scaler, x0_aug, P0, Q, R, lag,
+        beta_R=params.get('beta_R', 0.5), # .get для зворотної сумісності
+        q_adaptive_enabled=params.get('q_adaptive_enableded', True),
+        q_alpha=params.get('q_alpha', 0.985),
+        # q_nis_threshold=params.get('q_nis_threshold', 1.5)
+        q_nis_threshold=params.get('q_nis_threshold', 2)
+        
+    )
 
 # =============================================================================
 # === БЛОК 3: ОСНОВНИЙ ЦИКЛ СИМУЛЯЦІЇ ===
@@ -360,7 +369,7 @@ def simulate_mpc(
     test_idx_start = lag + 1 + n_train_pts + n_val_pts
     hist0_unscaled = df_true[['feed_fe_percent', 'ore_mass_flow', 'solid_feed_percent']].iloc[test_idx_start - (lag + 1): test_idx_start].values
     
-    ekf = initialize_ekf(mpc, (x_scaler, y_scaler), hist0_unscaled, data['Y_train_scaled'], lag)
+    ekf = initialize_ekf(mpc, (x_scaler, y_scaler), hist0_unscaled, data['Y_train_scaled'], lag, params)
 
     # 3. Запуск симуляції
     results_df = run_simulation_loop(true_gen, mpc, ekf, df_true, params, progress_callback)
@@ -402,8 +411,8 @@ if __name__ == '__main__':
     res, mets = simulate_mpc(
         hist_df, 
         progress_callback=my_progress, 
-        N_data=1000, 
-        control_pts=100,
+        N_data=2000, 
+        control_pts=200,
         seed=42,
         
         train_size = 0.7,

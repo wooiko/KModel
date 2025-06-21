@@ -13,7 +13,11 @@ class ExtendedKalmanFilter:
                  P0: np.ndarray,            # Початкова коваріація невизначеності
                  Q: np.ndarray,             # Коваріація шуму процесу
                  R: np.ndarray,             # Початкова (мінімальна) коваріація шуму вимірювань для адаптивної R
-                 lag: int):
+                 lag: int,
+                 beta_R: float = 0.5,
+                 q_adaptive_enabled: bool = True,
+                 q_alpha: float = 0.98,
+                 q_nis_threshold: float = 1.5):
         self.model = model
         self.x_scaler = x_scaler
         self.y_scaler = y_scaler
@@ -30,6 +34,13 @@ class ExtendedKalmanFilter:
         self.Q = Q
         self._R_initial = R 
         self.R = R 
+        self.beta_R = beta_R 
+
+        # --- Адаптація Q ---
+        self.q_adaptive_enabled = q_adaptive_enabled
+        self.q_alpha = q_alpha  # Фактор "забування" для q_scale
+        self.q_nis_threshold = q_nis_threshold # Поріг для збільшення Q
+        self.q_scale = 1.0      # Початковий коефіцієнт масштабування для Q
         
         # Матриця переходу стану F
         self._build_state_transition_matrix()
@@ -72,7 +83,7 @@ class ExtendedKalmanFilter:
         x_phys_prev = self.x_hat[:self.n_phys]  # Попередня оцінка фізичного стану
         d_prev = self.x_hat[self.n_phys:]       # Попередня оцінка збурень
 
-        # 1. Прогноз стану x_hat_k|k-1 = f(x_hat_{k-1|k-1}, u_{k-1})
+        # ---- 1. Прогноз стану x_hat_k|k-1 = f(x_hat_{k-1|k-1}, u_{k-1})
         # Модель переходу для фізичної частини (зсувний регістр):
         # Зсуваємо всі елементи фізичного стану на 3 позиції назад (викидаємо найстаріші 3 елементи)
         x_phys_new = np.roll(x_phys_prev, -3)
@@ -86,8 +97,9 @@ class ExtendedKalmanFilter:
         # Оновлюємо повний розширений стан
         self.x_hat = np.hstack([x_phys_new, d_new])
         
-        # 2. Прогноз коваріації P_k|k-1 = F * P_{k-1|k-1} * F^T + Q
-        self.P = self.F @ self.P @ self.F.T + self.Q
+        # ---- 2. Прогноз коваріації P_k|k-1 = F * P_{k-1|k-1} * F^T + Q
+        # Застосовуємо адаптивний коефіцієнт до Q
+        self.P = self.F @ self.P @ self.F.T + (self.Q * self.q_scale)
         
     def update(self, z_k: np.ndarray):
         """
@@ -101,39 +113,60 @@ class ExtendedKalmanFilter:
         x_phys_unscaled = self.x_hat[:self.n_phys].reshape(1, -1)
         d_scaled = self.x_hat[self.n_phys:]
 
-        # 1. Масштабуємо фізичний стан для використання в моделі (як того вимагає KernelModel)
+        # ---- 1. Масштабуємо фізичний стан для використання в моделі (як того вимагає KernelModel)
         x_phys_scaled = self.x_scaler.transform(x_phys_unscaled)
         
-        # 2. Обчислюємо Якобіан H_k моделі вимірювання h.
+        # ---- 2. Обчислюємо Якобіан H_k моделі вимірювання h.
         W_local_scaled, _ = self.model.linearize(x_phys_scaled)
         
         H_k = np.zeros((self.n_dist, self.n_aug))
         H_k[:, :self.n_phys] = W_local_scaled.T @ np.diag(1.0 / self.x_scaler.scale_[:self.n_phys])
         H_k[:, self.n_phys:] = np.eye(self.n_dist)
 
-        # 3. Робимо прогноз вимірювання y_hat = h(x_hat_k|k-1)
+        # ---- 3. Робимо прогноз вимірювання y_hat = h(x_hat_k|k-1)
         y_pred_scaled = self.model.predict(x_phys_scaled)[0]
         y_hat_scaled = y_pred_scaled + d_scaled 
         
-        # 4. Обчислюємо інновацію (нев'язку) y_tilde = z_k - y_hat
+        # ---- 4. Обчислюємо інновацію (нев'язку) y_tilde = z_k - y_hat
         z_k_scaled = self.y_scaler.transform(z_k.reshape(1, -1))[0]
         y_tilde = z_k_scaled - y_hat_scaled
 
-        # 5. Обчислюємо коваріацію інновації S_k = H_k * P_k|k-1 * H_k^T + R
-        beta = 0.5 
-        self.R = self._R_initial + beta * np.diag(np.abs(y_tilde) + 1e-6) 
-        
+        # ---- 5. Обчислюємо коваріацію інновації S_k = H_k * P_k|k-1 * H_k^T + R
+        # beta = 0.5 
+        self.R = self._R_initial + self.beta_R * np.diag(np.abs(y_tilde) + 1e-6) 
+    
         S_k = H_k @ self.P @ H_k.T + self.R
 
-        # 6. Обчислюємо підсилення Калмана K_k = P_k|k-1 * H_k^T * S_k^{-1}
+        # ▼▼▼ НОВИЙ БЛОК: АДАПТАЦІЯ Q НА ОСНОВІ NIS ▼▼▼
+        if self.q_adaptive_enabled:
+            try:
+                S_k_inv = np.linalg.inv(S_k)
+                # Нормалізована інновація в квадраті (NIS)
+                nis = y_tilde.T @ S_k_inv @ y_tilde
+    
+                # Очікуване значення для NIS дорівнює розмірності вимірювання
+                target_nis = self.n_dist
+    
+                # Якщо NIS значно перевищує очікуване, збільшуємо q_scale
+                if nis > target_nis * self.q_nis_threshold:
+                    self.q_scale = min(self.q_scale * 1.05, 10.0) # Збільшуємо, але обмежуємо зверху
+                else:
+                    # Інакше поступово повертаємо до 1.0
+                    self.q_scale = max(self.q_scale * self.q_alpha, 1.0)
+            except np.linalg.LinAlgError:
+                # Ігноруємо крок адаптації, якщо матриця S_k вироджена
+                pass
+        # --- КІНЕЦЬ НОВОГО БЛОКУ ---
+
+        # ---- 6. Обчислюємо підсилення Калмана K_k = P_k|k-1 * H_k^T * S_k^{-1}
         K_k = self.P @ H_k.T @ np.linalg.inv(S_k)
 
-        # 7. Оновлюємо оцінку стану x_hat_k|k = x_hat_k|k-1 + K_k * y_tilde
+        # ---- 7. Оновлюємо оцінку стану x_hat_k|k = x_hat_k|k-1 + K_k * y_tilde
         self.x_hat = self.x_hat + K_k @ y_tilde
         
-        # 8. Оновлюємо коваріацію P_k|k = (I - K_k * H_k) * P_k|k-1
+        # ---- 8. Оновлюємо коваріацію P_k|k = (I - K_k * H_k) * P_k|k-1
         I = np.eye(self.n_aug)
         self.P = (I - K_k @ H_k) @ self.P
         
-        # Зберігаємо інновацію
+        # ---- 9. Зберігаємо інновацію
         self.last_innovation = y_tilde
