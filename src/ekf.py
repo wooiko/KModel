@@ -4,6 +4,7 @@ from model import KernelModel
 from sklearn.preprocessing import StandardScaler
 
 class ExtendedKalmanFilter:
+
     def __init__(self,
                  model: KernelModel,
                  x_scaler: StandardScaler,
@@ -27,12 +28,14 @@ class ExtendedKalmanFilter:
 
         # Матриці шумів
         self.Q = Q
-        # Зберігаємо початкову R, яка буде мінімальною R_k (R0) для адаптивної версії
         self._R_initial = R 
-        self.R = R # Поточна R, яка буде динамічно оновлюватися в методі update
+        self.R = R 
         
-        # Матриця переходу стану F (Якобіан функції переходу f) - вона є сталою для цієї моделі
+        # Матриця переходу стану F
         self._build_state_transition_matrix()
+        
+        # Новий атрибут для зберігання останньої інновації
+        self.last_innovation = None        
 
     def _build_state_transition_matrix(self):
         """
@@ -102,36 +105,21 @@ class ExtendedKalmanFilter:
         x_phys_scaled = self.x_scaler.transform(x_phys_unscaled)
         
         # 2. Обчислюємо Якобіан H_k моделі вимірювання h.
-        # Модель вимірювання h(x) = model.predict(x_phys_scaled) + d_scaled
-        # W_local_scaled - це якобіан model.predict по відношенню до x_phys_scaled.
-        # Згідно коментаря у вихідному коді: # W_local має форму (n_phys, n_dist)
         W_local_scaled, _ = self.model.linearize(x_phys_scaled)
         
         H_k = np.zeros((self.n_dist, self.n_aug))
-        
-        # Перший блок H_k (H_k[:, :self.n_phys]) є якобіаном вимірювання по відношенню до немасштабованого фіз. стану.
-        # Це d(y_scaled)/d(x_phys_unscaled) = d(y_scaled)/d(x_phys_scaled) * d(x_phys_scaled)/d(x_phys_unscaled)
-        # де d(x_phys_scaled)/d(x_phys_unscaled) = diag(1/x_scaler.scale_)
-        # Оскільки W_local_scaled має форму (n_phys, n_dist), для отримання d(y_scaled)/d(x_phys_scaled)
-        # нам потрібна її транспонована версія (n_dist, n_phys).
         H_k[:, :self.n_phys] = W_local_scaled.T @ np.diag(1.0 / self.x_scaler.scale_[:self.n_phys])
-        
-        # Другий блок H_k (H_k[:, self.n_phys:]) є якобіаном вимірювання по відношенню до збурень.
-        # Оскільки h(x) = ... + d_scaled, то d(h)/d(d_scaled) = I (одинична матриця)
         H_k[:, self.n_phys:] = np.eye(self.n_dist)
 
         # 3. Робимо прогноз вимірювання y_hat = h(x_hat_k|k-1)
-        # Виходи моделі вже масштабовані
         y_pred_scaled = self.model.predict(x_phys_scaled)[0]
-        y_hat_scaled = y_pred_scaled + d_scaled # Додаємо оцінку збурень до прогнозу моделі
+        y_hat_scaled = y_pred_scaled + d_scaled 
         
         # 4. Обчислюємо інновацію (нев'язку) y_tilde = z_k - y_hat
-        # Спочатку масштабуємо фактичне вимірювання z_k до того ж масштабу, що й y_hat_scaled
         z_k_scaled = self.y_scaler.transform(z_k.reshape(1, -1))[0]
         y_tilde = z_k_scaled - y_hat_scaled
 
         # 5. Обчислюємо коваріацію інновації S_k = H_k * P_k|k-1 * H_k^T + R
-        # Реалізація адаптивної коваріації шуму вимірювань R_k = β·|innovation| + R0
         beta = 0.5 
         self.R = self._R_initial + beta * np.diag(np.abs(y_tilde) + 1e-6) 
         
@@ -142,7 +130,10 @@ class ExtendedKalmanFilter:
 
         # 7. Оновлюємо оцінку стану x_hat_k|k = x_hat_k|k-1 + K_k * y_tilde
         self.x_hat = self.x_hat + K_k @ y_tilde
-
+        
         # 8. Оновлюємо коваріацію P_k|k = (I - K_k * H_k) * P_k|k-1
         I = np.eye(self.n_aug)
         self.P = (I - K_k @ H_k) @ self.P
+        
+        # Зберігаємо інновацію
+        self.last_innovation = y_tilde

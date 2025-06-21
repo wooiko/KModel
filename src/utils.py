@@ -3,6 +3,7 @@
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from scipy.stats import chi2
 
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 import matplotlib.pyplot as plt
@@ -485,3 +486,98 @@ def plot_disturbance_estimation(dist_history_df: pd.DataFrame):
     axes[-1].set_xlabel('Крок симуляції на тестових даних (t)', fontsize=12)
     plt.tight_layout(rect=[0, 0.02, 1, 0.96])
     plt.show()
+    
+def evaluate_ekf_performance(
+        x_true_hist: np.ndarray,
+        x_hat_hist: np.ndarray,
+        P_hist: np.ndarray,
+        innov_hist: np.ndarray,
+        R_hist: np.ndarray,
+        conf_level: float = 0.95
+):
+    """
+    Оцінка ефективності EKF з обчисленням показників та відповідних графіків.
+    
+    x_true_hist : (T, n_x)  – реальний стан із генератора
+    x_hat_hist  : (T, n_x_full)  – оцінка EKF після корекції, може містити більше стовпців
+    P_hist      : (T, n_x_full, n_x_full) – коваріації після корекції
+    innov_hist  : (T, n_y)  – інновація v_k = y - y_pred
+    R_hist      : (T, n_y, n_y) – вимірювальна коваріація (перед оновленням)
+
+    Повертає dict з метриками та будує базові графіки.
+    """
+    T, n_x = x_true_hist.shape
+    n_y = innov_hist.shape[1]
+
+    # Визначення кількості стовпців, які ви хочете використовувати для оцінки
+    selected_columns = min(n_x, x_hat_hist.shape[1])
+
+    # ---- RMSE ----
+    rmse_vec = np.sqrt(((x_true_hist[:, :selected_columns] - x_hat_hist[:, :selected_columns])**2).mean(axis=0))
+    rmse_tot = float(np.linalg.norm(rmse_vec) / np.sqrt(selected_columns))
+
+    # ---- NEES ----
+    nees = np.empty(T)
+    for k in range(T):
+        e = (x_true_hist[k] - x_hat_hist[k, :selected_columns]).reshape(-1, 1)
+        pinv = np.linalg.pinv(P_hist[k][:selected_columns, :selected_columns])
+        nees[k] = float(e.T @ pinv @ e)
+    nees_mean = nees.mean()
+
+    # ---- NIS ----
+    nis = np.empty(T)
+    for k in range(T):
+        v = innov_hist[k].reshape(-1, 1)
+        rinv = np.linalg.pinv(R_hist[k])
+        nis[k] = float(v.T @ rinv @ v)
+    nis_mean = nis.mean()
+
+    # ---- χ²-границі ----
+    alpha = 1 - conf_level
+    nees_lo = chi2.ppf(alpha / 2, df=selected_columns)
+    nees_hi = chi2.ppf(1 - alpha / 2, df=selected_columns)
+    nis_lo = chi2.ppf(alpha / 2, df=n_y)
+    nis_hi = chi2.ppf(1 - alpha / 2, df=n_y)
+
+    nees_cov = np.mean((nees >= nees_lo) & (nees <= nees_hi))
+    nis_cov = np.mean((nis >= nis_lo) & (nis <= nis_hi))
+
+    # ---- Вивід ----
+    print("\n===== EKF PERFORMANCE =====")
+    print(f"RMSE (each state): {np.round(rmse_vec, 4)}")
+    print(f"RMSE (total)     : {rmse_tot:.4f}")
+    print(f"NEES mean        : {nees_mean:.2f}  (ideal ≈ {selected_columns})")
+    print(f"NIS mean         : {nis_mean:.2f}  (ideal ≈ {n_y})")
+    print(f"NEES 95% coverage: {nees_cov * 100:.1f}% (target 95%)")
+    print(f"NIS 95% coverage : {nis_cov * 100:.1f}% (target 95%)")
+
+    # ---- Графіки ----
+    t = np.arange(T)
+    fig, ax = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
+    
+    ax[0].plot(t, nees, label='NEES', color='blue')
+    ax[0].axhline(nees_lo, color='red', ls='--', lw=0.8, label='χ² 95%')
+    ax[0].axhline(nees_hi, color='red', ls='--', lw=0.8)
+    ax[0].set_title('Normalized Estimation Error Squared')
+    ax[0].legend()
+
+    ax[1].plot(t, nis, label='NIS', color='green')
+    ax[1].axhline(nis_lo, color='red', ls='--', lw=0.8, label='χ² 95%')
+    ax[1].axhline(nis_hi, color='red', ls='--', lw=0.8)
+    ax[1].set_title('Normalized Innovation Squared')
+    ax[1].set_xlabel('Time step')
+    ax[1].legend()
+
+    plt.tight_layout()
+    plt.show()
+
+    return dict(
+        rmse_vec=rmse_vec, 
+        rmse_total=rmse_tot,
+        nees=nees, 
+        nees_mean=nees_mean,
+        nis=nis,  
+        nis_mean=nis_mean,
+        nees_cov=nees_cov, 
+        nis_cov=nis_cov
+    )

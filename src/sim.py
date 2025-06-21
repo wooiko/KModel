@@ -1,5 +1,3 @@
-# sim.py
-
 import numpy as np
 import pandas as pd
 from typing import Callable, Dict, Any, Tuple
@@ -10,7 +8,7 @@ from data_gen import StatefulDataGenerator
 from model import KernelModel
 from objectives import MaxIronMassTrackingObjective
 from mpc import MPCController
-from utils import (analize_errors, plot_control_and_disturbances, plot_mpc_diagnostics)
+from utils import (analize_errors, plot_control_and_disturbances, plot_mpc_diagnostics, evaluate_ekf_performance)
 from ekf import ExtendedKalmanFilter
 
 # =============================================================================
@@ -199,15 +197,15 @@ def initialize_ekf(
     
     x0_aug = np.hstack([hist0_unscaled.flatten(), np.zeros(n_dist)])
     
-    P0 = np.eye(n_phys + n_dist) * 1e-2
+    P0 = np.eye(n_phys + n_dist) * 1e-3
     P0[n_phys:, n_phys:] *= 1000
 
-    Q_phys = np.eye(n_phys) * 1e-6
-    Q_dist = np.eye(n_dist) * 1e-4
+    Q_phys = np.eye(n_phys) * 1e-8
+    Q_dist = np.eye(n_dist) * 1e-6
     Q = np.block([[Q_phys, np.zeros((n_phys, n_dist))], [np.zeros((n_dist, n_phys)), Q_dist]])
     
-    R = np.diag(np.var(Y_train_scaled, axis=0)) * 0.5
-
+    R = np.diag(np.var(Y_train_scaled, axis=0)) * 0.05
+    
     return ExtendedKalmanFilter(mpc.model, x_scaler, y_scaler, x0_aug, P0, Q, R, lag)
 
 
@@ -249,6 +247,13 @@ def run_simulation_loop(
     u_prev = float(hist0_unscaled[-1, 2])
     d_filtered_state = d_all[0, :].copy()
 
+    # Ініціалізація списків для зберігання даних
+    x_true_hist = []  # Істинні стани з генератора
+    x_hat_hist = []   # Оцінки EKF
+    P_hist = []       # Матриці коваріацій
+    innov_hist = []   # Інновації
+    R_hist = []       # Вимірювальна коваріація
+
     for t in range(T_sim):
         if progress_callback:
             progress_callback(t, T_sim, f"Крок симуляції {t+1}/{T_sim}")
@@ -261,43 +266,61 @@ def run_simulation_loop(
         mpc.reset_history(x_est_phys_unscaled)
         mpc.d_hat = ekf.x_hat[ekf.n_phys:]
 
+        # Запис істинного стану та оцінки EKF
+        x_true_hist.append(np.array(d_all[t + 1]))  # Істинні значення (після зсуву)
+        x_hat_hist.append(ekf.x_hat.copy())  # Оцінка EKF
+        P_hist.append(ekf.P.copy())  # Коваріації
+        # innov_hist.append(ekf.last_innovation.copy())  # Інновації
+        if ekf.last_innovation is not None:
+            innov_hist.append(ekf.last_innovation.copy())  # Інновації
+        else:
+            innov_hist.append(np.zeros(ekf.n_dist) )  # Або інше значення за замовчуванням        
+        R_hist.append(ekf.R.copy())  # Вимірювальна коваріація
+
         # 3. Розрахунок керуючої дії
-        d_filtered_state = 0.1 * d_all[t+1, :] + 0.9 * d_filtered_state
+        d_filtered_state = 0.1 * d_all[t + 1, :] + 0.9 * d_filtered_state
         d_seq = np.repeat(d_filtered_state[None, :], params['Np'], axis=0)
         u_seq = mpc.optimize(d_seq, u_prev)
         u_cur = u_prev if u_seq is None else float(u_seq[0])
 
         # 4. Крок симуляції реального процесу
-        feed_fe_next, ore_flow_next = d_all[t+1]
+        feed_fe_next, ore_flow_next = d_all[t + 1]
         y_full = true_gen.step(feed_fe_next, ore_flow_next, u_cur)
         
         # 5. Корекція EKF
         y_meas_unscaled = y_full[['concentrate_fe_percent', 'concentrate_mass_flow']].values.flatten()
         ekf.update(y_meas_unscaled)
 
-        # ===> ЗМІНА: ЯВНЕ СТВОРЕННЯ СЛОВНИКА З ПЕРЕЙМЕНУВАННЯМ <===
-        # 6. Збереження результатів
-        # Замість y_full.iloc[0].to_dict() використовуємо явне створення словника,
-        # щоб перейменувати стовпці для сумісності з функціями аналізу.
+        # Збереження результатів
         y_meas = y_full.iloc[0]
         records.append({
             'feed_fe_percent': y_meas.feed_fe_percent,
             'ore_mass_flow': y_meas.ore_mass_flow,
             'solid_feed_percent': u_cur,
-            'conc_fe': y_meas.concentrate_fe_percent,    # Перейменовано
+            'conc_fe': y_meas.concentrate_fe_percent,
             'tail_fe': y_meas.tailings_fe_percent,
-            'conc_mass': y_meas.concentrate_mass_flow,  # Перейменовано
+            'conc_mass': y_meas.concentrate_mass_flow,
             'tail_mass': y_meas.tailings_mass_flow,
             'mass_pull_pct': y_meas.mass_pull_percent,
             'fe_recovery_percent': y_meas.fe_recovery_percent,
         })
-        # ===> КІНЕЦЬ ЗМІНИ <===
         
         u_prev = u_cur
 
     if progress_callback:
         progress_callback(T_sim, T_sim, "Симуляція завершена")
         
+    # Виклик оцінки EKF (доданий)
+    ekf_metrics = evaluate_ekf_performance(
+        np.vstack(x_true_hist),
+        np.vstack(x_hat_hist),
+        np.stack(P_hist),
+        np.vstack(innov_hist),
+        np.stack(R_hist)
+    )
+    
+    print(ekf_metrics)
+    
     return pd.DataFrame(records)
 
 
@@ -377,8 +400,8 @@ if __name__ == '__main__':
     res, mets = simulate_mpc(
         hist_df, 
         progress_callback=my_progress, 
-        N_data=1000, 
-        control_pts=100,
+        N_data=500, 
+        control_pts=10,
         seed=42,
         
         train_size = 0.7,
@@ -387,7 +410,7 @@ if __name__ == '__main__':
 
         noise_level='low',
         model_type = 'krr',
-        kernel='linear', 
+        kernel='rbf', 
         find_optimal_params=True,
         use_soft_constraints=True,
 
@@ -405,8 +428,8 @@ if __name__ == '__main__':
         y_max_mass = 60.0
     )
     
-    print("\nРезультати симуляції (останні 5 кроків):")
-    print(res.tail())
-    print("\nФінальні метрики:")
-    print(mets)
+    # print("\nРезультати симуляції (останні 5 кроків):")
+    # print(res.tail())
+    # print("\nФінальні метрики:")
+    # print(mets)
     res.to_parquet('mpc_simulation_results.parquet')
