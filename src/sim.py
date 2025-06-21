@@ -198,24 +198,21 @@ def initialize_ekf(
     
     x0_aug = np.hstack([hist0_unscaled.flatten(), np.zeros(n_dist)])
     
-    P0 = np.eye(n_phys + n_dist) * 1e-6 #1e-3
-    P0[n_phys:, n_phys:] *= 1000
+    P0 = np.eye(n_phys + n_dist) * 1e-4
+    P0[n_phys:, n_phys:] *= 1 
 
-    Q_phys = np.eye(n_phys) * 0.285
-    Q_dist = np.eye(n_dist) * 1e-5
+    Q_phys = np.eye(n_phys) * 1e-3
+    Q_dist = np.eye(n_dist) * 1e-3 
     Q = np.block([[Q_phys, np.zeros((n_phys, n_dist))], [np.zeros((n_dist, n_phys)), Q_dist]])
     
-    # R = np.diag(np.var(Y_train_scaled, axis=0)) * 0.001
-    R = np.diag(np.var(Y_train_scaled, axis=0)) * 0.01
+    R = np.diag(np.var(Y_train_scaled, axis=0)) * 0.05
     
     return ExtendedKalmanFilter(
         mpc.model, x_scaler, y_scaler, x0_aug, P0, Q, R, lag,
-        beta_R=params.get('beta_R', 0.5), # .get для зворотної сумісності
-        q_adaptive_enabled=params.get('q_adaptive_enableded', True),
-        q_alpha=params.get('q_alpha', 0.985),
-        # q_nis_threshold=params.get('q_nis_threshold', 1.5)
-        q_nis_threshold=params.get('q_nis_threshold', 2)
-        
+        beta_R=params.get('beta_R', 0.0), # .get для зворотної сумісності
+        q_adaptive_enabled=params.get('q_adaptive_enableded', False),
+        q_alpha=params.get('q_alpha', 0.99),
+        q_nis_threshold=params.get('q_nis_threshold', 1.5)        
     )
 
 # =============================================================================
@@ -375,12 +372,12 @@ def simulate_mpc(
     results_df = run_simulation_loop(true_gen, mpc, ekf, df_true, params, progress_callback)
     
     # 4. Аналіз результатів
-    print("\nАналіз результатів симуляції:")
+    # print("\nАналіз результатів симуляції:")
     # analize_errors(results_df, ref_fe, ref_mass)
     # ---- MPC ----  
-    u_applied = results_df['solid_feed_percent'].values
-    d_all_test = df_true.iloc[test_idx_start:][['feed_fe_percent','ore_mass_flow']].values
-    plot_control_and_disturbances(u_applied, d_all_test[1:1+len(u_applied)])
+    # u_applied = results_df['solid_feed_percent'].values
+    # d_all_test = df_true.iloc[test_idx_start:][['feed_fe_percent','ore_mass_flow']].values
+    # plot_control_and_disturbances(u_applied, d_all_test[1:1+len(u_applied)])
     # ----
     # plot_mpc_diagnostics(results_df, w_fe, w_mass, λ_obj)
     
@@ -388,7 +385,7 @@ def simulate_mpc(
     metrics['avg_iron_mass'] = final_avg_iron_mass
     # print(f"Середня маса заліза в концентраті: {final_avg_iron_mass:.2f} т/год")
     
-    print("=" * 50)
+    # print("=" * 50)
     return results_df, metrics
 
 
@@ -411,8 +408,8 @@ if __name__ == '__main__':
     res, mets = simulate_mpc(
         hist_df, 
         progress_callback=my_progress, 
-        N_data=2000, 
-        control_pts=200,
+        N_data=1000, 
+        control_pts=100,
         seed=42,
         
         train_size = 0.7,
