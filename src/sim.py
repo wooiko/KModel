@@ -209,8 +209,8 @@ def initialize_ekf(
     
     return ExtendedKalmanFilter(
         mpc.model, x_scaler, y_scaler, x0_aug, P0, Q, R, lag,
-        beta_R=params.get('beta_R', 0.0), # .get для зворотної сумісності
-        q_adaptive_enabled=params.get('q_adaptive_enableded', False),
+        beta_R=params.get('beta_R', 0.3), # .get для зворотної сумісності
+        q_adaptive_enabled=params.get('q_adaptive_enabled', False),
         q_alpha=params.get('q_alpha', 0.995),
         q_nis_threshold=params.get('q_nis_threshold', 1.5)        
     )

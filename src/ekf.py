@@ -133,7 +133,8 @@ class ExtendedKalmanFilter:
 
         # ---- 5. Обчислюємо коваріацію інновації S_k = H_k * P_k|k-1 * H_k^T + R
         # beta = 0.5 
-        self.R = self._R_initial + self.beta_R * np.diag(np.abs(y_tilde) + 1e-6) 
+        # self.R = self._R_initial + self.beta_R * np.diag(np.abs(y_tilde) + 1e-6)
+        self.R = self._R_initial + self.beta_R * np.diag(y_tilde**2 + 1e-6)
     
         S_k = H_k @ self.P @ H_k.T + self.R
 
