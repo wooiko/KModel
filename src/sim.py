@@ -198,11 +198,11 @@ def initialize_ekf(
     
     x0_aug = np.hstack([hist0_unscaled.flatten(), np.zeros(n_dist)])
     
-    P0 = np.eye(n_phys + n_dist) * 1e-4
+    P0 = np.eye(n_phys + n_dist) * 1e-3
     P0[n_phys:, n_phys:] *= 1 
 
-    Q_phys = np.eye(n_phys) * 1e-3
-    Q_dist = np.eye(n_dist) * 1e-3 
+    Q_phys = np.eye(n_phys) * 1e-2
+    Q_dist = np.eye(n_dist) * 1e-2 
     Q = np.block([[Q_phys, np.zeros((n_phys, n_dist))], [np.zeros((n_dist, n_phys)), Q_dist]])
     
     R = np.diag(np.var(Y_train_scaled, axis=0)) * 0.05
@@ -211,7 +211,7 @@ def initialize_ekf(
         mpc.model, x_scaler, y_scaler, x0_aug, P0, Q, R, lag,
         beta_R=params.get('beta_R', 0.0), # .get для зворотної сумісності
         q_adaptive_enabled=params.get('q_adaptive_enableded', False),
-        q_alpha=params.get('q_alpha', 0.99),
+        q_alpha=params.get('q_alpha', 0.995),
         q_nis_threshold=params.get('q_nis_threshold', 1.5)        
     )
 
@@ -228,11 +228,11 @@ def run_simulation_loop(
     progress_callback: Callable
 ) -> pd.DataFrame:
     """
-    Виконує основний замкнений цикл симуляції MPC.
+    Виконує основний замкнений цикл симуляції MPC з виправленою логікою передачі даних.
     """
-    print("Крок 5: Запуск основного циклу симуляції...")
+    print("Крок 5: Запуск основного циклу симуляції (виправлена версія)...")
     
-    # Визначення початкових умов для тестової вибірки
+    # --- Початкова ініціалізація ---
     n_total = len(df_true) - params['lag'] - 1
     n_train = int(params['train_size'] * n_total)
     n_val = int(params['val_size'] * n_total)
@@ -240,64 +240,64 @@ def run_simulation_loop(
     
     hist0_unscaled = df_true[['feed_fe_percent', 'ore_mass_flow', 'solid_feed_percent']].iloc[test_idx_start - (params['lag'] + 1): test_idx_start].values
     
-    # Ініціалізація станів MPC, EKF та симулятора
     mpc.reset_history(hist0_unscaled)
     true_gen.reset_state(hist0_unscaled)
     
-    # Налаштування змінних для циклу
     df_run = df_true.iloc[test_idx_start:]
     d_all = df_run[['feed_fe_percent', 'ore_mass_flow']].values
     T_sim = len(df_run) - (params['lag'] + 1)
     
     records = []
     u_prev = float(hist0_unscaled[-1, 2])
-    d_filtered_state = d_all[0, :].copy()
-
-    # Ініціалізація списків для зберігання даних
-    x_true_hist = []  # Істинні стани з генератора
-    x_hat_hist = []   # Оцінки EKF
-    P_hist = []       # Матриці коваріацій
-    innov_hist = []   # Інновації
-    R_hist = []       # Вимірювальна коваріація
+    
+    # --- Ініціалізація списків для зберігання даних ---
+    y_true_hist = []
+    x_hat_hist = []
+    P_hist = []
+    innov_hist = []
+    R_hist = []
 
     for t in range(T_sim):
         if progress_callback:
             progress_callback(t, T_sim, f"Крок симуляції {t+1}/{T_sim}")
 
         # 1. Прогноз EKF
+        # Прогнозуємо стан на момент t, використовуючи дані з t-1
         ekf.predict(u_prev, d_all[t, :])
         
-        # 2. Оцінка стану та збурень
+        # 2. Оновлення стану MPC на основі прогнозу EKF
+        # MPC використовує найкращу доступну оцінку для розрахунку керування
         x_est_phys_unscaled = ekf.x_hat[:ekf.n_phys].reshape(params['lag'] + 1, 3)
         mpc.reset_history(x_est_phys_unscaled)
         mpc.d_hat = ekf.x_hat[ekf.n_phys:]
 
-        # Запис істинного стану та оцінки EKF
-        x_true_hist.append(np.array(d_all[t + 1]))  # Істинні значення (після зсуву)
-        x_hat_hist.append(ekf.x_hat.copy())  # Оцінка EKF
-        P_hist.append(ekf.P.copy())  # Коваріації
-        # innov_hist.append(ekf.last_innovation.copy())  # Інновації
-        if ekf.last_innovation is not None:
-            innov_hist.append(ekf.last_innovation.copy())  # Інновації
-        else:
-            innov_hist.append(np.zeros(ekf.n_dist) )  # Або інше значення за замовчуванням        
-        R_hist.append(ekf.R.copy())  # Вимірювальна коваріація
-
-        # 3. Розрахунок керуючої дії
-        d_filtered_state = 0.1 * d_all[t + 1, :] + 0.9 * d_filtered_state
-        d_seq = np.repeat(d_filtered_state[None, :], params['Np'], axis=0)
+        # 3. Розрахунок керуючої дії MPC
+        # MPC прогнозує майбутні збурення, щоб знайти оптимальне керування u_cur
+        d_seq = np.repeat(d_all[t+1:t+2, :], params['Np'], axis=0) # Простіший прогноз збурень
         u_seq = mpc.optimize(d_seq, u_prev)
         u_cur = u_prev if u_seq is None else float(u_seq[0])
 
         # 4. Крок симуляції реального процесу
-        feed_fe_next, ore_flow_next = d_all[t + 1]
-        y_full = true_gen.step(feed_fe_next, ore_flow_next, u_cur)
+        # "Реальний світ" реагує на керування u_cur та збурення d_all[t]
+        # ▼▼▼ ВИПРАВЛЕННЯ: Використовуємо збурення з поточного кроку t ▼▼▼
+        feed_fe_cur, ore_flow_cur = d_all[t, :]
+        y_full = true_gen.step(feed_fe_cur, ore_flow_cur, u_cur)
         
-        # 5. Корекція EKF
+        # 5. Корекція EKF на основі реального вимірювання
         y_meas_unscaled = y_full[['concentrate_fe_percent', 'concentrate_mass_flow']].values.flatten()
         ekf.update(y_meas_unscaled)
 
-        # Збереження результатів
+        # Запис даних для оцінки ПІСЛЯ кроку корекції
+        y_true_hist.append(y_meas_unscaled)
+        x_hat_hist.append(ekf.x_hat.copy()) 
+        P_hist.append(ekf.P.copy())
+        R_hist.append(ekf.R.copy())
+        if ekf.last_innovation is not None:
+            innov_hist.append(ekf.last_innovation.copy())
+        else:
+            innov_hist.append(np.zeros(ekf.n_dist))
+
+        # Збереження результатів для візуалізації
         y_meas = y_full.iloc[0]
         records.append({
             'feed_fe_percent': y_meas.feed_fe_percent,
@@ -316,19 +316,19 @@ def run_simulation_loop(
     if progress_callback:
         progress_callback(T_sim, T_sim, "Симуляція завершена")
         
-    # Виклик оцінки EKF (доданий)
+    # Оцінка ефективності EKF з коректними даними
     ekf_metrics = evaluate_ekf_performance(
-        np.vstack(x_true_hist),
+        np.vstack(y_true_hist),
         np.vstack(x_hat_hist),
         np.stack(P_hist),
         np.vstack(innov_hist),
         np.stack(R_hist)
     )
     
+    print("===== EKF PERFORMANCE (Corrected Evaluation) =====")
     print(ekf_metrics)
     
     return pd.DataFrame(records)
-
 
 # =============================================================================
 # === ГОЛОВНА ФУНКЦІЯ-ОРКЕСТРАТОР ===
@@ -411,6 +411,8 @@ if __name__ == '__main__':
         N_data=1000, 
         control_pts=100,
         seed=42,
+        
+        plant_model_type = 'rf',
         
         train_size = 0.7,
         val_size   = 0.15,
