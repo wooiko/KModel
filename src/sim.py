@@ -201,15 +201,15 @@ def initialize_ekf(
     P0 = np.eye(n_phys + n_dist) * 1e-3
     P0[n_phys:, n_phys:] *= 1 
 
-    Q_phys = np.eye(n_phys) * 1e-2
+    Q_phys = np.eye(n_phys) * 350
     Q_dist = np.eye(n_dist) * 1e-2 
     Q = np.block([[Q_phys, np.zeros((n_phys, n_dist))], [np.zeros((n_dist, n_phys)), Q_dist]])
     
-    R = np.diag(np.var(Y_train_scaled, axis=0)) * 0.05
+    R = np.diag(np.var(Y_train_scaled, axis=0)) * 8500
     
     return ExtendedKalmanFilter(
         mpc.model, x_scaler, y_scaler, x0_aug, P0, Q, R, lag,
-        beta_R=params.get('beta_R', 0.3), # .get для зворотної сумісності
+        beta_R=params.get('beta_R', 0.1), # .get для зворотної сумісності
         q_adaptive_enabled=params.get('q_adaptive_enabled', False),
         q_alpha=params.get('q_alpha', 0.995),
         q_nis_threshold=params.get('q_nis_threshold', 1.5)        
@@ -375,11 +375,11 @@ def simulate_mpc(
     # print("\nАналіз результатів симуляції:")
     # analize_errors(results_df, ref_fe, ref_mass)
     # ---- MPC ----  
-    # u_applied = results_df['solid_feed_percent'].values
-    # d_all_test = df_true.iloc[test_idx_start:][['feed_fe_percent','ore_mass_flow']].values
-    # plot_control_and_disturbances(u_applied, d_all_test[1:1+len(u_applied)])
+    u_applied = results_df['solid_feed_percent'].values
+    d_all_test = df_true.iloc[test_idx_start:][['feed_fe_percent','ore_mass_flow']].values
+    plot_control_and_disturbances(u_applied, d_all_test[1:1+len(u_applied)])
     # ----
-    # plot_mpc_diagnostics(results_df, w_fe, w_mass, λ_obj)
+    plot_mpc_diagnostics(results_df, w_fe, w_mass, λ_obj)
     
     final_avg_iron_mass = (results_df.conc_fe * results_df.conc_mass / 100).mean()
     metrics['avg_iron_mass'] = final_avg_iron_mass
@@ -405,37 +405,42 @@ if __name__ == '__main__':
         exit()
     
     # Запускаємо симуляцію з оновленими, більш стабільними параметрами
+    # Запускаємо симуляцію з оновленими, більш стабільними параметрами
     res, mets = simulate_mpc(
         hist_df, 
         progress_callback=my_progress, 
-        N_data=1000, 
-        control_pts=100,
+        N_data=500, 
+        control_pts=500,
         seed=42,
         
-        plant_model_type = 'rf',
+        plant_model_type='rf',
         
-        train_size = 0.7,
-        val_size   = 0.15,
-        test_size  = 0.15,
-
+        train_size=0.7,
+        val_size=0.15,
+        test_size=0.15,
+    
         noise_level='low',
-        model_type = 'krr',
+        model_type='krr',
         kernel='rbf', 
         find_optimal_params=True,
         use_soft_constraints=True,
-
-        # 1. Збільшуємо вагу регіону довіри (найважливіша зміна)
-        rho_trust = 50.0,
-
-        # 2. Збалансовуємо ваги цілі для масштабованих даних
-        w_fe = 1.0,
-        w_mass = 1.0,
-
-        # 3. Задаємо уставки та м'які обмеження
-        ref_fe = 54.0,
-        ref_mass = 58.2,
-        y_max_fe = 55.0,
-        y_max_mass = 60.0
+    
+        # Основні вагові параметри MPC
+        # rho_trust=50.0,           # вага довіри до моделі
+        # λ_obj=0.5,                # дасть rho_delta_u = 0.5 * 100 = 50
+        # rho_y=200.0,              # штраф за відхилення виходу
+        Nc=8,
+        Np=10,
+        # жорсткий горизонт управління
+        # delta_u_max=2.0,          # макс. крок зміни керування
+    
+        # Цільові параметри/ваги
+        w_fe=1.0,
+        w_mass=1.0,
+        ref_fe=54.0,
+        ref_mass=58.2,
+        y_max_fe=55.0,
+        y_max_mass=60.0
     )
     
     # print("\nРезультати симуляції (останні 5 кроків):")
