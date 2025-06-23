@@ -1,3 +1,5 @@
+# sim.py
+
 import numpy as np
 import pandas as pd
 from typing import Callable, Dict, Any, Tuple
@@ -194,18 +196,19 @@ def initialize_ekf(
     """
     print("Крок 4: Ініціалізація фільтра Калмана (EKF)...")
     x_scaler, y_scaler = scalers
-    n_phys, n_dist = (lag + 1) * 3, 2
+    # n_phys, n_dist = (lag + 1) * 3, 2
+    n_phys, n_dist = (lag + 1) * 2, 2
     
     x0_aug = np.hstack([hist0_unscaled.flatten(), np.zeros(n_dist)])
     
-    P0 = np.eye(n_phys + n_dist) * 1e-3
+    P0 = np.eye(n_phys + n_dist) * 5#1e-3
     P0[n_phys:, n_phys:] *= 1 
 
-    Q_phys = np.eye(n_phys) * 350
-    Q_dist = np.eye(n_dist) * 1e-2 
+    Q_phys = np.eye(n_phys) * 10#350
+    Q_dist = np.eye(n_dist) * 0.5#1e-2 
     Q = np.block([[Q_phys, np.zeros((n_phys, n_dist))], [np.zeros((n_dist, n_phys)), Q_dist]])
     
-    R = np.diag(np.var(Y_train_scaled, axis=0)) * 8500
+    R = np.diag(np.var(Y_train_scaled, axis=0)) * 3000#8500
     
     return ExtendedKalmanFilter(
         mpc.model, x_scaler, y_scaler, x0_aug, P0, Q, R, lag,
@@ -379,10 +382,10 @@ def simulate_mpc(
     d_all_test = df_true.iloc[test_idx_start:][['feed_fe_percent','ore_mass_flow']].values
     plot_control_and_disturbances(u_applied, d_all_test[1:1+len(u_applied)])
     # ----
-    plot_mpc_diagnostics(results_df, w_fe, w_mass, λ_obj)
+    # plot_mpc_diagnostics(results_df, w_fe, w_mass, λ_obj)
     
-    final_avg_iron_mass = (results_df.conc_fe * results_df.conc_mass / 100).mean()
-    metrics['avg_iron_mass'] = final_avg_iron_mass
+    # final_avg_iron_mass = (results_df.conc_fe * results_df.conc_mass / 100).mean()
+    # metrics['avg_iron_mass'] = final_avg_iron_mass
     # print(f"Середня маса заліза в концентраті: {final_avg_iron_mass:.2f} т/год")
     
     # print("=" * 50)
