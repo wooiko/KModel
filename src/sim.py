@@ -13,6 +13,17 @@ from mpc import MPCController
 from utils import (analize_errors, plot_control_and_disturbances, plot_mpc_diagnostics, evaluate_ekf_performance)
 from ekf import ExtendedKalmanFilter
 
+from collections import deque
+
+class MovingAverageFilter:
+    def __init__(self, window_size: int):
+        self.window_size = window_size
+        self.buffer = deque(maxlen=window_size)
+
+    def update(self, value: float) -> float:
+        self.buffer.append(value)
+        return float(np.mean(self.buffer))
+    
 # =============================================================================
 # === БЛОК 1: ПІДГОТОВКА ДАНИХ ТА СКАЛЕРІВ ===
 # =============================================================================
@@ -196,24 +207,23 @@ def initialize_ekf(
     """
     print("Крок 4: Ініціалізація фільтра Калмана (EKF)...")
     x_scaler, y_scaler = scalers
-    # n_phys, n_dist = (lag + 1) * 3, 2
-    n_phys, n_dist = (lag + 1) * 2, 2
+    n_phys, n_dist = (lag + 1) * 3, 2
     
     x0_aug = np.hstack([hist0_unscaled.flatten(), np.zeros(n_dist)])
     
-    P0 = np.eye(n_phys + n_dist) * 5#1e-3
+    P0 = np.eye(n_phys + n_dist) * 1#1e-3
     P0[n_phys:, n_phys:] *= 1 
 
-    Q_phys = np.eye(n_phys) * 10#350
-    Q_dist = np.eye(n_dist) * 0.5#1e-2 
+    Q_phys = np.eye(n_phys) * 350
+    Q_dist = np.eye(n_dist) * 1e-2 
     Q = np.block([[Q_phys, np.zeros((n_phys, n_dist))], [np.zeros((n_dist, n_phys)), Q_dist]])
     
-    R = np.diag(np.var(Y_train_scaled, axis=0)) * 3000#8500
+    R = np.diag(np.var(Y_train_scaled, axis=0)) * 6200
     
     return ExtendedKalmanFilter(
         mpc.model, x_scaler, y_scaler, x0_aug, P0, Q, R, lag,
         beta_R=params.get('beta_R', 0.1), # .get для зворотної сумісності
-        q_adaptive_enabled=params.get('q_adaptive_enabled', False),
+        q_adaptive_enabled=params.get('q_adaptive_enabled', True),
         q_alpha=params.get('q_alpha', 0.995),
         q_nis_threshold=params.get('q_nis_threshold', 1.5)        
     )
@@ -222,7 +232,7 @@ def initialize_ekf(
 # === БЛОК 3: ОСНОВНИЙ ЦИКЛ СИМУЛЯЦІЇ ===
 # =============================================================================
 
-def run_simulation_loop(
+def _run_simulation_loop(
     true_gen: StatefulDataGenerator,
     mpc: MPCController,
     ekf: ExtendedKalmanFilter,
@@ -333,6 +343,124 @@ def run_simulation_loop(
     
     return pd.DataFrame(records)
 
+def run_simulation_loop(
+    true_gen: StatefulDataGenerator,
+    mpc: MPCController,
+    ekf: ExtendedKalmanFilter,
+    df_true: pd.DataFrame,
+    params: Dict[str, Any],
+    progress_callback: Callable
+) -> pd.DataFrame:
+    """
+    Виконує основний замкнений цикл симуляції MPC з виправленою логікою передачі даних.
+    ДОДАНА ковзна фільтрація збурень на вході у EKF!
+    """
+    print("Крок 5: Запуск основного циклу симуляції (виправлена версія)...")
+    
+    # --- Початкова ініціалізація ---
+    n_total = len(df_true) - params['lag'] - 1
+    n_train = int(params['train_size'] * n_total)
+    n_val = int(params['val_size'] * n_total)
+    test_idx_start = params['lag'] + 1 + n_train + n_val
+
+    hist0_unscaled = df_true[['feed_fe_percent', 'ore_mass_flow', 'solid_feed_percent']].iloc[
+        test_idx_start - (params['lag'] + 1): test_idx_start].values
+
+    mpc.reset_history(hist0_unscaled)
+    true_gen.reset_state(hist0_unscaled)
+
+    df_run = df_true.iloc[test_idx_start:]
+    d_all = df_run[['feed_fe_percent', 'ore_mass_flow']].values
+    T_sim = len(df_run) - (params['lag'] + 1)
+
+    records = []
+    u_prev = float(hist0_unscaled[-1, 2])
+
+    # --- Ініціалізація списків для зберігання даних ---
+    y_true_hist = []
+    x_hat_hist = []
+    P_hist = []
+    innov_hist = []
+    R_hist = []
+
+    # --- ДОДАНО: Ініціалізація ковзних фільтрів на обидва збурення ---
+    window_size = 4
+    filt_feed = MovingAverageFilter(window_size)
+    filt_ore = MovingAverageFilter(window_size)
+
+    for t in range(T_sim):
+        if progress_callback:
+            progress_callback(t, T_sim, f"Крок симуляції {t+1}/{T_sim}")
+
+        # Поточні "сирі" збурення
+        feed_fe_raw, ore_flow_raw = d_all[t, :]
+
+        # === ФІЛЬТРУВАННЯ ===
+        feed_fe_filt = filt_feed.update(feed_fe_raw)
+        ore_flow_filt = filt_ore.update(ore_flow_raw)
+        d_filt = np.array([feed_fe_filt, ore_flow_filt])
+
+        # 1. Прогноз EKF: Використовуємо відфільтровані збурення!
+        ekf.predict(u_prev, d_filt)
+        
+        # 2. Оновлення стану MPC на основі прогнозу EKF
+        x_est_phys_unscaled = ekf.x_hat[:ekf.n_phys].reshape(params['lag'] + 1, 3)
+        mpc.reset_history(x_est_phys_unscaled)
+        mpc.d_hat = ekf.x_hat[ekf.n_phys:]
+
+        # 3. Розрахунок керуючої дії MPC
+        d_seq = np.repeat(d_filt.reshape(1, -1), params['Np'], axis=0) # Повторимо фільтроване значення для горизонту
+        u_seq = mpc.optimize(d_seq, u_prev)
+        u_cur = u_prev if u_seq is None else float(u_seq[0])
+
+        # 4. Крок симуляції реального процесу: подаємо СИРІ збурення
+        y_full = true_gen.step(feed_fe_raw, ore_flow_raw, u_cur)
+        
+        # 5. Корекція EKF на основі реального вимірювання
+        y_meas_unscaled = y_full[['concentrate_fe_percent', 'concentrate_mass_flow']].values.flatten()
+        ekf.update(y_meas_unscaled)
+
+        # Запис даних для оцінки ПІСЛЯ кроку корекції
+        y_true_hist.append(y_meas_unscaled)
+        x_hat_hist.append(ekf.x_hat.copy())
+        P_hist.append(ekf.P.copy())
+        R_hist.append(ekf.R.copy())
+        if ekf.last_innovation is not None:
+            innov_hist.append(ekf.last_innovation.copy())
+        else:
+            innov_hist.append(np.zeros(ekf.n_dist))
+
+        # Збереження результатів для візуалізації
+        y_meas = y_full.iloc[0]
+        records.append({
+            'feed_fe_percent': y_meas.feed_fe_percent,
+            'ore_mass_flow': y_meas.ore_mass_flow,
+            'solid_feed_percent': u_cur,
+            'conc_fe': y_meas.concentrate_fe_percent,
+            'tail_fe': y_meas.tailings_fe_percent,
+            'conc_mass': y_meas.concentrate_mass_flow,
+            'tail_mass': y_meas.tailings_mass_flow,
+            'mass_pull_pct': y_meas.mass_pull_percent,
+            'fe_recovery_percent': y_meas.fe_recovery_percent,
+        })
+        u_prev = u_cur
+
+    if progress_callback:
+        progress_callback(T_sim, T_sim, "Симуляція завершена")
+        
+    # Оцінка ефективності EKF з коректними даними
+    ekf_metrics = evaluate_ekf_performance(
+        np.vstack(y_true_hist),
+        np.vstack(x_hat_hist),
+        np.stack(P_hist),
+        np.vstack(innov_hist),
+        np.stack(R_hist)
+    )
+    
+    print("===== EKF PERFORMANCE (Corrected Evaluation) =====")
+    print(ekf_metrics)
+    
+    return pd.DataFrame(records)
 # =============================================================================
 # === ГОЛОВНА ФУНКЦІЯ-ОРКЕСТРАТОР ===
 # =============================================================================
