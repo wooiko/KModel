@@ -49,7 +49,8 @@ def prepare_simulation_data(
         time_step_s=5.0,
         time_constant_s=8.0,
         dead_time_s=20.0,
-        true_model_type=params['plant_model_type']
+        true_model_type=params['plant_model_type'],
+        seed=params['seed']
     )
     
     df_true = true_gen.generate(
@@ -279,6 +280,8 @@ def run_simulation_loop(
     filt_feed = MovingAverageFilter(window_size)
     filt_ore = MovingAverageFilter(window_size)
 
+    retrain_cooldown_timer = 0 # <<< ДОДАНО: Таймер охолодження
+
     # --- НОВИЙ БЛОК: Ініціалізація буферів для перенавчання ---
     if params['enable_retraining']:
         print(f"-> Динамічне перенавчання УВІМКНЕНО. Розмір вікна: {params['retrain_window_size']}, Період перевірки: {params['retrain_period']}")
@@ -319,6 +322,11 @@ def run_simulation_loop(
         y_meas_unscaled = y_full[['concentrate_fe_percent', 'concentrate_mass_flow']].values.flatten()
         ekf.update(y_meas_unscaled)
         
+        # <<< ДОДАНО: Зменшуємо таймер на кожному кроці
+        if retrain_cooldown_timer > 0:
+            retrain_cooldown_timer -= 1
+
+        
         # 6. --- НОВИЙ БЛОК: Збір даних та логіка перенавчання ---
         if params['enable_retraining']:
             # a) Збираємо новий семпл даних
@@ -341,8 +349,11 @@ def run_simulation_loop(
                 innovation_monitor.append(innov_norm)
 
             # c) Перевіряємо тригер перенавчання
-            # Перевіряємо кожні `retrain_period` кроків, і тільки якщо монітор заповнений
-            if t > 0 and t % params['retrain_period'] == 0 and len(innovation_monitor) == params['retrain_period']:
+            if (t > 0 and 
+                t % params['retrain_period'] == 0 and 
+                len(innovation_monitor) == params['retrain_period'] and 
+                retrain_cooldown_timer == 0): # <<< ДОДАНО: Перевірка таймера
+
                 avg_innovation = np.mean(list(innovation_monitor))
                 
                 if avg_innovation > params['retrain_innov_threshold']:
@@ -358,8 +369,9 @@ def run_simulation_loop(
                     mpc.fit(X_retrain, Y_retrain)
                     print("--> Перенавчання моделі завершено.\n")
 
-                    # Очищуємо монітор, щоб уникнути повторного спрацювання відразу
+                    # Очищуємо монітор та ВСТАНОВЛЮЄМО ТАЙМЕР ОХОЛОДЖЕННЯ
                     innovation_monitor.clear()
+                    retrain_cooldown_timer = params['retrain_period'] * 2 # <<< ДОДАНО
 
         # Запис даних для оцінки ПІСЛЯ кроку корекції
         y_true_hist.append(y_meas_unscaled)
@@ -390,38 +402,59 @@ def run_simulation_loop(
         progress_callback(T_sim, T_sim, "Симуляція завершена")
         
     # Оцінка ефективності EKF з коректними даними
-    ekf_metrics = evaluate_ekf_performance(
-        np.vstack(y_true_hist),
-        np.vstack(x_hat_hist),
-        np.stack(P_hist),
-        np.vstack(innov_hist),
-        np.stack(R_hist)
-    )
+    # ekf_metrics = evaluate_ekf_performance(
+    #     np.vstack(y_true_hist),
+    #     np.vstack(x_hat_hist),
+    #     np.stack(P_hist),
+    #     np.vstack(innov_hist),
+    #     np.stack(R_hist)
+    # )
     
-    print("===== EKF PERFORMANCE (Corrected Evaluation) =====")
-    print(ekf_metrics)
+    # print("===== EKF PERFORMANCE (Corrected Evaluation) =====")
+    # print(ekf_metrics)
     
     return pd.DataFrame(records)
 # =============================================================================
 # === ГОЛОВНА ФУНКЦІЯ-ОРКЕСТРАТОР ===
 # =============================================================================
 
-def simulate_mpc(
-    reference_df: pd.DataFrame,
-    N_data: int = 5000, control_pts: int = 1000, lag: int = 2, Np: int = 6, Nc: int = 4,
-    n_neighbors: int = 5, seed: int = 0, noise_level: str = 'none', model_type: str = 'krr',
-    kernel: str = 'rbf', find_optimal_params: bool = True, λ_obj: float = 0.1, K_I: float = 0.01,
-    w_fe: float = 7.0, w_mass: float = 1.0, ref_fe: float = 53.5, ref_mass: float = 57.0,
-    train_size: float = 0.7, val_size: float = 0.15, test_size: float = 0.15,
-    u_min: float = 20.0, u_max: float = 40.0, delta_u_max: float = 1.0,
-    use_disturbance_estimator: bool = True, y_max_fe: float = 54.5, y_max_mass: float = 58.0,
-    rho_trust: float = 0.1, use_soft_constraints: bool = True, plant_model_type: str = 'rf',
-    enable_retraining: bool = True,          # Ввімкнути/вимкнути функціонал перенавчання
-    retrain_period: int = 50,                 # Як часто перевіряти необхідність перенавчання (кожні 50 кроків)
-    retrain_window_size: int = 1000,          # Розмір буфера даних для перенавчання (останні 1000 точок)
-    retrain_innov_threshold: float = 0.3,     # Поріг для середньої нормованої інновації EKF
 
-    progress_callback: Callable[[int, int, str], None] = None
+def simulate_mpc(
+    reference_df: pd.DataFrame,             # DataFrame, що містить референсні дані для генерації даних симуляції.
+    N_data: int = 5000,                     # Загальна кількість точок даних, що генеруються для симуляції.
+    control_pts: int = 1000,                # Кількість точок (кроків) симуляції, на яких відбувається керування MPC.
+    lag: int = 2,                           # Кількість кроків затримки (lag) для моделі, впливає на розмір вектора стану.
+    Np: int = 6,                            # Горизонт прогнозування (Prediction Horizon) MPC. Кількість майбутніх кроків, які модель прогнозує.
+    Nc: int = 4,                            # Горизонт керування (Control Horizon) MPC. Кількість майбутніх змін керування, які MPC розраховує.
+    n_neighbors: int = 5,                   # Кількість сусідів для KNN регресора, якщо використовується (наразі не використовується в `KernelModel`).
+    seed: int = 0,                          # Зерно для генератора випадкових чисел, для відтворюваності симуляції.
+    noise_level: str = 'none',              # Рівень шуму, який додається до вимірювань 'none', 'low', 'medium', 'high'. Визначає відсоток похибки.
+    model_type: str = 'krr',                # Тип моделі, що використовується в MPC: 'krr' (Kernel Ridge Regression) або 'gpr' (Gaussian Process Regressor).
+    kernel: str = 'rbf',                    # Тип ядра для KernelModel ('linear', 'poly', 'rbf').
+    find_optimal_params: bool = True,       # Чи потрібно шукати оптимальні гіперпараметри моделі за допомогою RandomizedSearchCV.
+    λ_obj: float = 0.1,                     # Коефіцієнт ваги для терму згладжування керування (lambda) в цільовій функції MPC.
+    K_I: float = 0.01,                      # Інтегральний коефіцієнт для інтегрального контролера (якщо використовується). Наразі не застосовується явно в MPC.
+    w_fe: float = 7.0,                      # Вага для помилки прогнозування концентрації заліза (Fe) в цільовій функції MPC.
+    w_mass: float = 1.0,                    # Вага для помилки прогнозування масової витрати концентрату в цільовій функції MPC.
+    ref_fe: float = 53.5,                   # Бажане (референсне) значення концентрації заліза (Fe) в концентраті.
+    ref_mass: float = 57.0,                 # Бажане (референсне) значення масової витрати концентрату.
+    train_size: float = 0.7,                # Частка даних, що використовуються для навчання моделі MPC.
+    val_size: float = 0.15,                 # Частка даних, що використовуються для валідації моделі (якщо `find_optimal_params=True`).
+    test_size: float = 0.15,                # Частка даних, що використовуються для тестування моделі (зазвичай не використовується безпосередньо в циклі MPC).
+    u_min: float = 20.0,                    # Мінімальне допустиме значення для керуючої змінної `u` (ore_flow_rate_target).
+    u_max: float = 40.0,                    # Максимальне допустиме значення для керуючої змінної `u` (ore_flow_rate_target).
+    delta_u_max: float = 1.0,               # Максимальне допустиме абсолютне значення зміни керуючої змінної `u` між послідовними кроками.
+    use_disturbance_estimator: bool = True, # Чи використовувати оцінювач збурень (Extended Kalman Filter) в циклі MPC.
+    y_max_fe: float = 54.5,                 # Верхня межа для концентрації заліза (Fe) в концентраті (жорстке або м'яке обмеження).
+    y_max_mass: float = 58.0,               # Верхня межа для масової витрати концентрату (жорстке або м'яке обмеження).
+    rho_trust: float = 0.1,                 # Коефіцієнт штрафу (rho) для терму довіри в цільовій функції MPC, що використовується для регуляризації.
+    use_soft_constraints: bool = True,      # Чи використовувати м'які обмеження для виходів (y) та зміни керування (delta_u).
+    plant_model_type: str = 'rf',           # Тип моделі, що імітує "реальний об'єкт" (plant) для генерації даних: 'rf' (Random Forest) або 'nn' (Neural Network).
+    enable_retraining: bool = True,         # Ввімкнути/вимкнути функціонал перенавчання моделі MPC під час симуляції.
+    retrain_period: int = 50,               # Як часто перевіряти необхідність перенавчання (кожні N кроків).
+    retrain_window_size: int = 1000,        # Розмір буфера даних для перенавчання (використовуються останні `retrain_window_size` точок).
+    retrain_innov_threshold: float = 0.3,   # Поріг для середньої нормованої інновації EKF. Якщо NIS перевищує цей поріг, ініціюється перенавчання.
+    progress_callback: Callable[[int, int, str], None] = None # Функція зворотного виклику для відстеження прогресу симуляції. Приймає поточний крок, загальну кількість кроків та повідомлення.
 ):
     """
     Головна функція-оркестратор для запуску симуляції MPC.
@@ -493,14 +526,16 @@ if __name__ == '__main__':
         
         train_size=0.8,
         val_size=0.15,
-        test_size=0.5,
+        test_size=0.05,
     
         noise_level='low',
         model_type='krr',
         kernel='rbf', 
         find_optimal_params=True,
         use_soft_constraints=True,
-    
+        
+        λ_obj=0.3,
+        
         Nc=8,
         Np=12,
         # жорсткий горизонт управління

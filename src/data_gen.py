@@ -360,23 +360,28 @@ class DataGenerator:
         test_frac: float = 0.15,
         seed: int = 42
     ):
-        random.seed(seed)
-    
+        """
+        Генерує конфігураційний словник аномалій для різних сегментів даних.
+        Використовує ізольований генератор випадкових чисел для відтворюваності.
+        """
+        # Створюємо локальний, ізольований генератор для уникнення побічних ефектів
+        rng = np.random.default_rng(seed)
+
         # Нормалізуємо частки, щоб сума була 1
         total_frac = train_frac + val_frac + test_frac
         train_frac /= total_frac
         val_frac /= total_frac
         test_frac /= total_frac
-    
+
         train_end = int(train_frac * N_data)
         val_end = train_end + int(val_frac * N_data)
-    
+
         segments = {
             'train': (0, train_end),
             'val': (train_end, val_end),
             'test': (val_end, N_data)
         }
-    
+
         params = [
             'ore_mass_flow',
             'feed_fe_percent',
@@ -386,7 +391,7 @@ class DataGenerator:
             'concentrate_mass_flow',
             'tailings_mass_flow'
         ]
-    
+
         anomaly_types = ['spike', 'drift', 'drop', 'freeze']
         durations_map = {
             'spike': 1,
@@ -394,30 +399,32 @@ class DataGenerator:
             'drop': 30,
             'freeze': 20
         }
-    
+
         config = {}
-    
+
         for param in params:
             config[param] = []
             for seg_name, (seg_start, seg_end) in segments.items():
                 seg_len = seg_end - seg_start
                 if seg_len <= 0:
                     continue
-    
-                a_type = random.choice(anomaly_types)
+
+                # Використовуємо локальний генератор rng
+                a_type = rng.choice(anomaly_types)
                 duration = durations_map[a_type]
                 if duration > seg_len:
                     duration = seg_len  # обрізаємо до довжини сегменту
                     if duration == 0:
                         continue
-    
+
                 start_low = seg_start
                 start_high = seg_end - duration
                 if start_high < start_low:
                     start_high = start_low
-    
-                start = random.randint(start_low, start_high)
-    
+
+                # Використовуємо локальний генератор rng
+                start = rng.integers(low=start_low, high=start_high, endpoint=True)
+
                 if a_type == 'freeze':
                     anomaly = {
                         'start': start,
@@ -425,8 +432,9 @@ class DataGenerator:
                         'type': a_type
                     }
                 else:
-                    sign = random.choice([1, -1])
-                    magnitude = sign * random.uniform(0.1, 0.3)
+                    # Використовуємо локальний генератор rng
+                    sign = rng.choice([1, -1])
+                    magnitude = sign * rng.uniform(0.1, 0.3)
                     anomaly = {
                         'start': start,
                         'duration': duration,
@@ -434,7 +442,7 @@ class DataGenerator:
                         'type': a_type
                     }
                 config[param].append(anomaly)
-    
+
         return config
     
 class StatefulPlantMixin:

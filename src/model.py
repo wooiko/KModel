@@ -3,7 +3,7 @@
 import numpy as np
 from sklearn.kernel_ridge import KernelRidge
 from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import RBF, Product, Sum, ConstantKernel as C
+from sklearn.gaussian_process.kernels import RBF, Product, Sum, ConstantKernel as C, WhiteKernel
 from sklearn.model_selection import RandomizedSearchCV # Changed from GridSearchCV
 from scipy.stats import loguniform # For defining distributions in RandomizedSearchCV
 
@@ -41,11 +41,27 @@ class KernelModel:
         # --- Logic for Gaussian Processes (remains unchanged) ---
         if self.model_type == 'gpr':
             n_targets = Y.shape[1]
-            base_kernel = C(1.0, (1e-3, 1e3)) * RBF(1.0, (1e-3, 1e3))
+            
+            # <<< НОВЕ, БІЛЬШ СТАБІЛЬНЕ ЯДРО >>>
+            # 1. RBF з більш жорсткими та реалістичними межами для length_scale.
+            #    Це запобігає тому, щоб ядро ставало занадто "гострим".
+            rbf_kernel = RBF(length_scale=1.0, length_scale_bounds=(0.1, 20.0))
+            
+            # 2. ConstantKernel (C) дозволяє масштабувати вихід.
+            const_kernel = C(1.0, (1e-3, 1e3))
+            
+            # 3. WhiteKernel додає компонент білого шуму. Це КЛЮЧОВИЙ елемент для
+            #    числової стабільності, особливо при роботі з зашумленими даними.
+            white_kernel = WhiteKernel(noise_level=0.1, noise_level_bounds=(1e-5, 1e1))
+
+            # Комбінуємо їх: (Масштаб * RBF) + Шум
+            base_kernel = const_kernel * rbf_kernel + white_kernel
+            
             self.models = []
             for i in range(n_targets):
+                # Збільшуємо кількість перезапусків оптимізатора, щоб знайти кращий розв'язок
                 gpr = GaussianProcessRegressor(
-                    kernel=base_kernel, alpha=self.alpha, normalize_y=True
+                    kernel=base_kernel, alpha=0, normalize_y=True, n_restarts_optimizer=2 
                 )
                 gpr.fit(X, Y[:, i])
                 self.models.append(gpr)
@@ -160,6 +176,26 @@ class KernelModel:
                 y0 = self.predict(X0)
                 b_local = y0 - X0 @ W_local
                 
+                # <<< НОВИЙ ЗАХИСНИЙ БЛОК >>>
+                # Перевіряємо наявність NaN або нескінченних значень
+                if not np.all(np.isfinite(W_local)) or not np.all(np.isfinite(b_local)):
+                    print("ПОПЕРЕДЖЕННЯ: Лінеаризація створила NaN/inf. Повертається безпечне значення.")
+                    # Повертаємо безпечне значення: нульовий градієнт, зсув = поточний прогноз
+                    y0 = self.predict(X0)
+                    return np.zeros_like(W_local), y0.flatten()
+    
+                # Обмежуємо (кліпінг) екстремальні значення, щоб запобігти числовій нестабільності в MPC
+                w_max_abs = 1000.0  # Максимальне абсолютне значення для ваг
+                b_max_abs = 1000.0  # Максимальне абсолютне значення для зсуву
+                
+                if np.max(np.abs(W_local)) > w_max_abs:
+                    print(f"ПОПЕРЕДЖЕННЯ: Екстремальні значення в W_local. Кліпінг до +/-{w_max_abs}.")
+                    W_local = np.clip(W_local, -w_max_abs, w_max_abs)
+                    
+                if np.max(np.abs(b_local)) > b_max_abs:
+                    print(f"ПОПЕРЕДЖЕННЯ: Екстремальні значення в b_local. Кліпінг до +/-{b_max_abs}.")
+                    b_local = np.clip(b_local, -b_max_abs, b_max_abs)  
+                    
                 return W_local, b_local.flatten()
 
             raise NotImplementedError(f"Лінеаризація для KRR з ядром '{self.kernel}' не реалізована.")
