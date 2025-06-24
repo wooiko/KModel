@@ -156,13 +156,26 @@ class ExtendedKalmanFilter:
         if self.q_adaptive_enabled:
             try:
                 S_k_inv = np.linalg.inv(S_k)
-                nis     = y_tilde.T @ S_k_inv @ y_tilde
+                nis = y_tilde.T @ S_k_inv @ y_tilde
                 target = self.n_dist
-                if nis > target * self.q_nis_threshold:
-                    self.q_scale = min(self.q_scale * 1.05, 10.0)
-                else:
-                    self.q_scale = max(self.q_scale * self.q_alpha, 1.0)
+
+                # <<< НОВА, ДВОСТОРОННЯ ЛОГІКА АДАПТАЦІЇ >>>
+                # Визначаємо верхню та нижню межі для "зони нечутливості"
+                upper_bound = target * self.q_nis_threshold # Наприклад, 2.0 * 1.8 = 3.6
+                lower_bound = target / self.q_nis_threshold # Наприклад, 2.0 / 1.8 = 1.11
+
+                if nis > upper_bound:
+                    # NIS занадто великий: модель не встигає, потрібно збільшити Q
+                    self.q_scale = min(self.q_scale * 1.02, 10.0)
+                elif nis < lower_bound:
+                    # NIS занадто малий: фільтр занадто агресивний, можна трохи зменшити Q
+                    # Зменшуємо q_scale значно повільніше, ніж збільшуємо
+                    self.q_scale = max(self.q_scale * 0.99, 0.1) # Дозволяємо Q зменшуватись
+                # Якщо nis знаходиться в межах [lower_bound, upper_bound], q_scale не змінюється,
+                # що робить систему більш стабільною.
+
             except np.linalg.LinAlgError:
+                # У випадку помилки нічого не робимо, залишаючи q_scale як є
                 pass
     
         # ---- 6. Калманове підсилення

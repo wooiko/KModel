@@ -216,18 +216,18 @@ def initialize_ekf(
     P0 = np.eye(n_phys + n_dist) * 1e-2
     P0[n_phys:, n_phys:] *= 1 
 
-    Q_phys = np.eye(n_phys) * 320
-    Q_dist = np.eye(n_dist) * 6e-2 
+    Q_phys = np.eye(n_phys) * 1500#320
+    Q_dist = np.eye(n_dist) * 1#6e-2 
     Q = np.block([[Q_phys, np.zeros((n_phys, n_dist))], [np.zeros((n_dist, n_phys)), Q_dist]])
     
-    R = np.diag(np.var(Y_train_scaled, axis=0)) * 0.3
+    R = np.diag(np.var(Y_train_scaled, axis=0)) * 0.05#0.3
     
     return ExtendedKalmanFilter(
         mpc.model, x_scaler, y_scaler, x0_aug, P0, Q, R, lag,
         beta_R=params.get('beta_R', 0.1), # .get для зворотної сумісності
         q_adaptive_enabled=params.get('q_adaptive_enabled', True),
         q_alpha=params.get('q_alpha', 0.995),
-        q_nis_threshold=params.get('q_nis_threshold', 1.4)        
+        q_nis_threshold=params.get('q_nis_threshold', 1.8)        
     )
 
 # =============================================================================
@@ -431,8 +431,8 @@ if __name__ == '__main__':
     res, mets = simulate_mpc(
         hist_df, 
         progress_callback=my_progress, 
-        N_data=400, 
-        control_pts=40,
+        N_data=1500, 
+        control_pts=150,
         seed=42,
         
         plant_model_type='rf',
