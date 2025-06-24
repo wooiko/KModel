@@ -431,15 +431,15 @@ if __name__ == '__main__':
     res, mets = simulate_mpc(
         hist_df, 
         progress_callback=my_progress, 
-        N_data=1500, 
-        control_pts=150,
+        N_data=2000, 
+        control_pts=200,
         seed=42,
         
         plant_model_type='rf',
         
-        train_size=0.7,
+        train_size=0.8,
         val_size=0.15,
-        test_size=0.15,
+        test_size=0.5,
     
         noise_level='low',
         model_type='krr',
