@@ -9,7 +9,7 @@ class ExtendedKalmanFilter:
                  model: KernelModel,
                  x_scaler: StandardScaler,
                  y_scaler: StandardScaler,
-                 x0: np.ndarray,            # Початковий стан [x_phys_unscaled, d_scaled]
+                 x0: np.ndarray,            # <<< ПЕРЕВІРТЕ ЦЕЙ РЯДОК: Початковий стан [x_phys_unscaled, d_scaled]
                  P0: np.ndarray,            # Початкова коваріація невизначеності
                  Q: np.ndarray,             # Коваріація шуму процесу
                  R: np.ndarray,             # Початкова (мінімальна) коваріація шуму вимірювань для адаптивної R
@@ -101,6 +101,8 @@ class ExtendedKalmanFilter:
         # Застосовуємо адаптивний коефіцієнт до Q
         self.P = self.F @ self.P @ self.F.T + (self.Q * self.q_scale)
         
+# ekf.py (НОВА, ВИПРАВЛЕНА версія методу update)
+
     def update(self, z_k: np.ndarray):
         """
         Крок корекції (update step) EKF.
@@ -111,11 +113,15 @@ class ExtendedKalmanFilter:
         """
         # Розпаковуємо поточний (a priori) стан
         x_phys_unscaled = self.x_hat[:self.n_phys].reshape(1, -1)
-        d_unscaled      = self.x_hat[self.n_phys:]
         
-        # Переводимо збурення у «scaled»-простір лише тут,
-        # перед використанням у вимірювальній моделі
-        d_scaled = self.y_scaler.transform(d_unscaled.reshape(1, -1))[0]
+        # <<< ЗМІНЕНО >>>
+        # Тепер ми отримуємо збурення напряму з вектора стану, оскільки вони ВЖЕ МАСШТАБОВАНІ.
+        d_scaled = self.x_hat[self.n_phys:] 
+        
+        # <<< ВИДАЛЕНО >>> 
+        # Більше не потрібно отримувати d_unscaled та трансформувати його.
+        # d_unscaled      = self.x_hat[self.n_phys:] 
+        # d_scaled = self.y_scaler.transform(d_unscaled.reshape(1, -1))[0]
     
         # ---- 1. Масштабуємо фізичний стан для використання в моделі
         x_phys_scaled = self.x_scaler.transform(x_phys_unscaled)
@@ -130,10 +136,12 @@ class ExtendedKalmanFilter:
             @ W_local_scaled.T                   # ∂scaled-out/∂scaled-in
             @ np.diag(1.0 / self.x_scaler.scale_[:self.n_phys])  # з фізичних-in у scaled-in
         )
+        # Цей Якобіан залишається коректним, оскільки він визначає похідну ∂(y_hat_scaled)/∂(d_scaled), що дорівнює I
         H_k[:, self.n_phys:] = np.eye(self.n_dist)
     
         # ---- 3. Робимо прогноз вимірювання y_hat = h(x_hat_k|k-1)
         y_pred_scaled = self.model.predict(x_phys_scaled)[0]
+        # Цей рядок тепер працює абсолютно коректно
         y_hat_scaled  = y_pred_scaled + d_scaled 
         
         # ---- 4. Обчислюємо інновацію (нев'язку)
@@ -161,6 +169,10 @@ class ExtendedKalmanFilter:
         K_k = self.P @ H_k.T @ np.linalg.inv(S_k)
     
         # ---- 7. Оновлення стану
+        # <<< ПОЯСНЕННЯ >>>
+        # Цей рядок ТЕПЕР ПРАЦЮЄ КОРЕКТНО.
+        # Поправка (K_k @ y_tilde) є сумісною з вектором стану self.x_hat,
+        # оскільки частина поправки для збурень тепер коректно додається до масштабованої оцінки збурень.
         self.x_hat = self.x_hat + K_k @ y_tilde
         
         # ---- 8. Оновлення коваріації
