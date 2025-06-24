@@ -239,16 +239,20 @@ def run_simulation_loop(
     mpc: MPCController,
     ekf: ExtendedKalmanFilter,
     df_true: pd.DataFrame,
+    # >>> НОВІ АРГУМЕНТИ <<<
+    data: Dict[str, np.ndarray], 
+    scalers: Tuple[StandardScaler, StandardScaler],
     params: Dict[str, Any],
+    # >>> КІНЕЦЬ НОВИХ АРГУМЕНТІВ <<<
     progress_callback: Callable
 ) -> pd.DataFrame:
     """
-    Виконує основний замкнений цикл симуляції MPC з виправленою логікою передачі даних.
-    ДОДАНА ковзна фільтрація збурень на вході у EKF!
+    Виконує основний замкнений цикл симуляції MPC з динамічним перенавчанням.
     """
-    print("Крок 5: Запуск основного циклу симуляції (виправлена версія)...")
+    print("Крок 5: Запуск основного циклу симуляції з логікою динамічного перенавчання...")
+    x_scaler, y_scaler = scalers
     
-    # --- Початкова ініціалізація ---
+    # --- Початкова ініціалізація (як і раніше) ---
     n_total = len(df_true) - params['lag'] - 1
     n_train = int(params['train_size'] * n_total)
     n_val = int(params['val_size'] * n_total)
@@ -267,49 +271,95 @@ def run_simulation_loop(
     records = []
     u_prev = float(hist0_unscaled[-1, 2])
 
-    # --- Ініціалізація списків для зберігання даних ---
-    y_true_hist = []
-    x_hat_hist = []
-    P_hist = []
-    innov_hist = []
-    R_hist = []
+    # --- Ініціалізація списків для зберігання даних EKF (як і раніше) ---
+    y_true_hist, x_hat_hist, P_hist, innov_hist, R_hist = [], [], [], [], []
 
-    # --- ДОДАНО: Ініціалізація ковзних фільтрів на обидва збурення ---
+    # --- Фільтрація збурень (як і раніше) ---
     window_size = 4
     filt_feed = MovingAverageFilter(window_size)
     filt_ore = MovingAverageFilter(window_size)
+
+    # --- НОВИЙ БЛОК: Ініціалізація буферів для перенавчання ---
+    if params['enable_retraining']:
+        print(f"-> Динамічне перенавчання УВІМКНЕНО. Розмір вікна: {params['retrain_window_size']}, Період перевірки: {params['retrain_period']}")
+        # Буфер для зберігання (X_scaled, Y_scaled) пар
+        retraining_buffer = deque(maxlen=params['retrain_window_size'])
+        # Заповнюємо буфер початковими тренувальними даними
+        initial_train_data = list(zip(data['X_train_scaled'], data['Y_train_scaled']))
+        retraining_buffer.extend(initial_train_data)
+        
+        # Буфер для моніторингу інновації EKF
+        innovation_monitor = deque(maxlen=params['retrain_period'])
+
 
     for t in range(T_sim):
         if progress_callback:
             progress_callback(t, T_sim, f"Крок симуляції {t+1}/{T_sim}")
 
-        # Поточні "сирі" збурення
+        # ... (код отримання d_filt, прогнозу EKF, оновлення стану MPC, розрахунку u_cur залишається без змін) ...
+        # 1. Прогноз EKF
         feed_fe_raw, ore_flow_raw = d_all[t, :]
-
-        # === ФІЛЬТРУВАННЯ ===
-        feed_fe_filt = filt_feed.update(feed_fe_raw)
-        ore_flow_filt = filt_ore.update(ore_flow_raw)
-        d_filt = np.array([feed_fe_filt, ore_flow_filt])
-
-        # 1. Прогноз EKF: Використовуємо відфільтровані збурення!
+        d_filt = np.array([filt_feed.update(feed_fe_raw), filt_ore.update(ore_flow_raw)])
         ekf.predict(u_prev, d_filt)
         
-        # 2. Оновлення стану MPC на основі прогнозу EKF
+        # 2. Оновлення стану MPC
         x_est_phys_unscaled = ekf.x_hat[:ekf.n_phys].reshape(params['lag'] + 1, 3)
         mpc.reset_history(x_est_phys_unscaled)
         mpc.d_hat = ekf.x_hat[ekf.n_phys:]
 
         # 3. Розрахунок керуючої дії MPC
-        d_seq = np.repeat(d_filt.reshape(1, -1), params['Np'], axis=0) # Повторимо фільтроване значення для горизонту
+        d_seq = np.repeat(d_filt.reshape(1, -1), params['Np'], axis=0)
         u_seq = mpc.optimize(d_seq, u_prev)
         u_cur = u_prev if u_seq is None else float(u_seq[0])
 
-        # 4. Крок симуляції реального процесу: подаємо СИРІ збурення
+        # 4. Крок симуляції реального процесу
         y_full = true_gen.step(feed_fe_raw, ore_flow_raw, u_cur)
         
-        # 5. Корекція EKF на основі реального вимірювання
+        # 5. Корекція EKF
         y_meas_unscaled = y_full[['concentrate_fe_percent', 'concentrate_mass_flow']].values.flatten()
         ekf.update(y_meas_unscaled)
+        
+        # 6. --- НОВИЙ БЛОК: Збір даних та логіка перенавчання ---
+        if params['enable_retraining']:
+            # a) Збираємо новий семпл даних
+            # Вектор X - це поточна історія, яку "бачить" MPC. Вона вже в нескейлованому вигляді.
+            new_x_unscaled = mpc.x_hist.flatten().reshape(1, -1)
+            # Вектор Y - це щойно виміряний вихід
+            new_y_unscaled = y_meas_unscaled.reshape(1, -1)
+
+            # Масштабуємо їх за допомогою ІСНУЮЧИХ скейлерів
+            new_x_scaled = x_scaler.transform(new_x_unscaled)
+            new_y_scaled = y_scaler.transform(new_y_unscaled)
+            
+            # Додаємо в буфер. deque автоматично видалить найстаріший елемент, якщо буфер повний.
+            retraining_buffer.append((new_x_scaled[0], new_y_scaled[0]))
+            
+            # b) Моніторимо якість моделі через інновацію EKF
+            if ekf.last_innovation is not None:
+                # Нормуємо інновацію, щоб зробити поріг більш універсальним
+                innov_norm = np.linalg.norm(ekf.last_innovation) 
+                innovation_monitor.append(innov_norm)
+
+            # c) Перевіряємо тригер перенавчання
+            # Перевіряємо кожні `retrain_period` кроків, і тільки якщо монітор заповнений
+            if t > 0 and t % params['retrain_period'] == 0 and len(innovation_monitor) == params['retrain_period']:
+                avg_innovation = np.mean(list(innovation_monitor))
+                
+                if avg_innovation > params['retrain_innov_threshold']:
+                    print(f"\n---> ТРИГЕР ПЕРЕНАВЧАННЯ на кроці {t}! Середня інновація: {avg_innovation:.4f} > {params['retrain_innov_threshold']:.4f}")
+                    
+                    # Формуємо нові навчальні дані з буфера
+                    retrain_data_list = list(retraining_buffer)
+                    X_retrain = np.array([item[0] for item in retrain_data_list])
+                    Y_retrain = np.array([item[1] for item in retrain_data_list])
+                    
+                    # Запускаємо процес навчання на оновлених даних
+                    print(f"--> Запуск mpc.fit() на {len(X_retrain)} семплах...")
+                    mpc.fit(X_retrain, Y_retrain)
+                    print("--> Перенавчання моделі завершено.\n")
+
+                    # Очищуємо монітор, щоб уникнути повторного спрацювання відразу
+                    innovation_monitor.clear()
 
         # Запис даних для оцінки ПІСЛЯ кроку корекції
         y_true_hist.append(y_meas_unscaled)
@@ -366,6 +416,11 @@ def simulate_mpc(
     u_min: float = 20.0, u_max: float = 40.0, delta_u_max: float = 1.0,
     use_disturbance_estimator: bool = True, y_max_fe: float = 54.5, y_max_mass: float = 58.0,
     rho_trust: float = 0.1, use_soft_constraints: bool = True, plant_model_type: str = 'rf',
+    enable_retraining: bool = True,          # Ввімкнути/вимкнути функціонал перенавчання
+    retrain_period: int = 50,                 # Як часто перевіряти необхідність перенавчання (кожні 50 кроків)
+    retrain_window_size: int = 1000,          # Розмір буфера даних для перенавчання (останні 1000 точок)
+    retrain_innov_threshold: float = 0.3,     # Поріг для середньої нормованої інновації EKF
+
     progress_callback: Callable[[int, int, str], None] = None
 ):
     """
@@ -391,7 +446,7 @@ def simulate_mpc(
     ekf = initialize_ekf(mpc, (x_scaler, y_scaler), hist0_unscaled, data['Y_train_scaled'], lag, params)
 
     # 3. Запуск симуляції
-    results_df = run_simulation_loop(true_gen, mpc, ekf, df_true, params, progress_callback)
+    results_df = run_simulation_loop(true_gen, mpc, ekf, df_true, data, (x_scaler, y_scaler), params, progress_callback) # <<< Передаємо більше даних
     
     # 4. Аналіз результатів
     # print("\nАналіз результатів симуляції:")
@@ -427,7 +482,6 @@ if __name__ == '__main__':
         exit()
     
     # Запускаємо симуляцію з оновленими, більш стабільними параметрами
-    # Запускаємо симуляцію з оновленими, більш стабільними параметрами
     res, mets = simulate_mpc(
         hist_df, 
         progress_callback=my_progress, 
@@ -458,7 +512,13 @@ if __name__ == '__main__':
         ref_fe=54.0,
         ref_mass=58.2,
         y_max_fe=55.0,
-        y_max_mass=60.0
+        y_max_mass=60.0,
+        
+        enable_retraining=True,          # Ввімкнути/вимкнути функціонал перенавчання
+        retrain_period=50,                 # Як часто перевіряти необхідність перенавчання (кожні 50 кроків)
+        retrain_window_size=1000,          # Розмір буфера даних для перенавчання (останні 1000 точок)
+        retrain_innov_threshold=0.3     # Поріг для середньої нормованої інновації EKF
+    
     )
     
     # print("\nРезультати симуляції (останні 5 кроків):")
