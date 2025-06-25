@@ -429,7 +429,7 @@ def simulate_mpc(
     n_neighbors: int = 5,                   # Кількість сусідів для KNN регресора, якщо використовується (наразі не використовується в `KernelModel`).
     seed: int = 0,                          # Зерно для генератора випадкових чисел, для відтворюваності симуляції.
     noise_level: str = 'none',              # Рівень шуму, який додається до вимірювань 'none', 'low', 'medium', 'high'. Визначає відсоток похибки.
-    model_type: str = 'krr',                # Тип моделі, що використовується в MPC: 'krr' (Kernel Ridge Regression) або 'gpr' (Gaussian Process Regressor).
+    model_type: str = 'krr',                # Тип моделі, що використовується в MPC: 'krr' (Kernel Ridge Regression), 'gpr' (Gaussian Process Regressor), 'svr' (Support-Vector Regression).
     kernel: str = 'rbf',                    # Тип ядра для KernelModel ('linear', 'poly', 'rbf').
     find_optimal_params: bool = True,       # Чи потрібно шукати оптимальні гіперпараметри моделі за допомогою RandomizedSearchCV.
     λ_obj: float = 0.1,                     # Коефіцієнт ваги для терму згладжування керування (lambda) в цільовій функції MPC.
@@ -518,8 +518,8 @@ if __name__ == '__main__':
     res, mets = simulate_mpc(
         hist_df, 
         progress_callback=my_progress, 
-        N_data=2000, 
-        control_pts=200,
+        N_data=5000, 
+        control_pts=500,
         seed=42,
         
         plant_model_type='rf',
@@ -529,12 +529,12 @@ if __name__ == '__main__':
         test_size=0.05,
     
         noise_level='low',
-        model_type='gpr',
+        model_type='svr',
         kernel='rbf', 
         find_optimal_params=True,
         use_soft_constraints=True,
         
-        λ_obj=0.3,
+        λ_obj=8.0,
         
         Nc=8,
         Np=12,
