@@ -12,7 +12,7 @@ from objectives import MaxIronMassTrackingObjective
 from mpc import MPCController
 from utils import (analize_errors, plot_control_and_disturbances, plot_mpc_diagnostics, evaluate_ekf_performance, plot_historical_data)
 from ekf import ExtendedKalmanFilter
-
+from anomaly_detector import SignalAnomalyDetector
 from collections import deque
 
 class MovingAverageFilter:
@@ -33,16 +33,13 @@ def prepare_simulation_data(
     params: Dict[str, Any]
 ) -> Tuple[StatefulDataGenerator, pd.DataFrame, np.ndarray, np.ndarray]:
     """
-    Створює генератор, генерує часовий ряд та створює лаговані датасети.
-    
-    Args:
-        reference_df: DataFrame з референсними даними.
-        params: Словник з параметрами симуляції.
-
-    Returns:
-        Кортеж з генератором, повним DataFrame, вхідними (X) та вихідними (Y) даними.
+    Створює генератор, формує часовий ряд із аномаліями,
+    ПРОМИВАЄ його SignalAnomalyDetector-ом, та будує
+    лаговані матриці X, Y для подальшого навчання/симуляції.
     """
     print("Крок 1: Генерація симуляційних даних...")
+
+    # 1. Ініціалізуємо генератор «plant»
     true_gen = StatefulDataGenerator(
         reference_df,
         ore_flow_var_pct=3.0,
@@ -52,21 +49,71 @@ def prepare_simulation_data(
         true_model_type=params['plant_model_type'],
         seed=params['seed']
     )
-    
-    df_true = true_gen.generate(
-        params['N_data'],
-        params['control_pts'],
-        params['n_neighbors'],
-        noise_level=params['noise_level']
-    )
-    
-    # plot_historical_data(df_true)
-    
-    X, Y_full_np = StatefulDataGenerator.create_lagged_dataset(df_true, lags=params['lag'])
-    Y = Y_full_np[:, [0, 2]]  # Вибираємо лише Fe концентрату та масу концентрату
-    
-    return true_gen, df_true, X, Y
 
+    # 2. Конфігурація аномалій
+    anomaly_cfg = StatefulDataGenerator.generate_anomaly_config(
+        N_data=params['N_data'],
+        train_frac=params['train_size'],
+        val_frac=params['val_size'],
+        test_frac=params['test_size'],
+        seed=params['seed']
+    )
+
+    # 3. Генеруємо повний часовий ряд (з артефактами)
+    df_true = true_gen.generate(
+        T=params['N_data'],
+        control_pts=params['control_pts'],
+        n_neighbors=params['n_neighbors'],
+        noise_level=params['noise_level'],
+        anomaly_config=anomaly_cfg
+    )
+
+    # 4. OFFLINE-ОЧИЩЕННЯ вхідних сигналів від аномалій
+    #    Використовуємо ті самі налаштування, що й в online-циклі, або менш жорсткі.
+    anomaly_window   = 50     # довше дивимося в історію → згладження більш стабільне
+    spike_z_thresh   = 6.0    # спайк, якщо >6σ, а не 4σ
+    drop_rel_thresh  = 0.30   # спад ≥30% вважається drop (раніше 20%)
+    drift_slope_perc = 0.05   # drift, якщо >5%/крок (раніше 2%)
+    freeze_len_pts   = 10     # «залипання» ≥10 точок (раніше 5)
+    eps_val          = 1e-6   # для чисельної стабільності
+    
+    ad_feed_fe = SignalAnomalyDetector(
+        window=anomaly_window,
+        spike_z=spike_z_thresh,
+        drop_rel=drop_rel_thresh,
+        drift_slope=drift_slope_perc,
+        freeze_len=freeze_len_pts,
+        eps=eps_val
+    )
+    ad_ore_flow = SignalAnomalyDetector(
+        window=anomaly_window,
+        spike_z=spike_z_thresh,
+        drop_rel=drop_rel_thresh,
+        drift_slope=drift_slope_perc,
+        freeze_len=freeze_len_pts,
+        eps=eps_val
+    )
+
+    filtered_feed = []
+    filtered_ore  = []
+    for raw_fe, raw_ore in zip(df_true['feed_fe_percent'], df_true['ore_mass_flow']):
+        filtered_feed.append(ad_feed_fe.update(raw_fe))
+        filtered_ore.append(ad_ore_flow.update(raw_ore))
+
+    # Підмінюємо «брудні» колонки на «очищені»
+    df_true = df_true.copy()
+    df_true['feed_fe_percent'] = filtered_feed
+    df_true['ore_mass_flow']   = filtered_ore
+
+    # 5. Лаговані вибірки для тренування/симуляції
+    X, Y_full_np = StatefulDataGenerator.create_lagged_dataset(
+        df_true,
+        lags=params['lag']
+    )
+    # Вибираємо лише concentrate_fe та concentrate_mass колонки
+    Y = Y_full_np[:, [0, 2]]
+
+    return true_gen, df_true, X, Y
 
 def split_and_scale_data(
     X: np.ndarray,
@@ -241,163 +288,202 @@ def run_simulation_loop(
     ekf: ExtendedKalmanFilter,
     df_true: pd.DataFrame,
     # >>> НОВІ АРГУМЕНТИ <<<
-    data: Dict[str, np.ndarray], 
+    data: Dict[str, np.ndarray],
     scalers: Tuple[StandardScaler, StandardScaler],
     params: Dict[str, Any],
-    # >>> КІНЕЦЬ НОВИХ АРГУМЕНТІВ <<<
-    progress_callback: Callable
+    progress_callback: Callable | None = None,
 ) -> pd.DataFrame:
     """
-    Виконує основний замкнений цикл симуляції MPC з динамічним перенавчанням.
+    Виконує основний замкнений цикл симуляції MPC з динамічним перенавчанням
+    та online-фільтрацією spike / drift / drop / freeze аномалій.
     """
     print("Крок 5: Запуск основного циклу симуляції з логікою динамічного перенавчання...")
     x_scaler, y_scaler = scalers
-    
-    # --- Початкова ініціалізація (як і раніше) ---
+
+    # ---------------------------------------------------------------------
+    # 0. Початкова ініціалізація (як і раніше)
+    # ---------------------------------------------------------------------
     n_total = len(df_true) - params['lag'] - 1
     n_train = int(params['train_size'] * n_total)
-    n_val = int(params['val_size'] * n_total)
+    n_val   = int(params['val_size'] * n_total)
     test_idx_start = params['lag'] + 1 + n_train + n_val
 
-    hist0_unscaled = df_true[['feed_fe_percent', 'ore_mass_flow', 'solid_feed_percent']].iloc[
-        test_idx_start - (params['lag'] + 1): test_idx_start].values
+    hist0_unscaled = df_true[['feed_fe_percent',
+                              'ore_mass_flow',
+                              'solid_feed_percent']].iloc[
+        test_idx_start - (params['lag'] + 1): test_idx_start
+    ].values
 
     mpc.reset_history(hist0_unscaled)
     true_gen.reset_state(hist0_unscaled)
 
     df_run = df_true.iloc[test_idx_start:]
-    d_all = df_run[['feed_fe_percent', 'ore_mass_flow']].values
-    T_sim = len(df_run) - (params['lag'] + 1)
+    d_all  = df_run[['feed_fe_percent', 'ore_mass_flow']].values
+    T_sim  = len(df_run) - (params['lag'] + 1)
 
+    # ---------------------------------------------------------------------
+    # 1. Службові змінні
+    # ---------------------------------------------------------------------
     records = []
     u_prev = float(hist0_unscaled[-1, 2])
 
-    # --- Ініціалізація списків для зберігання даних EKF (як і раніше) ---
     y_true_hist, x_hat_hist, P_hist, innov_hist, R_hist = [], [], [], [], []
 
-    # --- Фільтрація збурень (як і раніше) ---
     window_size = 4
     filt_feed = MovingAverageFilter(window_size)
-    filt_ore = MovingAverageFilter(window_size)
+    filt_ore  = MovingAverageFilter(window_size)
 
-    retrain_cooldown_timer = 0 # <<< ДОДАНО: Таймер охолодження
+    retrain_cooldown_timer = 0
 
-    # --- НОВИЙ БЛОК: Ініціалізація буферів для перенавчання ---
+    # ---------------------------------------------------------------------
+    # 2. Буфери та налаштування для перенавчання (як і раніше)
+    # ---------------------------------------------------------------------
     if params['enable_retraining']:
-        print(f"-> Динамічне перенавчання УВІМКНЕНО. Розмір вікна: {params['retrain_window_size']}, Період перевірки: {params['retrain_period']}")
-        # Буфер для зберігання (X_scaled, Y_scaled) пар
-        retraining_buffer = deque(maxlen=params['retrain_window_size'])
-        # Заповнюємо буфер початковими тренувальними даними
-        initial_train_data = list(zip(data['X_train_scaled'], data['Y_train_scaled']))
+        print(f"-> Динамічне перенавчання УВІМКНЕНО. "
+              f"Вікно: {params['retrain_window_size']}, "
+              f"Період перевірки: {params['retrain_period']}")
+        retraining_buffer   = deque(maxlen=params['retrain_window_size'])
+        initial_train_data  = list(zip(data['X_train_scaled'],
+                                       data['Y_train_scaled']))
         retraining_buffer.extend(initial_train_data)
-        
-        # Буфер для моніторингу інновації EKF
-        innovation_monitor = deque(maxlen=params['retrain_period'])
+        innovation_monitor  = deque(maxlen=params['retrain_period'])
 
-
+    # ---------------------------------------------------------------------
+    # 3. ONLINE-ДЕТЕКТОРИ АНОМАЛІЙ (нове)
+    # ---------------------------------------------------------------------
+    anomaly_window   = 50     # довше дивимося в історію → згладження більш стабільне
+    spike_z_thresh   = 6.0    # спайк, якщо >6σ, а не 4σ
+    drop_rel_thresh  = 0.30   # спад ≥30% вважається drop (раніше 20%)
+    drift_slope_perc = 0.05   # drift, якщо >5%/крок (раніше 2%)
+    freeze_len_pts   = 10     # «залипання» ≥10 точок (раніше 5)
+    eps_val          = 1e-6   # для чисельної стабільності
+    
+    ad_feed_fe = SignalAnomalyDetector(
+        window=anomaly_window,
+        spike_z=spike_z_thresh,
+        drop_rel=drop_rel_thresh,
+        drift_slope=drift_slope_perc,
+        freeze_len=freeze_len_pts,
+        eps=eps_val
+    )
+    ad_ore_flow = SignalAnomalyDetector(
+        window=anomaly_window,
+        spike_z=spike_z_thresh,
+        drop_rel=drop_rel_thresh,
+        drift_slope=drift_slope_perc,
+        freeze_len=freeze_len_pts,
+        eps=eps_val
+    )
+    
+    # ---------------------------------------------------------------------
+    # 4. Головний цикл симуляції
+    # ---------------------------------------------------------------------
     for t in range(T_sim):
         if progress_callback:
-            progress_callback(t, T_sim, f"Крок симуляції {t+1}/{T_sim}")
+            progress_callback(t, T_sim, f"Крок симуляції {t + 1}/{T_sim}")
 
-        # ... (код отримання d_filt, прогнозу EKF, оновлення стану MPC, розрахунку u_cur залишається без змін) ...
-        # 1. Прогноз EKF
+        # ------------------------------------------------- 4.1 Сирі вимірювання
         feed_fe_raw, ore_flow_raw = d_all[t, :]
-        d_filt = np.array([filt_feed.update(feed_fe_raw), filt_ore.update(ore_flow_raw)])
+
+        # -------------------- 4.2 ONLINE-фільтрування аномалій ----------------
+        feed_fe_filt_anom = ad_feed_fe.update(feed_fe_raw)
+        ore_flow_filt_anom = ad_ore_flow.update(ore_flow_raw)
+        # ---------------------------------------------------------------------
+
+        # 4.3 Грубе згладжування (як і раніше, після видалення аномалій)
+        d_filt = np.array([filt_feed.update(feed_fe_filt_anom),
+                           filt_ore.update(ore_flow_filt_anom)])
+
+        # 4.4 EKF: прогноз
         ekf.predict(u_prev, d_filt)
-        
-        # 2. Оновлення стану MPC
+
+        # 4.5 Оновлення історії в MPC
         x_est_phys_unscaled = ekf.x_hat[:ekf.n_phys].reshape(params['lag'] + 1, 3)
         mpc.reset_history(x_est_phys_unscaled)
         mpc.d_hat = ekf.x_hat[ekf.n_phys:]
 
-        # 3. Розрахунок керуючої дії MPC
+        # 4.6 Оптимізація MPC
         d_seq = np.repeat(d_filt.reshape(1, -1), params['Np'], axis=0)
         u_seq = mpc.optimize(d_seq, u_prev)
         u_cur = u_prev if u_seq is None else float(u_seq[0])
 
-        # 4. Крок симуляції реального процесу
+        # 4.7 Крок «реального» процесу
         y_full = true_gen.step(feed_fe_raw, ore_flow_raw, u_cur)
-        
-        # 5. Корекція EKF
-        y_meas_unscaled = y_full[['concentrate_fe_percent', 'concentrate_mass_flow']].values.flatten()
+
+        # 4.8 EKF: корекція
+        y_meas_unscaled = y_full[['concentrate_fe_percent',
+                                  'concentrate_mass_flow']].values.flatten()
         ekf.update(y_meas_unscaled)
-        
-        # <<< ДОДАНО: Зменшуємо таймер на кожному кроці
+
+        # 4.9 Зменшуємо cooldown-таймер
         if retrain_cooldown_timer > 0:
             retrain_cooldown_timer -= 1
 
-        
-        # 6. --- НОВИЙ БЛОК: Збір даних та логіка перенавчання ---
+        # ---------------- 4.10 Буферизація та можливе перенавчання -----------
         if params['enable_retraining']:
-            # a) Збираємо новий семпл даних
-            # Вектор X - це поточна історія, яку "бачить" MPC. Вона вже в нескейлованому вигляді.
             new_x_unscaled = mpc.x_hist.flatten().reshape(1, -1)
-            # Вектор Y - це щойно виміряний вихід
             new_y_unscaled = y_meas_unscaled.reshape(1, -1)
 
-            # Масштабуємо їх за допомогою ІСНУЮЧИХ скейлерів
             new_x_scaled = x_scaler.transform(new_x_unscaled)
             new_y_scaled = y_scaler.transform(new_y_unscaled)
-            
-            # Додаємо в буфер. deque автоматично видалить найстаріший елемент, якщо буфер повний.
+
             retraining_buffer.append((new_x_scaled[0], new_y_scaled[0]))
-            
-            # b) Моніторимо якість моделі через інновацію EKF
+
             if ekf.last_innovation is not None:
-                # Нормуємо інновацію, щоб зробити поріг більш універсальним
-                innov_norm = np.linalg.norm(ekf.last_innovation) 
+                innov_norm = np.linalg.norm(ekf.last_innovation)
                 innovation_monitor.append(innov_norm)
 
-            # c) Перевіряємо тригер перенавчання
-            if (t > 0 and 
-                t % params['retrain_period'] == 0 and 
-                len(innovation_monitor) == params['retrain_period'] and 
-                retrain_cooldown_timer == 0): # <<< ДОДАНО: Перевірка таймера
+            if (t > 0 and
+                t % params['retrain_period'] == 0 and
+                len(innovation_monitor) == params['retrain_period'] and
+                retrain_cooldown_timer == 0):
 
-                avg_innovation = np.mean(list(innovation_monitor))
-                
-                if avg_innovation > params['retrain_innov_threshold']:
-                    print(f"\n---> ТРИГЕР ПЕРЕНАВЧАННЯ на кроці {t}! Середня інновація: {avg_innovation:.4f} > {params['retrain_innov_threshold']:.4f}")
-                    
-                    # Формуємо нові навчальні дані з буфера
-                    retrain_data_list = list(retraining_buffer)
-                    X_retrain = np.array([item[0] for item in retrain_data_list])
-                    Y_retrain = np.array([item[1] for item in retrain_data_list])
-                    
-                    # Запускаємо процес навчання на оновлених даних
-                    print(f"--> Запуск mpc.fit() на {len(X_retrain)} семплах...")
+                avg_innov = float(np.mean(innovation_monitor))
+
+                if avg_innov > params['retrain_innov_threshold']:
+                    print(f"\n---> ТРИГЕР ПЕРЕНАВЧАННЯ на кроці {t}! "
+                          f"Середня інновація: {avg_innov:.4f} > "
+                          f"{params['retrain_innov_threshold']:.4f}")
+
+                    retrain_data = list(retraining_buffer)
+                    X_retrain = np.array([p[0] for p in retrain_data])
+                    Y_retrain = np.array([p[1] for p in retrain_data])
+
+                    print(f"--> mpc.fit() на {len(X_retrain)} семплах ...")
                     mpc.fit(X_retrain, Y_retrain)
-                    print("--> Перенавчання моделі завершено.\n")
+                    print("--> Перенавчання завершено.\n")
 
-                    # Очищуємо монітор та ВСТАНОВЛЮЄМО ТАЙМЕР ОХОЛОДЖЕННЯ
                     innovation_monitor.clear()
-                    retrain_cooldown_timer = params['retrain_period'] * 2 # <<< ДОДАНО
+                    retrain_cooldown_timer = params['retrain_period'] * 2
+        # ---------------------------------------------------------------------
 
-        # Запис даних для оцінки ПІСЛЯ кроку корекції
+        # 4.11 Логування для візуалізації / метрик
         y_true_hist.append(y_meas_unscaled)
         x_hat_hist.append(ekf.x_hat.copy())
         P_hist.append(ekf.P.copy())
         R_hist.append(ekf.R.copy())
-        if ekf.last_innovation is not None:
-            innov_hist.append(ekf.last_innovation.copy())
-        else:
-            innov_hist.append(np.zeros(ekf.n_dist))
+        innov_hist.append(
+            ekf.last_innovation.copy()
+            if ekf.last_innovation is not None
+            else np.zeros(ekf.n_dist)
+        )
 
-        # Збереження результатів для візуалізації
         y_meas = y_full.iloc[0]
         records.append({
-            'feed_fe_percent': y_meas.feed_fe_percent,
-            'ore_mass_flow': y_meas.ore_mass_flow,
-            'solid_feed_percent': u_cur,
-            'conc_fe': y_meas.concentrate_fe_percent,
-            'tail_fe': y_meas.tailings_fe_percent,
-            'conc_mass': y_meas.concentrate_mass_flow,
-            'tail_mass': y_meas.tailings_mass_flow,
-            'mass_pull_pct': y_meas.mass_pull_percent,
-            'fe_recovery_percent': y_meas.fe_recovery_percent,
+            'feed_fe_percent':      y_meas.feed_fe_percent,
+            'ore_mass_flow':        y_meas.ore_mass_flow,
+            'solid_feed_percent':   u_cur,
+            'conc_fe':              y_meas.concentrate_fe_percent,
+            'tail_fe':              y_meas.tailings_fe_percent,
+            'conc_mass':            y_meas.concentrate_mass_flow,
+            'tail_mass':            y_meas.tailings_mass_flow,
+            'mass_pull_pct':        y_meas.mass_pull_percent,
+            'fe_recovery_percent':  y_meas.fe_recovery_percent,
         })
+
         u_prev = u_cur
 
+    # ---------------------------------------------------------------------
     if progress_callback:
         progress_callback(T_sim, T_sim, "Симуляція завершена")
         
