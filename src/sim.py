@@ -529,7 +529,7 @@ if __name__ == '__main__':
         test_size=0.05,
     
         noise_level='low',
-        model_type='krr',
+        model_type='gpr',
         kernel='rbf', 
         find_optimal_params=True,
         use_soft_constraints=True,

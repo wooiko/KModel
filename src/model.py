@@ -1,290 +1,278 @@
 # model.py
-
 import numpy as np
+from abc import ABC, abstractmethod
+from typing import Tuple, Dict, Type
+import inspect
+
+# --- sklearn ---
 from sklearn.kernel_ridge import KernelRidge
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF, Product, Sum, ConstantKernel as C, WhiteKernel
-from sklearn.model_selection import RandomizedSearchCV # Changed from GridSearchCV
-from scipy.stats import loguniform # For defining distributions in RandomizedSearchCV
+from sklearn.model_selection import RandomizedSearchCV
+from scipy.stats import loguniform
+
+# ======================================================================
+#                     БАЗОВИЙ ІНТЕРФЕЙС СТРАТЕГІЇ
+# ======================================================================
+class _BaseKernelModel(ABC):
+    """Абстрактний клас-стратегія. Визначає обов’язкові методи та kernel із setter."""
+
+    def __init__(self):
+        self._kernel: str | None = None
+
+    @abstractmethod
+    def fit(self, X: np.ndarray, Y: np.ndarray) -> None:
+        ...
+
+    @abstractmethod
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        ...
+
+    @abstractmethod
+    def linearize(self, X0: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        ...
+
+    @property
+    def kernel(self) -> str | None:
+        return self._kernel
+
+    @kernel.setter
+    def kernel(self, value: str) -> None:
+        self._kernel = value
 
 
-class KernelModel:
+# ======================================================================
+#                    РЕАЛІЗАЦІЯ ДЛЯ Kernel Ridge
+# ======================================================================
+class _KRRModel(_BaseKernelModel):
     def __init__(
         self,
-        model_type: str = 'krr',
-        kernel: str = 'linear',
+        kernel: str = "linear",
         alpha: float = 1.0,
-        gamma: float = None,
+        gamma: float | None = None,
         find_optimal_params: bool = False,
-        n_iter_random_search: int = 20 # New parameter for RandomizedSearchCV iterations
+        n_iter_random_search: int = 20,
     ):
-        self.model_type = model_type.lower()
-        self.kernel = kernel
+        super().__init__()
+        self.kernel = kernel.lower()
         self.alpha = alpha
         self.gamma = gamma
         self.find_optimal_params = find_optimal_params
-        self.n_iter_random_search = n_iter_random_search # Store the new parameter
+        self.n_iter_random_search = n_iter_random_search
 
-        # Attributes after fit:
-        self.models = None
-        self.X_train_ = None
-        self.dual_coef_ = None
-        self.coef_ = None
-        self.intercept_ = None
+        # наповнюються після fit
+        self.model: KernelRidge | None = None
+        self.X_train_: np.ndarray | None = None
+        self.dual_coef_: np.ndarray | None = None
+        self.coef_: np.ndarray | None = None
+        self.intercept_: np.ndarray | None = None
 
-
-    def fit(self, X: np.ndarray, Y: np.ndarray):
-        """
-        Навчає модель. Якщо find_optimal_params=True, виконує рандомізований пошук
-        гіперпараметрів для KernelRidge моделі перед фінальним навчанням.
-        """
-        # --- Logic for Gaussian Processes (remains unchanged) ---
-        if self.model_type == 'gpr':
-            n_targets = Y.shape[1]
-            
-            # <<< НОВЕ, БІЛЬШ СТАБІЛЬНЕ ЯДРО >>>
-            # 1. RBF з більш жорсткими та реалістичними межами для length_scale.
-            #    Це запобігає тому, щоб ядро ставало занадто "гострим".
-            rbf_kernel = RBF(length_scale=1.0, length_scale_bounds=(0.1, 20.0))
-            
-            # 2. ConstantKernel (C) дозволяє масштабувати вихід.
-            const_kernel = C(1.0, (1e-3, 1e3))
-            
-            # 3. WhiteKernel додає компонент білого шуму. Це КЛЮЧОВИЙ елемент для
-            #    числової стабільності, особливо при роботі з зашумленими даними.
-            white_kernel = WhiteKernel(noise_level=0.1, noise_level_bounds=(1e-5, 1e1))
-
-            # Комбінуємо їх: (Масштаб * RBF) + Шум
-            base_kernel = const_kernel * rbf_kernel + white_kernel
-            
-            self.models = []
-            for i in range(n_targets):
-                # Збільшуємо кількість перезапусків оптимізатора, щоб знайти кращий розв'язок
-                gpr = GaussianProcessRegressor(
-                    kernel=base_kernel, alpha=0, normalize_y=True, n_restarts_optimizer=2 
-                )
-                gpr.fit(X, Y[:, i])
-                self.models.append(gpr)
-            return
-
-        # --- Logic for KernelRidge ---
-        krr_model = None
-
-        if self.find_optimal_params and self.model_type == 'krr':
-            print(f"Запуск рандомізованого пошуку гіперпараметрів для KernelRidge (ядро: {self.kernel})...")
-            
-            base_krr = KernelRidge(kernel=self.kernel)
-            
-            # Define parameter distributions for RandomizedSearchCV
-            if self.kernel == 'linear':
-                param_distributions = {'alpha': loguniform(0.001, 100)}  
-            elif self.kernel == 'rbf':
-                param_distributions = {
-                    'alpha': loguniform(0.01, 100),
-                    'gamma': loguniform(0.001, 10)   
-                }
-            else:
-                raise ValueError(f"Пошук параметрів не підтримується для ядра '{self.kernel}'.")
-
-            # Create and run RandomizedSearchCV
-            random_search = RandomizedSearchCV(
-                base_krr, 
-                param_distributions, 
-                n_iter=self.n_iter_random_search, # Number of parameter settings that are sampled
-                cv=3, 
-                scoring='neg_mean_squared_error', 
-                random_state=42, # For reproducibility
-                n_jobs=-1,
-                verbose=1 # More verbose output during search
-            )
-            random_search.fit(X, Y)
-            
-            print(f"-> Найкращі параметри знайдено: {random_search.best_params_}")
-            
-            # The best model found during the search
-            krr_model = random_search.best_estimator_
-
-            # Update instance attributes with the found optimal values
-            self.alpha = krr_model.alpha
-            if hasattr(krr_model, 'gamma'): # gamma might not exist for linear kernel
-                self.gamma = krr_model.gamma
-        
+    def fit(self, X: np.ndarray, Y: np.ndarray) -> None:
+        # Вибір із RandomizedSearch або пряма ініціалізація
+        if self.find_optimal_params:
+            self.model = self._run_random_search(X, Y)
         else:
-            # --- Original logic: use manually specified parameters or heuristic gamma ---
-            gamma_to_use = self.gamma
-            if self.kernel == 'rbf' and self.gamma is None:
-                # Use the median-heuristic for gamma if not specified
-                gamma_to_use = self._calculate_median_heuristic_gamma(X)
-            
-            krr_model = KernelRidge(alpha=self.alpha, kernel=self.kernel, gamma=gamma_to_use)
-            krr_model.fit(X, Y)
+            gamma_eff = (
+                self.gamma
+                if self.gamma is not None
+                else (
+                    self._calculate_median_heuristic_gamma(X)
+                    if self.kernel == "rbf"
+                    else None
+                )
+            )
+            self.model = KernelRidge(alpha=self.alpha, kernel=self.kernel, gamma=gamma_eff)
+            self.model.fit(X, Y)
 
-        # --- Common steps after training for any KRR model ---
-        self.models = krr_model
         self.X_train_ = X.copy()
-        self.dual_coef_ = self.models.dual_coef_
+        self.dual_coef_ = self.model.dual_coef_
 
-        if self.kernel == 'linear':
-            # For linear kernel, compute explicit coefficients and intercept
-            self.coef_ = X.T.dot(self.dual_coef_)
+        if self.kernel == "linear":
+            self.coef_ = X.T @ self.dual_coef_
             self.intercept_ = np.zeros(Y.shape[1])
-        else:  # For RBF and other non-linear kernels, coefficients are not directly calculated this way
+        else:
             self.coef_ = None
             self.intercept_ = np.zeros(Y.shape[1])
 
     def predict(self, X: np.ndarray) -> np.ndarray:
-        if self.model_type == 'gpr':
-            Ys = [gpr.predict(X) for gpr in self.models]
-            return np.vstack(Ys).T
-        
-        # For KRR, use the predict method of the trained model
-        return self.models.predict(X)
-    
-    def linearize(self, X0: np.ndarray) -> (np.ndarray, np.ndarray):
-        """
-        Обчислює лінійну апроксимацію моделі y ≈ Wx + b навколо точки X0.
-        Повертає локальну матрицю ваг W та зсув b.
-        Працює для KRR та GPR.
-        """
-        # Ensure X0 has the correct shape (1, n_features)
+        if self.model is None:
+            raise RuntimeError("Модель ще не навчена.")
+        return self.model.predict(X)
+
+    def linearize(self, X0: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         if X0.ndim == 1:
             X0 = X0.reshape(1, -1)
-            
-        # --- Linearization for Kernel Ridge Regression ---
-        if self.model_type == 'krr':
-            if self.kernel == 'linear':
-                # For linear kernel, W and b are constant
-                return self.coef_, self.intercept_
 
-            if self.kernel == 'rbf':
-                # Analytical gradient for RBF kernel (as before)
-                # Ensure gamma is correctly used, either found by search or heuristic
-                current_gamma = self.gamma if self.gamma is not None else \
-                                self._calculate_median_heuristic_gamma(self.X_train_) # Fallback if gamma somehow not set
+        if self.kernel == "linear":
+            return self.coef_, self.intercept_
 
-                diffs = X0[:, None, :] - self.X_train_[None, :, :]
-                sq_diffs = np.sum(diffs**2, axis=-1)
-                K_row = np.exp(-current_gamma * sq_diffs)
-                
-                # Gradient of K with respect to X0
-                dK_dX = -2 * current_gamma * diffs * K_row[..., None]
-                # Local weights W_local = dY/dX0 = (dY/dK) * (dK/dX0)
-                # dual_coef_ is dY/dK (in essence, up to a scalar factor)
-                W_local = np.einsum('ijk,ji->ki', dK_dX, self.dual_coef_)
-                
-                # Calculate local intercept b_local = y0 - W_local * X0
-                y0 = self.predict(X0)
-                b_local = y0 - X0 @ W_local
-                
-                # <<< НОВИЙ ЗАХИСНИЙ БЛОК >>>
-                # Перевіряємо наявність NaN або нескінченних значень
-                if not np.all(np.isfinite(W_local)) or not np.all(np.isfinite(b_local)):
-                    print("ПОПЕРЕДЖЕННЯ: Лінеаризація створила NaN/inf. Повертається безпечне значення.")
-                    # Повертаємо безпечне значення: нульовий градієнт, зсув = поточний прогноз
-                    y0 = self.predict(X0)
-                    return np.zeros_like(W_local), y0.flatten()
-    
-                # Обмежуємо (кліпінг) екстремальні значення, щоб запобігти числовій нестабільності в MPC
-                w_max_abs = 1000.0  # Максимальне абсолютне значення для ваг
-                b_max_abs = 1000.0  # Максимальне абсолютне значення для зсуву
-                
-                if np.max(np.abs(W_local)) > w_max_abs:
-                    print(f"ПОПЕРЕДЖЕННЯ: Екстремальні значення в W_local. Кліпінг до +/-{w_max_abs}.")
-                    W_local = np.clip(W_local, -w_max_abs, w_max_abs)
-                    
-                if np.max(np.abs(b_local)) > b_max_abs:
-                    print(f"ПОПЕРЕДЖЕННЯ: Екстремальні значення в b_local. Кліпінг до +/-{b_max_abs}.")
-                    b_local = np.clip(b_local, -b_max_abs, b_max_abs)  
-                    
-                return W_local, b_local.flatten()
+        if self.kernel != "rbf":
+            raise NotImplementedError(
+                f"Лінеаризація KRR доступна тільки для 'linear' та 'rbf', отримано '{self.kernel}'."
+            )
 
-            raise NotImplementedError(f"Лінеаризація для KRR з ядром '{self.kernel}' не реалізована.")
+        gamma_eff = (
+            getattr(self.model, "gamma", None)
+            or self._calculate_median_heuristic_gamma(self.X_train_)
+        )
 
-        elif self.model_type == 'gpr':
-            W_columns = []
-            b_elements = []
+        diffs = X0[:, None, :] - self.X_train_[None, :, :]
+        sq_diffs = np.sum(diffs**2, axis=-1)
+        K_row = np.exp(-gamma_eff * sq_diffs)
+        dK_dX = -2 * gamma_eff * diffs * K_row[..., None]
 
-            # Iterate through each GPR model (for each output target)
-            for gpr_model in self.models:
-                # Find the RBF component within the potentially complex kernel
-                rbf_kernel = self._find_rbf_kernel(gpr_model.kernel_)
-                if rbf_kernel is None:
-                    raise TypeError("Не вдалося знайти компонент RBF у ядрі моделі GPR.")
-                
-                # Extract gamma from the RBF kernel's length_scale
-                gamma = 1.0 / (2 * rbf_kernel.length_scale ** 2)
+        W_local = np.einsum("ijk,ji->ki", dK_dX, self.dual_coef_)
+        y0 = self.predict(X0)
+        b_local = (y0 - X0 @ W_local).flatten()
 
-                X_train_ = gpr_model.X_train_
-                alpha_ = gpr_model.alpha_ # Corresponds to dual_coef_ in KRR context
+        W_local = np.clip(W_local, -1e3, 1e3)
+        b_local = np.clip(b_local, -1e3, 1e3)
+        return W_local, b_local
 
-                # Gradient calculation logic is identical to KRR's RBF
-                diffs = X0[:, None, :] - X_train_[None, :, :]
-                sq_diffs = np.sum(diffs**2, axis=-1)
-                K_row = np.exp(-gamma * sq_diffs)
-                
-                dK_dX = -2 * gamma * diffs * K_row[..., None]
-                
-                # W_col for each output target
-                W_col = np.einsum('ji,j->i', dK_dX.squeeze(axis=0), alpha_.flatten()).reshape(-1, 1)
+    def _run_random_search(self, X: np.ndarray, Y: np.ndarray) -> KernelRidge:
+        base = KernelRidge(kernel=self.kernel)
+        if self.kernel == "linear":
+            param_distributions = {"alpha": loguniform(0.001, 100)}
+        elif self.kernel == "rbf":
+            param_distributions = {
+                "alpha": loguniform(0.01, 100),
+                "gamma": loguniform(0.001, 10),
+            }
+        else:
+            raise ValueError(f"RandomizedSearch не підтримує ядро '{self.kernel}'.")
 
-                # Calculate local intercept for each output target
-                y0_col = gpr_model.predict(X0)
-                b_col = y0_col - X0 @ W_col
-                
-                W_columns.append(W_col)
-                b_elements.append(b_col)
+        rs = RandomizedSearchCV(
+            base,
+            param_distributions,
+            n_iter=self.n_iter_random_search,
+            cv=3,
+            scoring="neg_mean_squared_error",
+            n_jobs=-1,
+            random_state=42,
+            verbose=1,
+        )
+        rs.fit(X, Y)
+        print(f"-> Найкращі параметри KRR: {rs.best_params_}")
+        return rs.best_estimator_
 
-            W_local = np.hstack(W_columns) # Stack columns to form the full W matrix
-            b_local = np.array(b_elements).flatten() # Flatten elements to form the full b vector
-            
-            return W_local, b_local
+    @staticmethod
+    def _calculate_median_heuristic_gamma(X: np.ndarray) -> float:
+        subset = X
+        if X.shape[0] > 1000:
+            rng = np.random.default_rng(42)
+            subset = X[rng.choice(X.shape[0], size=1000, replace=False)]
+        d2 = np.sum((subset[:, None] - subset[None, :]) ** 2, axis=2)
+        upper = d2[np.triu_indices_from(d2, k=1)]
+        median_sq = np.median(upper) if upper.size else 1.0
+        return 1.0 / max(median_sq, 1e-9)
 
-        raise NotImplementedError(f"Лінеаризація для типу моделі '{self.model_type}' не реалізована.")
 
-    def _find_rbf_kernel(self, kernel):
-        """Recursively searches for an RBF component within a composite kernel."""
+# ======================================================================
+#                РЕАЛІЗАЦІЯ ДЛЯ Gaussian Process Regressor
+# ======================================================================
+class _GPRModel(_BaseKernelModel):
+    def __init__(self):
+        super().__init__()
+        self.models: list[GaussianProcessRegressor] = []
+
+    def fit(self, X: np.ndarray, Y: np.ndarray) -> None:
+        n_targets = Y.shape[1]
+        base_kernel = (
+            C(1.0, (1e-3, 1e3))
+            * RBF(length_scale=1.0, length_scale_bounds=(0.1, 20.0))
+            + WhiteKernel(noise_level=0.1, noise_level_bounds=(1e-5, 1e1))
+        )
+        self.models.clear()
+        for i in range(n_targets):
+            gpr = GaussianProcessRegressor(
+                kernel=base_kernel,
+                alpha=0,
+                normalize_y=True,
+                n_restarts_optimizer=2,
+            )
+            gpr.fit(X, Y[:, i])
+            self.models.append(gpr)
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        return np.vstack([m.predict(X) for m in self.models]).T
+
+    def linearize(self, X0: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        if X0.ndim == 1:
+            X0 = X0.reshape(1, -1)
+
+        W_cols, b_elems = [], []
+        for gpr in self.models:
+            rbf_kernel = self._find_rbf_kernel(gpr.kernel_)
+            if rbf_kernel is None:
+                raise TypeError("Не знайдено RBF-компонент у ядрі GPR.")
+            gamma = 1.0 / (2 * rbf_kernel.length_scale**2)
+
+            Xtr = gpr.X_train_
+            alpha = gpr.alpha_
+
+            diffs = X0[:, None, :] - Xtr[None, :, :]
+            sq_diffs = np.sum(diffs**2, axis=-1)
+            K_row = np.exp(-gamma * sq_diffs)
+            dK_dX = -2 * gamma * diffs * K_row[..., None]
+
+            W_col = np.einsum("ji,j->i", dK_dX.squeeze(0), alpha.flatten()).reshape(-1, 1)
+            y0 = gpr.predict(X0)
+            b_col = (y0 - X0 @ W_col).flatten()
+
+            W_cols.append(W_col)
+            b_elems.append(b_col)
+
+        W_local = np.hstack(W_cols)
+        b_local = np.hstack(b_elems)
+        return W_local, b_local
+
+    @staticmethod
+    def _find_rbf_kernel(kernel):
         if isinstance(kernel, RBF):
             return kernel
-        elif isinstance(kernel, (Product, Sum)):
-            # Recursive search in both components (k1 and k2)
-            rbf_in_k1 = self._find_rbf_kernel(kernel.k1)
-            if rbf_in_k1:
-                return rbf_in_k1
-            rbf_in_k2 = self._find_rbf_kernel(kernel.k2)
-            if rbf_in_k2:
-                return rbf_in_k2
+        if isinstance(kernel, (Product, Sum)):
+            return _GPRModel._find_rbf_kernel(kernel.k1) or _GPRModel._find_rbf_kernel(kernel.k2)
         return None
 
-    def _calculate_median_heuristic_gamma(self, X: np.ndarray) -> float:
-        """
-        Calculates gamma using the median heuristic: 1 / median(||x - x'||^2).
-        Used for the RBF kernel when gamma is not specified or found via search.
-        X is expected to be scaled.
-        """
-        if X.shape[0] > 1000: # Limit for large datasets to avoid excessive computations
-            # Select a random subset for median calculation if data is too large
-            rng = np.random.default_rng(42) # For reproducibility
-            sample_indices = rng.choice(X.shape[0], size=1000, replace=False)
-            X_sample = X[sample_indices]
-        else:
-            X_sample = X
 
-        # Compute pairwise Euclidean distances squared
-        # This is more efficient than iterating
-        # (N, 1, D) - (1, N, D) -> (N, N, D) then sum along axis D -> (N, N)
-        distances_sq = np.sum((X_sample[:, None, :] - X_sample[None, :, :])**2, axis=2)
-        
-        # Select only the upper triangle (without diagonal) to avoid duplicates and zeros
-        upper_tri_indices = np.triu_indices(distances_sq.shape[0], k=1)
-        upper_tri_distances = distances_sq[upper_tri_indices]
-        
-        if len(upper_tri_distances) == 0:
-            # Case where X_sample contains only one element or is empty
-            return 1.0 # Return a default value
+# ======================================================================
+#                         ФАСАД - KernelModel
+# ======================================================================
+class KernelModel:
+    """
+    Фасад. Інкапсулює конкретну реалізацію (_KRRModel, _GPRModel, …)
+    та делегує всі виклики через механізм __getattr__.
+    """
 
-        median_sq_dist = np.median(upper_tri_distances)
-        
-        if median_sq_dist < 1e-9: # Prevent division by zero or very small numbers
-            return 1.0 
-            
-        return 1.0 / median_sq_dist
+    _REGISTRY: Dict[str, Type[_BaseKernelModel]] = {
+        "krr": _KRRModel,
+        "gpr": _GPRModel,
+        # для SVR: додати 'svr': _SVRModel
+    }
+
+    def __init__(self, model_type: str = "krr", **kwargs):
+        mtype = model_type.lower()
+        if mtype not in self._REGISTRY:
+            raise ValueError(f"Невідома модель '{model_type}'")
+        impl_cls = self._REGISTRY[mtype]
+
+        # відфільтрувати тільки ті kwargs, що є в __init__ імплементації
+        sig = inspect.signature(impl_cls.__init__)
+        impl_kwargs = {
+            k: v for k, v in kwargs.items()
+            if k in sig.parameters and k != 'self'
+        }
+
+        self._impl = impl_cls(**impl_kwargs)
+
+    def fit(self, X: np.ndarray, Y: np.ndarray) -> None:
+        return self._impl.fit(X, Y)
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        return self._impl.predict(X)
+
+    def linearize(self, X0: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        return self._impl.linearize(X0)
+
+    def __getattr__(self, item):
+        return getattr(self._impl, item)
