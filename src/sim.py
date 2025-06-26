@@ -4,7 +4,8 @@ import numpy as np
 import pandas as pd
 from typing import Callable, Dict, Any, Tuple
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import mean_squared_error, mean_absolute_error
+from sklearn.metrics import mean_squared_error
+from collections import deque
 
 from data_gen import StatefulDataGenerator
 from model import KernelModel
@@ -18,17 +19,8 @@ from utils import (
 )
 from ekf import ExtendedKalmanFilter
 from anomaly_detector import SignalAnomalyDetector
-from collections import deque
+from maf import MovingAverageFilter
 
-class MovingAverageFilter:
-    def __init__(self, window_size: int):
-        self.window_size = window_size
-        self.buffer = deque(maxlen=window_size)
-
-    def update(self, value: float) -> float:
-        self.buffer.append(value)
-        return float(np.mean(self.buffer))
-    
 # =============================================================================
 # === БЛОК 1: ПІДГОТОВКА ДАНИХ ТА СКАЛЕРІВ ===
 # =============================================================================
@@ -562,6 +554,7 @@ def simulate_mpc(
         'freeze_len': 5,
         'enabled': True
     },                                      # Параметри детектора аномалій
+    run_analysis: bool = True,              # Показати візуалізацію результатів роботи симулятора
     progress_callback: Callable[[int, int, str], None] = None # Функція зворотного виклику для відстеження прогресу симуляції. Приймає поточний крок, загальну кількість кроків та повідомлення.
 ):
     """
@@ -594,7 +587,9 @@ def simulate_mpc(
     test_idx_start = lag + 1 + len(data['X_train']) + len(data['X_val'])
     analysis_data['d_all_test'] = df_true.iloc[test_idx_start:][['feed_fe_percent','ore_mass_flow']].values
     
-    run_post_simulation_analysis(results_df, analysis_data, params)
+    if run_analysis:
+        run_post_simulation_analysis(results_df, analysis_data, params)
+    
     return results_df, metrics
 
 
@@ -645,7 +640,8 @@ if __name__ == '__main__':
         
         Nc=8,
         Np=12,
-    
+        lag=2,
+        
         # Цільові параметри/ваги
         w_fe=1.0,
         w_mass=1.0,
@@ -657,8 +653,9 @@ if __name__ == '__main__':
         enable_retraining=True,          # Ввімкнути/вимкнути функціонал перенавчання
         retrain_period=50,                 # Як часто перевіряти необхідність перенавчання (кожні 50 кроків)
         retrain_window_size=1000,          # Розмір буфера даних для перенавчання (останні 1000 точок)
-        retrain_innov_threshold=0.3     # Поріг для середньої нормованої інновації EKF
-    
+        retrain_innov_threshold=0.3,     # Поріг для середньої нормованої інновації EKF
+        
+        run_analysis=True
     )
     
     # print("\nРезультати симуляції (останні 5 кроків):")

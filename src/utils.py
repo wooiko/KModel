@@ -5,188 +5,8 @@ import pandas as pd
 import seaborn as sns
 from scipy.stats import chi2
 
-from sklearn.metrics import mean_absolute_error, mean_squared_error
 import matplotlib.pyplot as plt
-from typing import List, Optional  
 
-def train_val_test_time_series(X, Y,
-                               train_size: float = 0.7,
-                               val_size: float   = 0.15,
-                               test_size: float  = 0.15):
-    """
-    Послідовне розбиття X, Y на train/val/test у пропорціях сумарно = 1.0,
-    без перемішування.
-    Повертає: X_train, Y_train, X_val, Y_val, X_test, Y_test
-    """
-    if abs(train_size + val_size + test_size - 1.0) > 1e-8:
-        raise ValueError("train_size + val_size + test_size має дорівнювати 1.0")
-
-    n = X.shape[0]
-    n_train = int(train_size * n)
-    n_val   = int(val_size   * n)
-    # останні n_test = n - n_train - n_val
-    X_train = X[:n_train]
-    Y_train = Y[:n_train]
-    X_val   = X[n_train:n_train + n_val]
-    Y_val   = Y[n_train:n_train + n_val]
-    X_test  = X[n_train + n_val:]
-    Y_test  = Y[n_train + n_val:]
-
-    return X_train, Y_train, X_val, Y_val, X_test, Y_test
-
-
-def compute_metrics(y_true, y_pred):
-    """
-    Обчислює MAE та RMSE для кожного стовпця.
-    Підтримує numpy-масиви або pandas.DataFrame.
-    Повертає словник {column+'_mae':…, column+'_rmse':…}.
-    """
-    # Перекладемо в numpy
-    if hasattr(y_true, "values"):
-        cols = list(y_true.columns)
-        yt = y_true.values
-    else:
-        yt = np.asarray(y_true)
-        cols = [f"col{i}" for i in range(yt.shape[1])]
-    yp = np.asarray(y_pred)
-
-    if yt.shape != yp.shape:
-        raise ValueError(f"Форми y_true {yt.shape} і y_pred {yp.shape} повинні збігатися")
-
-    metrics = {}
-    for i, col in enumerate(cols):
-        mae = mean_absolute_error(yt[:, i], yp[:, i])
-        mse = mean_squared_error(yt[:, i], yp[:, i])  # без squared
-        rmse = np.sqrt(mse)
-        metrics[f"{col}_mae"]  = mae
-        metrics[f"{col}_rmse"] = rmse
-    return metrics
-
-def plot_mpc_diagnostics(
-    results_df,
-    w_fe: float,
-    w_mass: float,
-    λ: float
-):
-    """
-    Малює u_k та значення cost_term = −(w_fe·conc_fe + w_mass·conc_mass) + λ·(u_k−u_{k−1})²
-    за індексом кроку.
-    """
-    # Кроки
-    t = np.arange(len(results_df))
-    # Керуючий сигнал
-    u = results_df['solid_feed_percent'].to_numpy()
-    # попередній u (для першого кроку вважатимемо u_prev=u0)
-    u_prev = np.roll(u, 1)
-    u_prev[0] = u[0]
-    # техн. складова
-    conc_fe   = results_df['conc_fe'].to_numpy()
-    conc_mass = results_df['conc_mass'].to_numpy()
-    linear_term    = - (w_fe   * conc_fe + w_mass * conc_mass)
-    smoothing_term = λ * (u - u_prev)**2
-    cost = linear_term + smoothing_term
-
-    # Побудова двох графіків
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
-
-    ax1.plot(t, u, '-o', label='u (solid_feed_percent)')
-    ax1.set_ylabel('u')
-    ax1.legend(loc='upper right')
-    ax1.grid(True)
-
-    ax2.plot(t, cost, '-o', color='C1', label='cost term')
-    ax2.set_xlabel('Крок симуляції')
-    ax2.set_ylabel('Цільова функція')
-    ax2.legend(loc='upper right')
-    ax2.grid(True)
-
-    plt.suptitle('MPC: керуючий сигнал та цільова функція по часу')
-    plt.tight_layout(rect=[0,0,1,0.95])
-    plt.show()
-    
-def analyze_correlation(results_df):
-    # 1. Обчислюємо коефіцієнт кореляції Пірсона
-    corr = results_df['conc_fe'].corr(results_df['conc_mass'])
-    print(f"Коефіцієнт кореляції conc_fe vs conc_mass = {corr:.4f}")
-
-    t = np.arange(len(results_df))
-
-    fig, axes = plt.subplots(2, 2, figsize=(10, 8))
-
-    # 2. Часові ряди conc_fe та conc_mass
-    axes[0,0].plot(t, results_df['conc_fe'], label='conc_fe')
-    axes[0,0].plot(t, results_df['conc_mass'], label='conc_mass')
-    axes[0,0].set_title('Часові ряди conc_fe та conc_mass')
-    axes[0,0].set_xlabel('Крок симуляції')
-    axes[0,0].set_ylabel('Значення')
-    axes[0,0].legend()
-    axes[0,0].grid(True)
-
-    # 3. Розсіювання conc_fe vs conc_mass
-    axes[0,1].scatter(results_df['conc_fe'], results_df['conc_mass'], s=20, alpha=0.7)
-    axes[0,1].set_title('Scatter conc_fe vs conc_mass')
-    axes[0,1].set_xlabel('conc_fe')
-    axes[0,1].set_ylabel('conc_mass')
-    axes[0,1].grid(True)
-
-    # 4. Гістограми обох
-    axes[1,0].hist(results_df['conc_fe'], bins=20, alpha=0.7, label='conc_fe')
-    axes[1,0].hist(results_df['conc_mass'], bins=20, alpha=0.7, label='conc_mass')
-    axes[1,0].set_title('Гістограми conc_fe та conc_mass')
-    axes[1,0].legend()
-    axes[1,0].grid(True)
-
-    # 5. Пустий субплот для примітки
-    axes[1,1].axis('off')
-    note = f"Кореляція = {corr:.3f}\n" + \
-           ("Практично лінійно не різняться" if abs(corr) > 0.99 else "")
-    axes[1,1].text(0.1, 0.5, note, fontsize=12)
-
-    plt.tight_layout()
-    plt.show()
-    
-def analyze_sensitivity(results_df, preds_df):
-    """
-    Виводить:
-      1) Scatter-plot conc_fe(pred) та conc_mass(pred) vs u
-      2) Лінійні апроксимації зв’язку і їхні коефіцієнти (slope)
-    """
-    u = results_df['solid_feed_percent'].to_numpy()
-    conc_fe_pred   = preds_df['conc_fe'].to_numpy()
-    conc_mass_pred = preds_df['conc_mass'].to_numpy()
-
-    # Лінійна апроксимація: slope та intercept
-    slope_fe,   intercept_fe   = np.polyfit(u, conc_fe_pred,   1)
-    slope_mass, intercept_mass = np.polyfit(u, conc_mass_pred, 1)
-
-    print(f"Slope conc_fe(u):   {slope_fe:.4f}")
-    print(f"Slope conc_mass(u): {slope_mass:.4f}")
-
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-
-    # conc_fe vs u
-    axes[0].scatter(u, conc_fe_pred, color='C0', alpha=0.7, label='pred conc_fe')
-    axes[0].plot(u, slope_fe*u + intercept_fe, color='C1',
-                 label=f'lin fit: y={slope_fe:.3f}·u+{intercept_fe:.1f}')
-    axes[0].set_xlabel('u (solid_feed_percent)')
-    axes[0].set_ylabel('conc_fe_pred')
-    axes[0].legend()
-    axes[0].grid(True)
-
-    # conc_mass vs u
-    axes[1].scatter(u, conc_mass_pred, color='C2', alpha=0.7, label='pred conc_mass')
-    axes[1].plot(u, slope_mass*u + intercept_mass, color='C3',
-                 label=f'lin fit: y={slope_mass:.3f}·u+{intercept_mass:.1f}')
-    axes[1].set_xlabel('u (solid_feed_percent)')
-    axes[1].set_ylabel('conc_mass_pred')
-    axes[1].legend()
-    axes[1].grid(True)
-
-    plt.suptitle('Чутливість прогнозів до зміни керування u')
-    plt.tight_layout()
-    plt.show()
-
-# ---- ПОТРІБНО
 def analize_errors(results_df, ref_fe, ref_mass):
     err_fe   = results_df['conc_fe']   - ref_fe
     err_mass = results_df['conc_mass'] - ref_mass
@@ -199,7 +19,6 @@ def analize_errors(results_df, ref_fe, ref_mass):
     plt.title('Tracking error')
     plt.show()
 
-# ---- ПОТРІБНО
 def control_aggressiveness_metrics(u: np.ndarray,
                                    delta_u_max: float,
                                    threshold_ratio: float = 0.9
@@ -233,7 +52,6 @@ def control_aggressiveness_metrics(u: np.ndarray,
         'switch_frequency': freq
     }
 
-# ---- ПОТРІБНО
 def plot_delta_u_histogram(u: np.ndarray, bins: int = 20) -> None:
     """
     Побудова гістограми Δu = u[k]−u[k−1].
@@ -247,7 +65,6 @@ def plot_delta_u_histogram(u: np.ndarray, bins: int = 20) -> None:
     plt.grid(True)
     plt.show()
 
-# ---- ПОТРІБНО
 def plot_control_and_disturbances(u_seq: np.ndarray,
                                   d: np.ndarray,
                                   time: np.ndarray = None,
@@ -289,76 +106,6 @@ def plot_control_and_disturbances(u_seq: np.ndarray,
     fig.tight_layout(rect=[0, 0, 1, 0.96])
     plt.show()
     
-def plot_historical_data(hist_df: pd.DataFrame,
-                         columns: Optional[List[str]] = None,
-                         start_date: Optional[str] = None,
-                         end_date: Optional[str] = None,
-                         figsize: tuple = (14, 10),
-                         timestamp_col: Optional[str] = 'timestamp'):
-    """
-    Візуалізація історичних даних з DataFrame.
-
-    Параметри:
-    - hist_df: DataFrame з datetime індексом або стовпцем 'timestamp'.
-    - columns: Список стовпців для візуалізації. Якщо None — використовуються всі числові.
-    - start_date, end_date: Фільтрація по датах (формат рядка, наприклад '2023-01-01').
-    - figsize: Розмір фігури.
-
-    Виводить субплоти для кожного обраного параметра.
-    """
-    df = hist_df.copy()
-
-    # Встановлюємо індекс часу, якщо задано
-    if timestamp_col is not None and timestamp_col in df.columns:
-        df = df.set_index(timestamp_col)
-
-    # Перетворюємо індекс у DatetimeIndex, якщо потрібно
-    if not isinstance(df.index, pd.DatetimeIndex):
-        try:
-            df.index = pd.to_datetime(df.index)
-        except Exception:
-            raise ValueError("Індекс не є DatetimeIndex і не вдалося конвертувати.")
-            
-    # Індекс як DatetimeIndex
-    if not isinstance(df.index, pd.DatetimeIndex):
-        if 'timestamp' in df.columns:
-            df.set_index('timestamp', inplace=True)
-        else:
-            raise ValueError("DataFrame повинен мати індекс DatetimeIndex або стовпець 'timestamp'.")
-
-    # Фільтруємо за датами
-    if start_date:
-        df = df.loc[df.index >= pd.to_datetime(start_date)]
-    if end_date:
-        df = df.loc[df.index <= pd.to_datetime(end_date)]
-
-    # Визначаємо стовпці
-    if columns is None:
-        columns = df.select_dtypes(include=[np.number]).columns.tolist()
-        if not columns:
-            raise ValueError("Числових стовпців не знайдено.")
-    else:
-        missing_cols = [col for col in columns if col not in df.columns]
-        if missing_cols:
-            raise KeyError(f"Стовпці відсутні в DataFrame: {missing_cols}")
-
-    n = len(columns)
-
-    fig, axes = plt.subplots(n, 1, figsize=figsize, sharex=True)
-    if n == 1:
-        axes = [axes]
-
-    for ax, col in zip(axes, columns):
-        ax.plot(df.index, df[col], label=col)
-        ax.set_ylabel(col)
-        ax.grid(True)
-        ax.legend()
-
-    axes[-1].set_xlabel('Час')
-    plt.tight_layout()
-    plt.show()
-
-# ---- ПОТРІБНО
 def plot_fact_vs_mpc_plans(results_df, all_u_sequences, control_steps, var_name="solid_feed_percent"):
     """
     Порівняння фактичних значень var_name з оптимізованими планами MPC.
@@ -401,7 +148,6 @@ def plot_fact_vs_mpc_plans(results_df, all_u_sequences, control_steps, var_name=
     plt.tight_layout()
     plt.show()
 
-# ---- ПОТРІБНО
 def plot_disturbance_estimation(dist_history_df: pd.DataFrame):
     """
     Візуалізує якість роботи оцінювача збурень.
@@ -469,7 +215,6 @@ def plot_disturbance_estimation(dist_history_df: pd.DataFrame):
     plt.tight_layout(rect=[0, 0.02, 1, 0.96])
     plt.show()
 
-# ---- ПОТРІБНО
 def evaluate_ekf_performance(
         x_true_hist: np.ndarray,
         x_hat_hist: np.ndarray,
