@@ -10,7 +10,12 @@ from data_gen import StatefulDataGenerator
 from model import KernelModel
 from objectives import MaxIronMassTrackingObjective
 from mpc import MPCController
-from utils import (analize_errors, plot_control_and_disturbances, plot_mpc_diagnostics, evaluate_ekf_performance, plot_historical_data)
+from utils import (
+    analize_errors, plot_control_and_disturbances, 
+    evaluate_ekf_performance, plot_fact_vs_mpc_plans,
+    plot_disturbance_estimation, control_aggressiveness_metrics,
+    plot_delta_u_histogram
+)
 from ekf import ExtendedKalmanFilter
 from anomaly_detector import SignalAnomalyDetector
 from collections import deque
@@ -306,6 +311,9 @@ def run_simulation_loop(
     # 1. Службові змінні
     # ---------------------------------------------------------------------
     records = []
+    y_true_hist, x_hat_hist, P_hist, innov_hist, R_hist = [], [], [], [], []
+    u_seq_hist = [] # <<< НОВИЙ СПИСОК для планів MPC
+    d_hat_hist = [] # <<< НОВИЙ СПИСОК для оцінки збурень
     u_prev = float(hist0_unscaled[-1, 2])
 
     y_true_hist, x_hat_hist, P_hist, innov_hist, R_hist = [], [], [], [], []
@@ -430,6 +438,14 @@ def run_simulation_loop(
             else np.zeros(ekf.n_dist)
         )
 
+        # <<< ДОДАЄМО ЗБЕРЕЖЕННЯ ДАНИХ >>>
+        if u_seq is not None:
+            u_seq_hist.append(u_seq)
+        if mpc.d_hat is not None:
+            # Зберігаємо d_hat в оригінальному масштабі для кращої інтерпретації
+            d_hat_orig = y_scaler.inverse_transform(mpc.d_hat.reshape(1, -1))[0]
+            d_hat_hist.append(d_hat_orig)
+
         y_meas = y_full.iloc[0]
         records.append({
             'feed_fe_percent':      y_meas.feed_fe_percent,
@@ -449,19 +465,56 @@ def run_simulation_loop(
     if progress_callback:
         progress_callback(T_sim, T_sim, "Симуляція завершена")
         
-    # Оцінка ефективності EKF з коректними даними
-    # ekf_metrics = evaluate_ekf_performance(
-    #     np.vstack(y_true_hist),
-    #     np.vstack(x_hat_hist),
-    #     np.stack(P_hist),
-    #     np.vstack(innov_hist),
-    #     np.stack(R_hist)
-    # )
+    analysis_data = {
+        "y_true": np.vstack(y_true_hist),
+        "x_hat": np.vstack(x_hat_hist),
+        "P": np.stack(P_hist),
+        "innov": np.vstack(innov_hist),
+        "R": np.stack(R_hist),
+        "u_seq": u_seq_hist,
+        "d_hat": np.vstack(d_hat_hist) if d_hat_hist else np.array([]),
+    }
+
+    return pd.DataFrame(records), analysis_data
+
+def run_post_simulation_analysis(results_df, analysis_data, params):
+    """Виконує повний аналіз результатів симуляції та будує графіки."""
+    print("\n" + "="*20 + " АНАЛІЗ РЕЗУЛЬТАТІВ " + "="*20)
     
-    # print("===== EKF PERFORMANCE (Corrected Evaluation) =====")
-    # print(ekf_metrics)
+    u_applied = results_df['solid_feed_percent'].values
+    d_all = analysis_data['d_all_test'] # Потрібно передати d_all_test в analysis_data
     
-    return pd.DataFrame(records)
+    # 1. Загальна поведінка керування та збурень
+    plot_control_and_disturbances(u_applied, d_all, title="Фінальне керування та збурення")
+    
+    # 2. Помилки відстеження уставки
+    analize_errors(results_df, params['ref_fe'], params['ref_mass'])
+    
+    # 3. Агресивність керування
+    agg_metrics = control_aggressiveness_metrics(u_applied, params['delta_u_max'])
+    print("\n--- Метрики агресивності керування ---")
+    for key, val in agg_metrics.items():
+        print(f"{key:<20}: {val:.4f}")
+    plot_delta_u_histogram(u_applied)
+
+    # 4. Аналіз роботи EKF
+    if not analysis_data['y_true'] is None:
+        evaluate_ekf_performance(
+            analysis_data['y_true'], analysis_data['x_hat'], analysis_data['P'],
+            analysis_data['innov'], analysis_data['R']
+        )
+    
+    # 5. Аналіз оцінки збурень
+    if analysis_data['d_hat'].size > 0:
+        d_hat_df = pd.DataFrame(analysis_data['d_hat'], columns=['d_conc_fe', 'd_conc_mass'])
+        plot_disturbance_estimation(d_hat_df)
+    
+    # 6. Візуалізація планів MPC
+    if analysis_data['u_seq']:
+        plot_fact_vs_mpc_plans(results_df, analysis_data['u_seq'], control_steps=results_df.index)
+        
+    print("="*60 + "\n")
+    
 # =============================================================================
 # === ГОЛОВНА ФУНКЦІЯ-ОРКЕСТРАТОР ===
 # =============================================================================
@@ -534,23 +587,14 @@ def simulate_mpc(
     ekf = initialize_ekf(mpc, (x_scaler, y_scaler), hist0_unscaled, data['Y_train_scaled'], lag, params)
 
     # 3. Запуск симуляції
-    results_df = run_simulation_loop(true_gen, mpc, ekf, df_true, data, (x_scaler, y_scaler), params, progress_callback) # <<< Передаємо більше даних
+    results_df, analysis_data = run_simulation_loop(true_gen, mpc, ekf, df_true, data, (x_scaler, y_scaler), params, progress_callback) # <<< Передаємо більше даних
     
     # 4. Аналіз результатів
-    # print("\nАналіз результатів симуляції:")
-    # analize_errors(results_df, ref_fe, ref_mass)
-    # ---- MPC ----  
-    u_applied = results_df['solid_feed_percent'].values
-    d_all_test = df_true.iloc[test_idx_start:][['feed_fe_percent','ore_mass_flow']].values
-    plot_control_and_disturbances(u_applied, d_all_test[1:1+len(u_applied)])
-    # ----
-    # plot_mpc_diagnostics(results_df, w_fe, w_mass, λ_obj)
+    # Додаємо тестові збурення в словник для аналізу
+    test_idx_start = lag + 1 + len(data['X_train']) + len(data['X_val'])
+    analysis_data['d_all_test'] = df_true.iloc[test_idx_start:][['feed_fe_percent','ore_mass_flow']].values
     
-    # final_avg_iron_mass = (results_df.conc_fe * results_df.conc_mass / 100).mean()
-    # metrics['avg_iron_mass'] = final_avg_iron_mass
-    # print(f"Середня маса заліза в концентраті: {final_avg_iron_mass:.2f} т/год")
-    
-    # print("=" * 50)
+    run_post_simulation_analysis(results_df, analysis_data, params)
     return results_df, metrics
 
 
@@ -573,8 +617,8 @@ if __name__ == '__main__':
     res, mets = simulate_mpc(
         hist_df, 
         progress_callback=my_progress, 
-        N_data=3000, 
-        control_pts=300,
+        N_data=2000, 
+        control_pts=200,
         seed=42,
         
         plant_model_type='rf',
@@ -585,7 +629,7 @@ if __name__ == '__main__':
     
         noise_level='low',
         model_type='svr',
-        kernel='rbf', 
+        kernel='linear', 
         find_optimal_params=True,
         use_soft_constraints=True,
 

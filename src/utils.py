@@ -185,7 +185,8 @@ def analyze_sensitivity(results_df, preds_df):
     plt.suptitle('Чутливість прогнозів до зміни керування u')
     plt.tight_layout()
     plt.show()
-    
+
+# ---- ПОТРІБНО
 def analize_errors(results_df, ref_fe, ref_mass):
     err_fe   = results_df['conc_fe']   - ref_fe
     err_mass = results_df['conc_mass'] - ref_mass
@@ -197,7 +198,8 @@ def analize_errors(results_df, ref_fe, ref_mass):
     plt.legend(); plt.xlabel('крок'); plt.ylabel('помилка')
     plt.title('Tracking error')
     plt.show()
-    
+
+# ---- ПОТРІБНО
 def control_aggressiveness_metrics(u: np.ndarray,
                                    delta_u_max: float,
                                    threshold_ratio: float = 0.9
@@ -231,6 +233,7 @@ def control_aggressiveness_metrics(u: np.ndarray,
         'switch_frequency': freq
     }
 
+# ---- ПОТРІБНО
 def plot_delta_u_histogram(u: np.ndarray, bins: int = 20) -> None:
     """
     Побудова гістограми Δu = u[k]−u[k−1].
@@ -244,42 +247,7 @@ def plot_delta_u_histogram(u: np.ndarray, bins: int = 20) -> None:
     plt.grid(True)
     plt.show()
 
-# def plot_control_vs_disturbance(u: np.ndarray,
-#                                 d: np.ndarray,
-#                                 time: np.ndarray = None
-#                                 ) -> None:
-#     """
-#     Візуалізує u(t) разом з збуреннями d(t).
-#     Параметри:
-#       u     – масив керування довжини T
-#       d     – масив збурень форми (T, 2): [feed_fe_percent, ore_mass_flow]
-#       time  – ось часу (довжина T), якщо None – використовує np.arange(T)
-#     """
-#     T = len(u)
-#     if time is None:
-#         time = np.arange(T)
-
-#     fig, ax1 = plt.subplots()
-#     ax1.step(time, u, where='post', color='tab:blue', label='u (solid_feed_percent)')
-#     ax1.set_xlabel('Крок симуляції')
-#     ax1.set_ylabel('u', color='tab:blue')
-#     ax1.tick_params(axis='y', labelcolor='tab:blue')
-
-#     ax2 = ax1.twinx()
-#     ax2.plot(time, d[:T,0], '--', color='tab:green', label='feed_fe_percent')
-#     ax2.plot(time, d[:T,1], '--', color='tab:orange', label='ore_mass_flow')
-#     ax2.set_ylabel('Збурення', color='tab:green')
-#     ax2.tick_params(axis='y', labelcolor='tab:green')
-
-#     # легенда з обох осей
-#     lines1, labels1 = ax1.get_legend_handles_labels()
-#     lines2, labels2 = ax2.get_legend_handles_labels()
-#     ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
-
-#     plt.title('Керування u та збурення d')
-#     fig.tight_layout()
-#     plt.show()
-
+# ---- ПОТРІБНО
 def plot_control_and_disturbances(u_seq: np.ndarray,
                                   d: np.ndarray,
                                   time: np.ndarray = None,
@@ -389,7 +357,8 @@ def plot_historical_data(hist_df: pd.DataFrame,
     axes[-1].set_xlabel('Час')
     plt.tight_layout()
     plt.show()
-    
+
+# ---- ПОТРІБНО
 def plot_fact_vs_mpc_plans(results_df, all_u_sequences, control_steps, var_name="solid_feed_percent"):
     """
     Порівняння фактичних значень var_name з оптимізованими планами MPC.
@@ -431,7 +400,8 @@ def plot_fact_vs_mpc_plans(results_df, all_u_sequences, control_steps, var_name=
     plt.title(f"Факт та оптимальні плани MPC для {var_name}")
     plt.tight_layout()
     plt.show()
-    
+
+# ---- ПОТРІБНО
 def plot_disturbance_estimation(dist_history_df: pd.DataFrame):
     """
     Візуалізує якість роботи оцінювача збурень.
@@ -475,7 +445,7 @@ def plot_disturbance_estimation(dist_history_df: pd.DataFrame):
         mean_dist = dist_history_df[col].mean()
         ax.axhline(0, color='r', linestyle='--', lw=1.5, label='Нульовий зсув')
         ax.axhline(mean_dist, color='b', linestyle=':', lw=1.5, 
-                   label=f'Середнє = {mean_dist:.2f}')
+                     label=f'Середнє = {mean_dist:.2f}')
         
         title_text = output_names.get(col, col)
         ax.set_title(f'Збурення для виходу: «{title_text}»', fontsize=14)
@@ -483,14 +453,23 @@ def plot_disturbance_estimation(dist_history_df: pd.DataFrame):
         ax.legend()
         ax.grid(True, which='both', linestyle='--', linewidth=0.5)
 
+        # --- МОДИФІКАЦІЯ: Встановлення динамічних меж осі Y ---
+        min_val = dist_history_df[col].min()
+        max_val = dist_history_df[col].max()
+        
+        # Додаємо невеликий запас (padding)
+        padding = (max_val - min_val) * 0.1 # 10% від діапазону
+        if padding == 0: # Якщо всі значення однакові
+            padding = 0.1 # Встановлюємо мінімальний запас
+            
+        ax.set_ylim(min_val - padding, max_val + padding)
+        # --- КІНЕЦЬ МОДИФІКАЦІЇ ---
+
     axes[-1].set_xlabel('Крок симуляції на тестових даних (t)', fontsize=12)
     plt.tight_layout(rect=[0, 0.02, 1, 0.96])
     plt.show()
-    
-import numpy as np
-import matplotlib.pyplot as plt
-from scipy.stats import chi2
 
+# ---- ПОТРІБНО
 def evaluate_ekf_performance(
         x_true_hist: np.ndarray,
         x_hat_hist: np.ndarray,
