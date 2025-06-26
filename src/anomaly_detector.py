@@ -16,17 +16,19 @@ class SignalAnomalyDetector:
                  window: int = 21,               # довжина ковзного вікна
                  spike_z: float = 4.0,           # поріг robust-z  для spike
                  drop_rel: float = 0.20,         # ≥20 % різкий спад = drop
-                 drift_slope: float = 0.02,      # 2 %/крок ⇒ drift
+                 # drift_slope: float = 0.02,      # 2 %/крок ⇒ drift
                  freeze_len: int = 5,            # ≥5 однакових значень
-                 eps: float = 1e-9):
+                 eps: float = 1e-9,
+                 enabled: bool = True):
         if window % 2 == 0:
             window += 1
         self.window = window
         self.spike_z = spike_z
         self.drop_rel = drop_rel
-        self.drift_slope = drift_slope
+        # self.drift_slope = drift_slope
         self.freeze_len = freeze_len
         self.eps = eps
+        self.enabled = enabled
 
         self.buf: Deque[float] = deque(maxlen=window)
         self.last_good: float | None = None
@@ -41,6 +43,12 @@ class SignalAnomalyDetector:
 
     # ------------------------------------------------------------- public
     def update(self, x: float) -> float:
+        # Якщо детектор вимкнено, просто повертаємо оригінальне значення.
+        # Оновлюємо last_good, щоб при увімкненні детектора він мав актуальне значення.
+        if not self.enabled:
+            self.last_good = x
+            return x
+
         """
         Приймає чергове значення, повертає «очищене».
         """
@@ -72,13 +80,13 @@ class SignalAnomalyDetector:
             x_clean = x
 
         # --- 4) drift – забираємо лінійний тренд у буфері
-        if len(self.buf) == self.window:
-            y = np.asarray(self.buf)
-            t = np.arange(len(y))
-            coef = np.polyfit(t, y, 1)    # slope, intercept
-            if abs(coef[0] / (abs(coef[1]) + self.eps)) > self.drift_slope:
-                trend = coef[0] * (len(y) - 1)  # очікувана різниця
-                x_clean -= trend
+        # if len(self.buf) == self.window:
+        #     y = np.asarray(self.buf)
+        #     t = np.arange(len(y))
+        #     coef = np.polyfit(t, y, 1)    # slope, intercept
+        #     if abs(coef[0] / (abs(coef[1]) + self.eps)) > self.drift_slope:
+        #         trend = coef[0] * (len(y) - 1)  # очікувана різниця
+        #         x_clean -= trend
 
         self.last_good = x_clean
         return x_clean

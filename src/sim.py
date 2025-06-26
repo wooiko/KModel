@@ -70,29 +70,10 @@ def prepare_simulation_data(
 
     # 4. OFFLINE-ОЧИЩЕННЯ вхідних сигналів від аномалій
     #    Використовуємо ті самі налаштування, що й в online-циклі, або менш жорсткі.
-    anomaly_window   = 50     # довше дивимося в історію → згладження більш стабільне
-    spike_z_thresh   = 6.0    # спайк, якщо >6σ, а не 4σ
-    drop_rel_thresh  = 0.30   # спад ≥30% вважається drop (раніше 20%)
-    drift_slope_perc = 0.05   # drift, якщо >5%/крок (раніше 2%)
-    freeze_len_pts   = 10     # «залипання» ≥10 точок (раніше 5)
-    eps_val          = 1e-6   # для чисельної стабільності
-    
-    ad_feed_fe = SignalAnomalyDetector(
-        window=anomaly_window,
-        spike_z=spike_z_thresh,
-        drop_rel=drop_rel_thresh,
-        drift_slope=drift_slope_perc,
-        freeze_len=freeze_len_pts,
-        eps=eps_val
-    )
-    ad_ore_flow = SignalAnomalyDetector(
-        window=anomaly_window,
-        spike_z=spike_z_thresh,
-        drop_rel=drop_rel_thresh,
-        drift_slope=drift_slope_perc,
-        freeze_len=freeze_len_pts,
-        eps=eps_val
-    )
+    ad_config = params.get('anomaly_params', {})
+    ad_feed_fe = SignalAnomalyDetector(**ad_config)
+    ad_ore_flow = SignalAnomalyDetector(**ad_config)
+
 
     filtered_feed = []
     filtered_ore  = []
@@ -351,29 +332,10 @@ def run_simulation_loop(
     # ---------------------------------------------------------------------
     # 3. ONLINE-ДЕТЕКТОРИ АНОМАЛІЙ (нове)
     # ---------------------------------------------------------------------
-    anomaly_window   = 50     # довше дивимося в історію → згладження більш стабільне
-    spike_z_thresh   = 6.0    # спайк, якщо >6σ, а не 4σ
-    drop_rel_thresh  = 0.30   # спад ≥30% вважається drop (раніше 20%)
-    drift_slope_perc = 0.05   # drift, якщо >5%/крок (раніше 2%)
-    freeze_len_pts   = 10     # «залипання» ≥10 точок (раніше 5)
-    eps_val          = 1e-6   # для чисельної стабільності
-    
-    ad_feed_fe = SignalAnomalyDetector(
-        window=anomaly_window,
-        spike_z=spike_z_thresh,
-        drop_rel=drop_rel_thresh,
-        drift_slope=drift_slope_perc,
-        freeze_len=freeze_len_pts,
-        eps=eps_val
-    )
-    ad_ore_flow = SignalAnomalyDetector(
-        window=anomaly_window,
-        spike_z=spike_z_thresh,
-        drop_rel=drop_rel_thresh,
-        drift_slope=drift_slope_perc,
-        freeze_len=freeze_len_pts,
-        eps=eps_val
-    )
+    ad_config = params.get('anomaly_params', {})
+    ad_feed_fe = SignalAnomalyDetector(**ad_config)
+    ad_ore_flow = SignalAnomalyDetector(**ad_config)
+
     
     # ---------------------------------------------------------------------
     # 4. Головний цикл симуляції
@@ -540,6 +502,13 @@ def simulate_mpc(
     retrain_period: int = 50,               # Як часто перевіряти необхідність перенавчання (кожні N кроків).
     retrain_window_size: int = 1000,        # Розмір буфера даних для перенавчання (використовуються останні `retrain_window_size` точок).
     retrain_innov_threshold: float = 0.3,   # Поріг для середньої нормованої інновації EKF. Якщо NIS перевищує цей поріг, ініціюється перенавчання.
+    anomaly_params: dict = {
+        'window': 25,
+        'spike_z': 4.0,
+        'drop_rel': 0.30,
+        'freeze_len': 5,
+        'enabled': True
+    },                                      # Параметри детектора аномалій
     progress_callback: Callable[[int, int, str], None] = None # Функція зворотного виклику для відстеження прогресу симуляції. Приймає поточний крок, загальну кількість кроків та повідомлення.
 ):
     """
@@ -604,8 +573,8 @@ if __name__ == '__main__':
     res, mets = simulate_mpc(
         hist_df, 
         progress_callback=my_progress, 
-        N_data=5000, 
-        control_pts=500,
+        N_data=3000, 
+        control_pts=300,
         seed=42,
         
         plant_model_type='rf',
@@ -619,13 +588,19 @@ if __name__ == '__main__':
         kernel='rbf', 
         find_optimal_params=True,
         use_soft_constraints=True,
-        
+
+        anomaly_params = {
+            'window': 25,
+            'spike_z': 4.0,
+            'drop_rel': 0.30,
+            'freeze_len': 5,
+            'enabled': False
+        },
+
         λ_obj=8.0,
         
         Nc=8,
         Np=12,
-        # жорсткий горизонт управління
-        # delta_u_max=2.0,          # макс. крок зміни керування
     
         # Цільові параметри/ваги
         w_fe=1.0,
