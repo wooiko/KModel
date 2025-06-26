@@ -1,0 +1,103 @@
+<mxfile host="app.diagrams.net">
+    <diagram name="Принцип роботи симулятора">
+        <mxGraphModel dx="1426" dy="792" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                
+                <!-- Центральний модуль -->
+                <mxCell id="sim" value="&lt;b&gt;sim.py (Головний контролер)&lt;/b&gt;&lt;br&gt;• Оркеструє весь процес&lt;br&gt;• Керує циклом симуляції&lt;br&gt;• Координує компоненти" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+                    <mxGeometry x="300" y="40" width="240" height="120" as="geometry"/>
+                </mxCell>
+                
+                <!-- Генерація даних -->
+                <mxCell id="data_gen" value="&lt;b&gt;data_gen.py&lt;/b&gt;&lt;br&gt;• Генерує синтетичні дані&lt;br&gt;• Імітує &amp;quot;реальну&amp;quot; систему (plant)&lt;br&gt;• Додає шум/аномалії" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+                    <mxGeometry x="40" y="200" width="200" height="100" as="geometry"/>
+                </mxCell>
+                
+                <!-- Обробка аномалій -->
+                <mxCell id="anomaly_detector" value="&lt;b&gt;anomaly_detector.py&lt;/b&gt;&lt;br&gt;• Фільтрує вхідні сигнали&lt;br&gt;• Виявляє spike/drop/drift/freeze&lt;br&gt;• Корегує аномальні значення" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+                    <mxGeometry x="40" y="320" width="200" height="100" as="geometry"/>
+                </mxCell>
+                
+                <!-- Прогнозуюча модель -->
+                <mxCell id="model" value="&lt;b&gt;model.py&lt;/b&gt;&lt;br&gt;• Прогнозує виходи системи&lt;br&gt;• Підтримує KRR/GPR/SVR&lt;br&gt;• Забезпечує лінеаризацію" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+                    <mxGeometry x="300" y="200" width="200" height="100" as="geometry"/>
+                </mxCell>
+                
+                <!-- MPC контролер -->
+                <mxCell id="mpc" value="&lt;b&gt;mpc.py&lt;/b&gt;&lt;br&gt;• Формує задачу оптимізації&lt;br&gt;• Використовує CVXPY&lt;br&gt;• Обчислює оптимальне керування" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+                    <mxGeometry x="560" y="200" width="200" height="100" as="geometry"/>
+                </mxCell>
+                
+                <!-- Фільтр Калмана -->
+                <mxCell id="ekf" value="&lt;b&gt;ekf.py&lt;/b&gt;&lt;br&gt;• Оцінює стан системи&lt;br&gt;• Компенсує збурення&lt;br&gt;• Адаптує параметри онлайн" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+                    <mxGeometry x="560" y="320" width="200" height="100" as="geometry"/>
+                </mxCell>
+                
+                <!-- Цільові функції -->
+                <mxCell id="objectives" value="&lt;b&gt;objectives.py&lt;/b&gt;&lt;br&gt;• Визначає цільові функції&lt;br&gt;• Балансує трекінг/енергію&lt;br&gt;• Реалізує обмеження" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+                    <mxGeometry x="300" y="320" width="200" height="100" as="geometry"/>
+                </mxCell>
+                
+                <!-- Аналіз результатів -->
+                <mxCell id="utils" value="&lt;b&gt;utils.py&lt;/b&gt;&lt;br&gt;• Візуалізує результати&lt;br&gt;• Аналізує помилки&lt;br&gt;• Оцінює продуктивність" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;" vertex="1" parent="1">
+                    <mxGeometry x="300" y="460" width="200" height="80" as="geometry"/>
+                </mxCell>
+                
+                <!-- Стрілки зв'язків -->
+                <mxCell id="arrow1" value="Синтетичні дані" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.25;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="data_gen" target="model">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="arrow2" value="Модель процесу" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.25;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="model" target="mpc">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="arrow3" value="Модель процесу" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.25;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="model" target="ekf">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="arrow4" value="Цільова функція" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.75;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="objectives" target="mpc">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="arrow5" value="Очищені виміри" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.25;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="anomaly_detector" target="sim">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="140" y="420" as="sourcePoint"/>
+                        <mxPoint x="420" y="160" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="arrow6" value="Керуюча дія" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.75;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="mpc" target="sim">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="660" y="250" as="sourcePoint"/>
+                        <mxPoint x="540" y="160" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="arrow7" value="Оцінка стану" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.75;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="ekf" target="sim">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="660" y="370" as="sourcePoint"/>
+                        <mxPoint x="540" y="160" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="arrow8" value="Виконання кроку" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="sim" target="data_gen">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="420" y="160" as="sourcePoint"/>
+                        <mxPoint x="140" y="250" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="arrow9" value="Вихідні параметри" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.75;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="data_gen" target="ekf">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="arrow10" value="Результати симуляції" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="sim" target="utils">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="arrow11" value="Динамічне перенавчання" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.25;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="sim" target="model">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="420" y="160" as="sourcePoint"/>
+                        <mxPoint x="400" y="200" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="arrow12" value="Вхідні сигнали" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="data_gen" target="anomaly_detector">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>
