@@ -638,15 +638,15 @@ if __name__ == '__main__':
 
         λ_obj=8.0,
         
-        Nc=8,
-        Np=12,
-        lag=2,
+        Nc=6, #8
+        Np=10, #12
+        lag=2, #2
         
         # Цільові параметри/ваги
         w_fe=1.0,
         w_mass=1.0,
-        ref_fe=54.0,
-        ref_mass=58.2,
+        ref_fe=54.5,
+        ref_mass=58.0,
         y_max_fe=55.0,
         y_max_mass=60.0,
         
