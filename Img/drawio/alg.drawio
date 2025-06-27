@@ -1,47 +1,58 @@
 <mxfile host="app.diagrams.net" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36" version="27.1.6">
   <diagram name="Алгоритм симулятора" id="0">
-    <mxGraphModel dx="1042" dy="527" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+    <mxGraphModel dx="1489" dy="753" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
         <mxCell id="start" value="&lt;b&gt;Початок&lt;/b&gt;" style="ellipse;whiteSpace=wrap;html=1;" parent="1" vertex="1">
-          <mxGeometry x="300" y="20" width="100" height="60" as="geometry" />
+          <mxGeometry x="30" y="70" width="100" height="60" as="geometry" />
         </mxCell>
         <mxCell id="gen_data" value="&lt;b&gt;1. Генерація даних&lt;/b&gt;&lt;br&gt;- Створення синтетичних даних&lt;br&gt;- Додавання шуму та аномалій&lt;br&gt;- Розділення на train/val/test" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
-          <mxGeometry x="250" y="100" width="200" height="100" as="geometry" />
+          <mxGeometry x="190" y="50" width="200" height="100" as="geometry" />
         </mxCell>
         <mxCell id="init_components" value="&lt;b&gt;2. Ініціалізація компонентів&lt;/b&gt;&lt;br&gt;- Навчання моделі процесу&lt;br&gt;- Створення MPC контролера&lt;br&gt;- Налаштування EKF фільтра" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" parent="1" vertex="1">
-          <mxGeometry x="250" y="220" width="200" height="100" as="geometry" />
+          <mxGeometry x="446" y="50" width="200" height="100" as="geometry" />
         </mxCell>
         <mxCell id="sim_loop" value="&lt;b&gt;3. Основний цикл симуляції&lt;/b&gt;&lt;br&gt;Для кожного кроку t:" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
-          <mxGeometry x="250" y="340" width="200" height="80" as="geometry" />
+          <mxGeometry x="446" y="190" width="200" height="80" as="geometry" />
         </mxCell>
         <mxCell id="step1" value="&lt;b&gt;3.1 Отримання вимірів&lt;/b&gt;&lt;br&gt;- Зчитування feed_fe, ore_flow" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;" parent="1" vertex="1">
-          <mxGeometry x="150" y="440" width="160" height="60" as="geometry" />
+          <mxGeometry x="466" y="310" width="160" height="60" as="geometry" />
         </mxCell>
         <mxCell id="step2" value="&lt;b&gt;3.2 Фільтрація аномалій&lt;/b&gt;&lt;br&gt;- Spike/drop/drift/freeze" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" parent="1" vertex="1">
-          <mxGeometry x="150" y="520" width="160" height="60" as="geometry" />
+          <mxGeometry x="200" y="410" width="160" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="99y7yrKcIbiiUJmR47op-3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="step3" target="step4">
+          <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="step3" value="&lt;b&gt;3.3 Прогноз EKF&lt;/b&gt;&lt;br&gt;- Оновлення стану системи" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" parent="1" vertex="1">
-          <mxGeometry x="150" y="600" width="160" height="60" as="geometry" />
+          <mxGeometry x="200" y="535" width="160" height="60" as="geometry" />
         </mxCell>
         <mxCell id="step4" value="&lt;b&gt;3.4 Оптимізація MPC&lt;/b&gt;&lt;br&gt;- Розв&#39;язання задачі QP&lt;br&gt;- Обчислення керуючої дії" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="1" vertex="1">
-          <mxGeometry x="390" y="440" width="160" height="80" as="geometry" />
+          <mxGeometry x="476" y="410" width="160" height="80" as="geometry" />
         </mxCell>
         <mxCell id="step5" value="&lt;b&gt;3.5 Застосування керування&lt;/b&gt;&lt;br&gt;- Виконання кроку &amp;quot;plant&amp;quot;&lt;br&gt;- Отримання виходів системи" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
-          <mxGeometry x="390" y="540" width="160" height="80" as="geometry" />
+          <mxGeometry x="476" y="535" width="160" height="80" as="geometry" />
         </mxCell>
         <mxCell id="step6" value="&lt;b&gt;3.6 Корекція EKF&lt;/b&gt;&lt;br&gt;- Оновлення на основі вимірювань" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" parent="1" vertex="1">
-          <mxGeometry x="390" y="640" width="160" height="60" as="geometry" />
+          <mxGeometry x="476" y="680" width="160" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="99y7yrKcIbiiUJmR47op-5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="step7" target="step1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="710" y="830" />
+              <mxPoint x="710" y="340" />
+            </Array>
+          </mxGeometry>
         </mxCell>
         <mxCell id="step7" value="&lt;b&gt;3.7 Динамічне перенавчання&lt;/b&gt;&lt;br&gt;(Якщо потрібно)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" parent="1" vertex="1">
-          <mxGeometry x="90" y="870" width="160" height="60" as="geometry" />
+          <mxGeometry x="476" y="800" width="160" height="60" as="geometry" />
         </mxCell>
         <mxCell id="analysis" value="&lt;b&gt;4. Аналіз результатів&lt;/b&gt;&lt;br&gt;- Візуалізація керування&lt;br&gt;- Оцінка якості трекінгу&lt;br&gt;- Аналіз роботи EKF" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" parent="1" vertex="1">
-          <mxGeometry x="250" y="800" width="200" height="100" as="geometry" />
+          <mxGeometry x="456" y="900" width="200" height="100" as="geometry" />
         </mxCell>
         <mxCell id="end" value="&lt;b&gt;Кінець&lt;/b&gt;" style="ellipse;whiteSpace=wrap;html=1;" parent="1" vertex="1">
-          <mxGeometry x="300" y="920" width="100" height="60" as="geometry" />
+          <mxGeometry x="506" y="1050" width="100" height="60" as="geometry" />
         </mxCell>
         <mxCell id="arrow1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" source="start" target="gen_data" edge="1">
           <mxGeometry relative="1" as="geometry" />
@@ -54,7 +65,7 @@
         </mxCell>
         <mxCell id="arrow4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" source="sim_loop" target="step1" edge="1">
           <mxGeometry relative="1" as="geometry">
-            <mxPoint x="350" y="380" as="targetPoint" />
+            <mxPoint x="216" y="370" as="targetPoint" />
           </mxGeometry>
         </mxCell>
         <mxCell id="arrow5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" source="step1" target="step2" edge="1">
@@ -62,15 +73,6 @@
         </mxCell>
         <mxCell id="arrow6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" source="step2" target="step3" edge="1">
           <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="arrow7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" source="step3" target="step4" edge="1">
-          <mxGeometry relative="1" as="geometry">
-            <Array as="points">
-              <mxPoint x="230" y="630" />
-              <mxPoint x="230" y="480" />
-              <mxPoint x="390" y="480" />
-            </Array>
-          </mxGeometry>
         </mxCell>
         <mxCell id="arrow8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" source="step4" target="step5" edge="1">
           <mxGeometry relative="1" as="geometry" />
@@ -80,8 +82,8 @@
         </mxCell>
         <mxCell id="arrow10" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" source="step6" target="step7" edge="1">
           <mxGeometry relative="1" as="geometry">
-            <mxPoint x="470" y="670" as="sourcePoint" />
-            <mxPoint x="350" y="670" as="targetPoint" />
+            <mxPoint x="336" y="660" as="sourcePoint" />
+            <mxPoint x="216" y="660" as="targetPoint" />
           </mxGeometry>
         </mxCell>
         <mxCell id="arrow11" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" source="step7" target="analysis" edge="1">
@@ -89,16 +91,6 @@
         </mxCell>
         <mxCell id="arrow12" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" parent="1" source="analysis" target="end" edge="1">
           <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="loop_arrow" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="step7" target="step1" edge="1">
-          <mxGeometry relative="1" as="geometry">
-            <Array as="points">
-              <mxPoint x="350" y="780" />
-              <mxPoint x="80" y="780" />
-              <mxPoint x="80" y="470" />
-              <mxPoint x="150" y="470" />
-            </Array>
-          </mxGeometry>
         </mxCell>
       </root>
     </mxGraphModel>
