@@ -612,19 +612,19 @@ if __name__ == '__main__':
     res, mets = simulate_mpc(
         hist_df, 
         progress_callback=my_progress, 
-        N_data=2000, 
-        control_pts=200,
+        N_data=3000, 
+        control_pts=600,
         seed=42,
         
         plant_model_type='rf',
         
-        train_size=0.8,
-        val_size=0.15,
-        test_size=0.05,
+        train_size=0.65,
+        val_size=0.2,
+        test_size=0.15,
     
         noise_level='low',
-        model_type='svr',
-        kernel='linear', 
+        model_type='gpr',
+        kernel='rbf', 
         find_optimal_params=True,
         use_soft_constraints=True,
 
@@ -646,7 +646,7 @@ if __name__ == '__main__':
         w_fe=1.0,
         w_mass=1.0,
         ref_fe=54.5,
-        ref_mass=58.0,
+        ref_mass=57.0,
         y_max_fe=55.0,
         y_max_mass=60.0,
         
@@ -658,8 +658,8 @@ if __name__ == '__main__':
         run_analysis=True
     )
     
-    # print("\nРезультати симуляції (останні 5 кроків):")
-    # print(res.tail())
-    # print("\nФінальні метрики:")
-    # print(mets)
+    print("\nРезультати симуляції (останні 5 кроків):")
+    print(res.tail())
+    print("\nФінальні метрики:")
+    print(mets)
     res.to_parquet('mpc_simulation_results.parquet')
