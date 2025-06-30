@@ -40,9 +40,9 @@ def prepare_simulation_data(
     true_gen = StatefulDataGenerator(
         reference_df,
         ore_flow_var_pct=3.0,
-        time_step_s=5.0,
-        time_constant_s=8.0,
-        dead_time_s=20.0,
+        time_step_s=params['time_step_s'],
+        time_constants_s=params['time_constants_s'],
+        dead_times_s=params['dead_times_s'],
         true_model_type=params['plant_model_type'],
         seed=params['seed']
     )
@@ -234,19 +234,20 @@ def initialize_ekf(
     Ініціалізує розширений фільтр Калмана (EKF).
     """
     print("Крок 4: Ініціалізація фільтра Калмана (EKF)...")
+       
     x_scaler, y_scaler = scalers
     n_phys, n_dist = (lag + 1) * 3, 2
     
     x0_aug = np.hstack([hist0_unscaled.flatten(), np.zeros(n_dist)])
     
-    P0 = np.eye(n_phys + n_dist) * 1e-2
+    P0 = np.eye(n_phys + n_dist) * params['P0']
     P0[n_phys:, n_phys:] *= 1 
 
-    Q_phys = np.eye(n_phys) * 1500#320
-    Q_dist = np.eye(n_dist) * 1#6e-2 
+    Q_phys = np.eye(n_phys) * params['Q_phys']
+    Q_dist = np.eye(n_dist) * params['Q_dist'] 
     Q = np.block([[Q_phys, np.zeros((n_phys, n_dist))], [np.zeros((n_dist, n_phys)), Q_dist]])
     
-    R = np.diag(np.var(Y_train_scaled, axis=0)) * 0.05#0.3
+    R = np.diag(np.var(Y_train_scaled, axis=0)) * params['R']
     
     return ExtendedKalmanFilter(
         mpc.model, x_scaler, y_scaler, x0_aug, P0, Q, R, lag,
@@ -515,7 +516,22 @@ def run_post_simulation_analysis(results_df, analysis_data, params):
 def simulate_mpc(
     reference_df: pd.DataFrame,             # DataFrame, що містить референсні дані для генерації даних симуляції.
     N_data: int = 5000,                     # Загальна кількість точок даних, що генеруються для симуляції.
-    control_pts: int = 1000,                # Кількість точок (кроків) симуляції, на яких відбувається керування MPC.
+    control_pts : int = 1000,               # Кількість точок (кроків) симуляції, на яких відбувається керування MPC.
+    time_step_s : int = 5,                  # Часовий крок виконання
+    dead_times_s : dict = 
+    {
+        'concentrate_fe_percent': 20.0,
+        'tailings_fe_percent': 25.0,
+        'concentrate_mass_flow': 20.0,
+        'tailings_mass_flow': 25.0
+    },                                      # Транспортна затримка вихідних параметрів
+    time_constants_s : dict = 
+    {
+        'concentrate_fe_percent': 8.0,
+        'tailings_fe_percent': 10.0,
+        'concentrate_mass_flow': 5.0,
+        'tailings_mass_flow': 7.0
+    },                                      # Інерційність вихідних параметрів
     lag: int = 2,                           # Кількість кроків затримки (lag) для моделі, впливає на розмір вектора стану.
     Np: int = 6,                            # Горизонт прогнозування (Prediction Horizon) MPC. Кількість майбутніх кроків, які модель прогнозує.
     Nc: int = 4,                            # Горизонт керування (Control Horizon) MPC. Кількість майбутніх змін керування, які MPC розраховує.
@@ -555,6 +571,13 @@ def simulate_mpc(
         'enabled': True
     },                                      # Параметри детектора аномалій
     run_analysis: bool = True,              # Показати візуалізацію результатів роботи симулятора
+    P0: float = 1e-2,
+    Q_phys: float = 1500,
+    Q_dist: float = 1,
+    R: float = 0.01,
+    q_adaptive_enabled: bool = True,
+    q_alpha:float = 0.99,
+    q_nis_threshold:float = 1.5,
     progress_callback: Callable[[int, int, str], None] = None # Функція зворотного виклику для відстеження прогресу симуляції. Приймає поточний крок, загальну кількість кроків та повідомлення.
 ):
     """
@@ -612,8 +635,10 @@ if __name__ == '__main__':
     res, mets = simulate_mpc(
         hist_df, 
         progress_callback=my_progress, 
-        N_data=3000, 
-        control_pts=600,
+        
+        # ---- Блок даних
+        N_data=1000, 
+        control_pts=200,
         seed=42,
         
         plant_model_type='rf',
@@ -622,27 +647,57 @@ if __name__ == '__main__':
         val_size=0.2,
         test_size=0.15,
     
+        # ---- Налаштування моделі
         noise_level='low',
-        model_type='gpr',
-        kernel='rbf', 
+        model_type='svr',
+        kernel='linear', 
         find_optimal_params=True,
         use_soft_constraints=True,
-
-        anomaly_params = {
+        
+        # ---- Налаштування EKF
+        P0=1e-2,
+        Q_phys=770,
+        Q_dist=1,
+        R=0.2, #0.2 for time_step_s = 1800
+        q_adaptive_enabled=True,
+        q_alpha = 0.995,
+        q_nis_threshold = 1.8,
+        # ---- Налантування аномалій
+        anomaly_params = 
+        {
             'window': 25,
             'spike_z': 4.0,
             'drop_rel': 0.30,
             'freeze_len': 5,
-            'enabled': False
+            'enabled': True
         },
 
-        λ_obj=8.0,
+        # ---- Параметри затримки, чавові параметри
+        time_step_s = 1800,
+        dead_times_s = 
+        {
+            'concentrate_fe_percent': 20.0,
+            'tailings_fe_percent': 25.0,
+            'concentrate_mass_flow': 20.0,
+            'tailings_mass_flow': 25.0
+        },
+                time_constants_s = 
+        {
+            'concentrate_fe_percent': 8.0,
+            'tailings_fe_percent': 10.0,
+            'concentrate_mass_flow': 5.0,
+            'tailings_mass_flow': 7.0
+        },
+        
+        # ---- Обмеження моделі
+        delta_u_max = 0.3,
+        λ_obj=1.5,
         
         Nc=6, #8
         Np=10, #12
         lag=2, #2
         
-        # Цільові параметри/ваги
+        # ---- Цільові параметри/ваги
         w_fe=1.0,
         w_mass=1.0,
         ref_fe=54.5,
@@ -650,16 +705,15 @@ if __name__ == '__main__':
         y_max_fe=55.0,
         y_max_mass=60.0,
         
+        # ---- Блок перенавчання
         enable_retraining=True,          # Ввімкнути/вимкнути функціонал перенавчання
         retrain_period=50,                 # Як часто перевіряти необхідність перенавчання (кожні 50 кроків)
         retrain_window_size=1000,          # Розмір буфера даних для перенавчання (останні 1000 точок)
-        retrain_innov_threshold=0.3,     # Поріг для середньої нормованої інновації EKF
+        retrain_innov_threshold=0.25,     # Поріг для середньої нормованої інновації EKF
         
         run_analysis=True
     )
     
-    print("\nРезультати симуляції (останні 5 кроків):")
-    print(res.tail())
     print("\nФінальні метрики:")
     print(mets)
     res.to_parquet('mpc_simulation_results.parquet')

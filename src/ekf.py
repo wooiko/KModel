@@ -101,7 +101,6 @@ class ExtendedKalmanFilter:
         # Застосовуємо адаптивний коефіцієнт до Q
         self.P = self.F @ self.P @ self.F.T + (self.Q * self.q_scale)
         
-# ekf.py (НОВА, ВИПРАВЛЕНА версія методу update)
 
     def update(self, z_k: np.ndarray):
         """
@@ -117,12 +116,7 @@ class ExtendedKalmanFilter:
         # <<< ЗМІНЕНО >>>
         # Тепер ми отримуємо збурення напряму з вектора стану, оскільки вони ВЖЕ МАСШТАБОВАНІ.
         d_scaled = self.x_hat[self.n_phys:] 
-        
-        # <<< ВИДАЛЕНО >>> 
-        # Більше не потрібно отримувати d_unscaled та трансформувати його.
-        # d_unscaled      = self.x_hat[self.n_phys:] 
-        # d_scaled = self.y_scaler.transform(d_unscaled.reshape(1, -1))[0]
-    
+           
         # ---- 1. Масштабуємо фізичний стан для використання в моделі
         x_phys_scaled = self.x_scaler.transform(x_phys_unscaled)
         
@@ -182,10 +176,6 @@ class ExtendedKalmanFilter:
         K_k = self.P @ H_k.T @ np.linalg.inv(S_k)
     
         # ---- 7. Оновлення стану
-        # <<< ПОЯСНЕННЯ >>>
-        # Цей рядок ТЕПЕР ПРАЦЮЄ КОРЕКТНО.
-        # Поправка (K_k @ y_tilde) є сумісною з вектором стану self.x_hat,
-        # оскільки частина поправки для збурень тепер коректно додається до масштабованої оцінки збурень.
         self.x_hat = self.x_hat + K_k @ y_tilde
         
         # ---- 8. Оновлення коваріації

@@ -77,78 +77,95 @@ class DataGenerator:
     """
     
     def __init__(self,
-                 reference_df: pd.DataFrame,
-                 ore_flow_var_pct: float = 3.0,
-                 seed: int = 0,
-                 time_step_s: float = 5.0,
-                 time_constant_s: float = 8.0,
-                 dead_time_s: float = 20.0,
-                 # >>> НОВИЙ ПАРАМЕТР <<<
-                 true_model_type: str = 'rf' # 'rf' або 'knn'
-                ):
-        self.rng = np.random.default_rng(seed)
-        self.seed = seed # Зберігаємо для відтворюваності RandomForest
-
-        self.time_step_s = time_step_s
-        self.dead_time_steps = round(dead_time_s / time_step_s)
-        time_constant_steps = time_constant_s / time_step_s
-        self.lag_filter_alpha = 1.0 / (time_constant_steps + 1.0)
-        
-        # 2) Зберігаємо оригінальні дані та вставляємо ore_mass_flow, якщо немає
-        self.original_dataset = reference_df.copy().reset_index(drop=True)
-        if 'ore_mass_flow' not in self.original_dataset.columns:
-            if 'feed_fe_percent' in self.original_dataset.columns:
-                pos = list(self.original_dataset.columns).index('feed_fe_percent') + 1
-            else:
-                pos = len(self.original_dataset.columns)
-            self.original_dataset.insert(loc=pos,
-                                         column='ore_mass_flow',
-                                         value=100.0)
-
-        # 3) Використовуємо оновлені дані для навчання kNN
-        self.ref = self.original_dataset.copy()
-
-        # 4) Вхідні й вихідні параметри
-        self.input_cols = ['feed_fe_percent',
-                           'ore_mass_flow',
-                           'solid_feed_percent']
-        self.output_cols = [
-            'concentrate_fe_percent',
-            'tailings_fe_percent',
-            'concentrate_mass_flow',
-            'tailings_mass_flow'
-        ]
-
-        # 5) Навчаємо kNN на чистих даних
-        self.true_model_type = true_model_type
-        self._fit_model() # <<< ЗАМІНЮЄМО ВИКЛИК
-        
-        # 6) Діапазони генерації вхідних сигналів
-        base_flow = self.ref['ore_mass_flow'].mean()
-        dv = base_flow * ore_flow_var_pct / 100.0
-        self.ranges = {
-            'ore_mass_flow':      (base_flow - dv, base_flow + dv),
-            'feed_fe_percent':    (self.ref['feed_fe_percent'].min(),
-                                   self.ref['feed_fe_percent'].max()),
-            'solid_feed_percent': (self.ref['solid_feed_percent'].min(),
-                                   self.ref['solid_feed_percent'].max())
-        }
-        self._input_ranges = dict(self.ranges)
-
-        # 7) Мін/макс для clamp після шуму/аномалій
-        self._parameter_ranges_for_clamping = {}
-        for col in self.input_cols + self.output_cols:
-            col_series = self.original_dataset[col]
-            self._parameter_ranges_for_clamping[col] = (
-                col_series.min(),
-                col_series.max()
-            )
-        
-    # def _fit_knn(self, n_neighbors: int = 5):
-    #     X = self.ref[self.input_cols]
-    #     y = self.ref[self.output_cols]
-    #     self._model = KNeighborsRegressor(n_neighbors=n_neighbors)
-    #     self._model.fit(X, y)
+                     reference_df: pd.DataFrame,
+                     ore_flow_var_pct: float = 3.0,
+                     seed: int = 0,
+                     time_step_s: float = 5.0,
+                     # === МОДИФІКОВАНІ ПАРАМЕТРИ ===
+                     # Замість скалярів тепер використовуються словники.
+                     # Ключ - назва колонки, значення - параметр в секундах.
+                     time_constants_s: dict = None,
+                     dead_times_s: dict = None,
+                     # ===============================
+                     true_model_type: str = 'rf'
+                    ):
+            self.rng = np.random.default_rng(seed)
+            self.seed = seed
+    
+            # 1) Зберігаємо базові параметри часу
+            self.time_step_s = time_step_s
+    
+            # 2) Вхідні й вихідні параметри (визначені тут для використання нижче)
+            self.input_cols = ['feed_fe_percent',
+                               'ore_mass_flow',
+                               'solid_feed_percent']
+            self.output_cols = [
+                'concentrate_fe_percent',
+                'tailings_fe_percent',
+                'concentrate_mass_flow',
+                'tailings_mass_flow'
+            ]
+    
+            # 3) === ЛОГІКА ОБРОБКИ ІНДИВІДУАЛЬНИХ ЗАтримок ===
+            # Встановлюємо значення за замовчуванням, якщо словники не передано
+            default_tc = {'default': 8.0}
+            default_dt = {'default': 20.0}
+    
+            self.time_constants_s = time_constants_s if time_constants_s is not None else default_tc
+            self.dead_times_s = dead_times_s if dead_times_s is not None else default_dt
+    
+            # Обчислюємо параметри динаміки (кроки затримки та альфа-коефіцієнти)
+            # для кожного вихідного сигналу окремо і зберігаємо їх у словниках.
+            # Метод .get() безпечно повертає значення 'default', якщо для конкретного
+            # виходу немає ключа в переданому словнику.
+            self.dead_time_steps = {
+                col: round(self.dead_times_s.get(col, self.dead_times_s.get('default', 20.0)) / self.time_step_s)
+                for col in self.output_cols
+            }
+            self.lag_filter_alphas = {
+                col: 1.0 / ((self.time_constants_s.get(col, self.time_constants_s.get('default', 8.0)) / self.time_step_s) + 1.0)
+                for col in self.output_cols
+            }
+            # =======================================================
+    
+            # 4) Зберігаємо оригінальні дані та вставляємо ore_mass_flow, якщо немає
+            self.original_dataset = reference_df.copy().reset_index(drop=True)
+            if 'ore_mass_flow' not in self.original_dataset.columns:
+                if 'feed_fe_percent' in self.original_dataset.columns:
+                    pos = list(self.original_dataset.columns).index('feed_fe_percent') + 1
+                else:
+                    pos = len(self.original_dataset.columns)
+                self.original_dataset.insert(loc=pos,
+                                             column='ore_mass_flow',
+                                             value=100.0)
+    
+            # 5) Використовуємо оновлені дані для навчання моделі
+            self.ref = self.original_dataset.copy()
+    
+            # 6) Навчаємо модель "реального процесу"
+            self.true_model_type = true_model_type
+            self._fit_model()
+    
+            # 7) Діапазони генерації вхідних сигналів
+            base_flow = self.ref['ore_mass_flow'].mean()
+            dv = base_flow * ore_flow_var_pct / 100.0
+            self.ranges = {
+                'ore_mass_flow':      (base_flow - dv, base_flow + dv),
+                'feed_fe_percent':    (self.ref['feed_fe_percent'].min(),
+                                       self.ref['feed_fe_percent'].max()),
+                'solid_feed_percent': (self.ref['solid_feed_percent'].min(),
+                                       self.ref['solid_feed_percent'].max())
+            }
+            self._input_ranges = dict(self.ranges)
+    
+            # 8) Мін/макс для clamp після шуму/аномалій
+            self._parameter_ranges_for_clamping = {}
+            for col in self.input_cols + self.output_cols:
+                col_series = self.original_dataset[col]
+                self._parameter_ranges_for_clamping[col] = (
+                    col_series.min(),
+                    col_series.max()
+                )
 
     def _fit_model(self, n_neighbors: int = 5):
         """
@@ -213,31 +230,25 @@ class DataGenerator:
         return df
 
     def _apply_dynamics(self, df_ideal: pd.DataFrame) -> pd.DataFrame:
-        """
-        Застосовує динаміку першого порядку із запізненням до виходів.
-        df_ideal: датафрейм з "ідеальними" миттєвими виходами.
-        """
         df_dynamic = df_ideal.copy()
-        
-        # Застосовуємо динаміку тільки до вихідних колонок
+    
         for col in self.output_cols:
             ideal_output = df_ideal[col].values
             dynamic_output = np.zeros_like(ideal_output)
-            
-            # 1. Застосовуємо запізнення (dead time)
-            # Вихід в момент t залежить від ідеального виходу в момент (t - dead_time)
-            delayed_output = pd.Series(ideal_output).shift(self.dead_time_steps).bfill().values
-            
-            # 2. Застосовуємо інерційність (first-order lag)
-            # y(t) = a * y_ideal(t) + (1-a) * y(t-1)
-            # Початкове значення = перше значення після затримки
+    
+            # <<< ВИКОРИСТОВУЄМО ІНДИВІДУАЛЬНІ ПАРАМЕТРИ >>>
+            current_dead_time_steps = self.dead_time_steps[col]
+            current_alpha = self.lag_filter_alphas[col]
+    
+            delayed_output = pd.Series(ideal_output).shift(current_dead_time_steps).bfill().values
+    
             dynamic_output[0] = delayed_output[0] 
             for t in range(1, len(ideal_output)):
-                dynamic_output[t] = (self.lag_filter_alpha * delayed_output[t] +
-                                     (1 - self.lag_filter_alpha) * dynamic_output[t-1])
-            
+                dynamic_output[t] = (current_alpha * delayed_output[t] +
+                                     (1 - current_alpha) * dynamic_output[t-1])
+    
             df_dynamic[col] = dynamic_output
-            
+    
         return df_dynamic
 
     def _derive(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -447,66 +458,85 @@ class DataGenerator:
 class StatefulPlantMixin:
     """
     Додає до DataGenerator інкрементальний метод step().
-    Використовує FIFO-буфер для dead-time та first-order-lag.
+    Використовує СЛОВНИК FIFO-буферів для індивідуальних
+    dead-time та first-order-lag для кожного виходу.
     """
     def reset_state(self, init_history: np.ndarray):
         """
         init_history shape: (L+1, 3) — останні L+1 векторів [feed_fe, ore_flow, u]
-        Буфер запізнення заповнюємо останнім елементом.
+        Ініціалізує словники з попередніми виходами та буферами затримок.
         """
-        # Переконайтесь, що self.dead_time_steps та self.lag_filter_alpha 
-        # існують (ініціалізуються в DataGenerator або тут)
-        
         feed_fe, ore_flow, u_last = init_history[-1]
         
         # _predict_raw повертає (inp_df, y_bal_df)
         inp_df_init, y_bal_df_init = self._predict_raw(feed_fe, ore_flow, u_last)
         
-        # Це початкове значення для динамічного фільтра (lag)
-        # Вибираємо тільки вихідні стовпці для _prev_output
-        self._prev_output = y_bal_df_init[self.output_cols].copy() 
+        # Створюємо словник для зберігання попередніх значень кожного виходу
+        self._prev_output = {
+            col: y_bal_df_init[[col]].copy() for col in self.output_cols
+        }
         
-        # Dead-time FIFO (зберігаємо тільки concentrate/tailing блок)
-        # Заповнюємо буфер значеннями, які б пройшли через "мертвий час"
-        self._delay_fifo = deque(
-            [y_bal_df_init[self.output_cols].copy()] * self.dead_time_steps, # Зберігаємо лише вихідні стовпці
-            maxlen=self.dead_time_steps
-        )
+        # Створюємо СЛОВНИК з FIFO-буферами, по одному для кожного виходу
+        self._delay_fifo = {}
+        for col in self.output_cols:
+            # maxlen тепер індивідуальний для кожного буфера
+            max_len = self.dead_time_steps[col]
+            # Початкове значення для заповнення буфера
+            initial_value = y_bal_df_init[[col]].copy()
+            
+            # Якщо max_len > 0, створюємо та заповнюємо буфер
+            if max_len > 0:
+                self._delay_fifo[col] = deque([initial_value] * max_len, maxlen=max_len)
+            # Якщо затримки немає, створюємо порожній буфер
+            else:
+                 self._delay_fifo[col] = deque(maxlen=0)
 
-    # --- приватні допоміжні ---
+
     def _predict_raw(self, feed_fe, ore_flow, u):
         """
         Обчислює ідеальні (без затримки та інерції) виходи.
         """
         inp = pd.DataFrame([[feed_fe, ore_flow, u]],
                            columns=self.input_cols)
-        y_ideal = self._predict_outputs(inp) # Це метод з DataGenerator
-        y_bal   = self._apply_mass_balance(inp, y_ideal) # Це метод з DataGenerator
+        y_ideal = self._predict_outputs(inp)
+        y_bal   = self._apply_mass_balance(inp, y_ideal)
         return inp, y_bal
 
     def _ideal_to_dynamic(self, inp_df, y_bal_df):
         """
-        Застосовує dead-time та first-order-lag до ідеальних виходів.
+        Застосовує індивідуальні dead-time та first-order-lag до ідеальних виходів.
         """
-        # 1. Dead-time
-        # Дістаємо найстаріший елемент з FIFO-буфера. Якщо dead_time_steps=0, то це просто поточний y_bal_df.
-        delayed_output_for_this_step = self._delay_fifo.popleft() if self.dead_time_steps > 0 else y_bal_df[self.output_cols]
-        # Додаємо поточні ідеальні виходи в кінець FIFO-буфера
-        self._delay_fifo.append(y_bal_df[self.output_cols].copy()) # Зберігаємо тільки вихідні стовпці
+        dyn_output_df = pd.DataFrame(index=y_bal_df.index)
 
-        # 2. First-order lag
-        dyn_output = delayed_output_for_this_step.copy()
-        alpha = self.lag_filter_alpha # Коефіцієнт інерції
-        
+        # Ітеруємо по кожному вихідному сигналу
         for col in self.output_cols:
-            dyn_output.loc[0, col] = (alpha * delayed_output_for_this_step[col].iloc[0] + 
-                                       (1 - alpha) * self._prev_output[col].iloc[0])
-        
-        self._prev_output = dyn_output.copy() # Оновлюємо попередній вихід для наступного кроку
+            # 1. Dead-time (робота з індивідуальним буфером)
+            fifo = self._delay_fifo[col]
+            ideal_output_col = y_bal_df[[col]] # DataFrame з однією колонкою
+
+            if fifo.maxlen > 0:
+                delayed_output_for_this_step = fifo.popleft()
+                fifo.append(ideal_output_col)
+            else:
+                # Якщо затримки немає, використовуємо поточне ідеальне значення
+                delayed_output_for_this_step = ideal_output_col
+
+            # 2. First-order lag (з індивідуальним alpha)
+            alpha = self.lag_filter_alphas[col]
+            prev_out_col = self._prev_output[col]
+            
+            # Розрахунок нового динамічного значення
+            dyn_val = (alpha * delayed_output_for_this_step.iloc[0, 0] + 
+                       (1 - alpha) * prev_out_col.iloc[0, 0])
+            
+            dyn_output_df[col] = [dyn_val]
+            
+            # Оновлюємо попередній вихід для НАСТУПНОГО кроку
+            self._prev_output[col].iloc[0, 0] = dyn_val
 
         # Комбінуємо входи та динамічні виходи, потім обчислюємо похідні величини
-        full = pd.concat([inp_df, dyn_output], axis=1) # dyn_output тепер лише вихідні стовпці
-        full = self._derive(full) # Метод з DataGenerator, що додає fe_recovery, mass_pull
+        full = pd.concat([inp_df, dyn_output_df], axis=1)
+        full = self._derive(full)
         return full
 
     def step(self, feed_fe, ore_flow, u):

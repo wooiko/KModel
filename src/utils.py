@@ -25,31 +25,76 @@ def control_aggressiveness_metrics(u: np.ndarray,
                                    ) -> dict:
     """
     Обчислює метрики агресивності керування.
+
     Параметри:
       u              – масив керування (u[0],…,u[T])
-      delta_u_max    – гранична |Δu|
-      threshold_ratio– доля порогу для лічильника переключень (за замовчуванням 0.9·Δu_max)
+      delta_u_max    – гранична |Δu| для розрахунку порогу значних змін
+      threshold_ratio– доля порогу для лічильника значних змін (за замовчуванням 0.9·Δu_max)
+
     Повертає словник з:
-      mean_delta_u     – середнє |Δu|
-      std_delta_u      – std |Δu|
-      energy_u         – E_u = mean(u^2)
-      switch_count     – кількість кроків, де |Δu| ≥ threshold_ratio·Δu_max
-      switch_frequency – switch_count / (T−1)
+      mean_delta_u                       – середнє |Δu|
+      std_delta_u                        – std |Δu|
+      energy_u                           – E_u = mean(u^2)
+      significant_magnitude_changes_count– кількість кроків, де |Δu| ≥ threshold_ratio·Δu_max
+      significant_magnitude_changes_frequency – significant_magnitude_changes_count / (T−1)
+      directional_switch_count           – кількість змін напрямку Δu (з + на - або з - на +)
+      directional_switch_frequency       – directional_switch_count / (T−1)
+      max_abs_delta_u                    – максимальне абсолютне значення Δu
+      mean_abs_nonzero_delta_u           – середнє абсолютне значення ненульових Δu
+      num_steps_at_delta_u_max           – кількість кроків, де |Δu| дорівнює delta_u_max
+      percentage_of_max_delta_u_used     – середній відсоток використаного Δu_max
     """
     du = np.diff(u)
     abs_du = np.abs(du)
+
+    # 1. Основні метрики за величиною зміни
     mean_du = abs_du.mean()
     std_du = abs_du.std()
-    energy = np.mean(u**2)
+    energy = np.mean(u**2) # Слід звернути увагу, що це енергія самого u, а не його змін.
+
+    # 2. Метрики значних змін за величиною
     threshold = delta_u_max * threshold_ratio
-    switches = int((abs_du >= threshold).sum())
-    freq = switches / len(abs_du) if len(abs_du)>0 else 0.0
+    significant_switches = int((abs_du >= threshold).sum())
+    significant_freq = significant_switches / len(du) if len(du) > 0 else 0.0
+
+    # 3. Метрики зміни напрямку
+    non_zero_du_indices = np.where(du != 0)[0]
+    
+    directional_switches = 0
+    if len(non_zero_du_indices) > 1:
+        signs = np.sign(du[non_zero_du_indices])
+        directional_switches = np.sum(np.diff(signs) != 0)
+    
+    directional_freq = directional_switches / len(du) if len(du) > 0 else 0.0
+
+    # 4. Нові метрики для оцінки "різкості" керування
+    max_abs_du = abs_du.max() if len(abs_du) > 0 else 0.0
+
+    non_zero_abs_du = abs_du[abs_du != 0]
+    mean_abs_nonzero_du = non_zero_abs_du.mean() if len(non_zero_abs_du) > 0 else 0.0
+
+    # Кількість кроків, де |Δu| досягає delta_u_max (з певним допуском через float)
+    tolerance = 1e-6 # Допуск для порівняння чисел з плаваючою комою
+    num_at_delta_u_max = np.sum(np.isclose(abs_du, delta_u_max, atol=tolerance))
+
+    # Середній відсоток використання максимального Δu
+    if delta_u_max > tolerance and len(abs_du) > 0:
+        percentage_of_max_du_used = (abs_du / delta_u_max).mean() * 100
+    else:
+        percentage_of_max_du_used = 0.0
+
     return {
         'mean_delta_u': mean_du,
         'std_delta_u': std_du,
         'energy_u': energy,
-        'switch_count': switches,
-        'switch_frequency': freq
+        'significant_magnitude_changes_count': significant_switches,
+        'significant_magnitude_changes_frequency': significant_freq,
+        'directional_switch_count': directional_switches,
+        'directional_switch_frequency': directional_freq,
+        'max_abs_delta_u': max_abs_du,
+        'mean_abs_nonzero_delta_u': mean_abs_nonzero_du,
+        'num_steps_at_delta_u_max': num_at_delta_u_max,
+        'percentage_of_max_delta_u_used': percentage_of_max_du_used
     }
 
 def plot_delta_u_histogram(u: np.ndarray, bins: int = 20) -> None:
