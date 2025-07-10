@@ -55,17 +55,36 @@ def prepare_simulation_data(
         test_frac=params['test_size'],
         seed=params['seed']
     )
-
     # 3. Генеруємо повний часовий ряд (з артефактами)
-    df_true = true_gen.generate(
+    df_true_orig = true_gen.generate(
         T=params['N_data'],
         control_pts=params['control_pts'],
         n_neighbors=params['n_neighbors'],
         noise_level=params['noise_level'],
         anomaly_config=anomaly_cfg
     )
-
-    # 4. OFFLINE-ОЧИЩЕННЯ вхідних сигналів від аномалій
+    
+    if params['enable_nonlinear']:
+        # 4. Визначаємо, як ми хочемо посилити нелінійність
+        #    - Зробимо залежність 'concentrate_fe_percent' більш "опуклою" (коеф > 1)
+        #    - Зробимо залежність 'concentrate_mass_flow' більш "опуклою" (коеф > 1)
+        nonlinear_config = {
+            'concentrate_fe_percent': ('pow', 2),
+            'concentrate_mass_flow': ('pow', 1.5)
+        }
+           
+        # 5. Створюємо новий датасет з посиленою нелінійністю
+        #    Можна передати той самий рівень шуму та конфігурацію аномалій
+        df_true = true_gen.generate_nonlinear_variant(
+            base_df=df_true_orig,
+            non_linear_factors=nonlinear_config,
+            noise_level='none',
+            anomaly_config=None # або передати сюди конфігурацію аномалій
+        )
+    else:
+        df_true=df_true_orig
+    
+    # 6. OFFLINE-ОЧИЩЕННЯ вхідних сигналів від аномалій
     #    Використовуємо ті самі налаштування, що й в online-циклі, або менш жорсткі.
     ad_config = params.get('anomaly_params', {})
     ad_feed_fe = SignalAnomalyDetector(**ad_config)
@@ -83,7 +102,7 @@ def prepare_simulation_data(
     df_true['feed_fe_percent'] = filtered_feed
     df_true['ore_mass_flow']   = filtered_ore
 
-    # 5. Лаговані вибірки для тренування/симуляції
+    # 7. Лаговані вибірки для тренування/симуляції
     X, Y_full_np = StatefulDataGenerator.create_lagged_dataset(
         df_true,
         lags=params['lag']
@@ -570,6 +589,11 @@ def simulate_mpc(
         'freeze_len': 5,
         'enabled': True
     },                                      # Параметри детектора аномалій
+    nonlinear_config: dict = {
+        'concentrate_fe_percent': ('pow', 2),
+        'concentrate_mass_flow': ('pow', 1.5)
+    },                                      # Нелінійна конфігунація
+    enable_nonlinear: bool =  False,        # Використовувати нелінійну конфігурацію
     run_analysis: bool = True,              # Показати візуалізацію результатів роботи симулятора
     P0: float = 1e-2,
     Q_phys: float = 1500,
@@ -650,15 +674,15 @@ if __name__ == '__main__':
         # ---- Налаштування моделі
         noise_level='low',
         model_type='svr',
-        kernel='linear', 
+        kernel='rbf', 
         find_optimal_params=True,
         use_soft_constraints=True,
         
         # ---- Налаштування EKF
         P0=1e-2,
-        Q_phys=770,
+        Q_phys=1000,#770,
         Q_dist=1,
-        R=0.2, #0.2 for time_step_s = 1800
+        R=0.18, 
         q_adaptive_enabled=True,
         q_alpha = 0.995,
         q_nis_threshold = 1.8,

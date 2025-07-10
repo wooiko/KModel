@@ -344,6 +344,77 @@ class DataGenerator:
             
         return full
 
+    def generate_nonlinear_variant(self, 
+                                     base_df: pd.DataFrame,
+                                     non_linear_factors: dict,
+                                     noise_level: str = 'none', 
+                                     anomaly_config: dict = None
+                                    ) -> pd.DataFrame:
+            """
+            Створює новий датасет на основі існуючого, посилюючи нелінійну залежність
+            між входами та виходами, зберігаючи при цьому закон балансу мас.
+    
+            Args:
+                base_df (pd.DataFrame): Датафрейм, згенерований методом generate().
+                                        Використовуються тільки вхідні сигнали з нього.
+                non_linear_factors (dict): Словник для керування нелінійністю.
+                                           Приклад: 
+                                           {
+                                             'concentrate_fe_percent': ('pow', 1.2), # звести в ступінь 1.2
+                                             'concentrate_mass_flow': ('pow', 0.8) # звести в ступінь 0.8
+                                           }
+                                           Підтримувані типи: 'pow'.
+                noise_level (str): Рівень шуму для додавання до фінального датасету.
+                anomaly_config (dict): Конфігурація аномалій для додавання.
+    
+            Returns:
+                pd.DataFrame: Новий датафрейм з посиленою нелінійністю.
+            """
+            print("INFO: Generating a dataset variant with enhanced non-linearity...")
+            
+            # 1. Використовуємо вхідні сигнали з базового датасету
+            inp = base_df[self.input_cols].copy()
+    
+            # 2. Отримуємо ідеальні (незбалансовані) виходи від внутрішньої моделі
+            out_ideal = self._predict_outputs(inp)
+            
+            # 3. Ключовий крок: застосовуємо нелінійні перетворення
+            out_nl = out_ideal.copy()
+            for col, (transform_type, factor) in non_linear_factors.items():
+                if col not in out_nl.columns:
+                    print(f"WARNING: Column '{col}' for non-linear transform not found in outputs. Skipping.")
+                    continue
+                
+                if transform_type == 'pow':
+                    # Зведення в ступінь - простий спосіб додати нелінійність
+                    # ( опуклість для > 1, увігнутість для < 1)
+                    series = out_nl[col]
+                    # Нормалізуємо до [0, 1] щоб уникнути великих значень, застосовуємо степінь, повертаємо до масштабу
+                    min_val, max_val = series.min(), series.max()
+                    series_norm = (series - min_val) / (max_val - min_val + 1e-9)
+                    series_transformed = np.power(series_norm, factor)
+                    out_nl[col] = series_transformed * (max_val - min_val) + min_val
+                else:
+                    print(f"WARNING: Unknown transform type '{transform_type}'. Skipping column '{col}'.")
+    
+            # 4. Застосовуємо баланс мас, використовуючи оригінальні входи та модифіковані виходи
+            out_balanced_nl = self._apply_mass_balance(inp, out_nl)
+    
+            # 5. Застосовуємо динаміку процесу до нових збалансованих виходів
+            out_dynamic_nl = self._apply_dynamics(out_balanced_nl)
+    
+            # 6. Збираємо фінальний датафрейм
+            full_nl = pd.concat([inp, out_dynamic_nl], axis=1)
+            full_nl = self._derive(full_nl)  # Перераховуємо mass pull і recovery
+    
+            # 7. Додаємо шум та аномалії, якщо потрібно
+            if noise_level != 'none':
+                full_nl = self.add_noise(full_nl, noise_level)
+            if anomaly_config:
+                full_nl = self.generate_anomalies(full_nl, anomaly_config)
+                
+            print("INFO: Non-linear variant generated successfully.")
+            return full_nl
     @staticmethod
     def create_lagged_dataset(df: pd.DataFrame,
                               lags: int = 2
