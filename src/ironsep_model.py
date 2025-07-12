@@ -95,40 +95,80 @@ class IronSeparationModel:
         self._calculate_nonlinear_coefs(X, y_fe, y_mass)
         
     def _calculate_nonlinear_coefs(self, X, y_fe, y_mass):
-        """Розрахунок степеневих коефіцієнтів для корекції"""
-        self.alpha_fe = 0.0
-        self.alpha_mass = 0.0   
+        """Коректний розрахунок степеневих коефіцієнтів"""
+        try:
+            # Обчислення базових прогнозів
+            fe_base = self.fe_model.predict(X)
+            mass_base = self.mass_model.predict(X)
+            
+            # Вибірка тільки реалістичних значень
+            valid_mask = (fe_base > 1) & (mass_base > 1) & (y_fe > 1) & (y_mass > 1)
+            X_valid = X[valid_mask]
+            y_fe_valid = y_fe[valid_mask]
+            y_mass_valid = y_mass[valid_mask]
+            fe_base_valid = fe_base[valid_mask]
+            mass_base_valid = mass_base[valid_mask]
+            
+            # Розрахунок коефіцієнтів як відношення логарифмів
+            with np.errstate(divide='ignore', invalid='ignore'):
+                self.alpha_fe = np.median(np.log(y_fe_valid / fe_base_valid) / np.log(X_valid[:, 0]))
+                self.alpha_mass = np.median(np.log(y_mass_valid / mass_base_valid) / np.log(X_valid[:, 0]))
+            
+            # Обмеження коефіцієнтів
+            self.alpha_fe = np.clip(self.alpha_fe, -0.1, 0.1)
+            self.alpha_mass = np.clip(self.alpha_mass, -0.1, 0.1)
+            
+        except Exception as e:
+            print(f"Помилка розрахунку коефіцієнтів: {e}")
+            self.alpha_fe = 0.02
+            self.alpha_mass = 0.01
         
     def predict_static(self, X: np.ndarray) -> tuple:
-        """
-        Прогноз статичних значень
-        :return: (conc_fe, conc_mass)
-        """
-        return (
-            self.fe_model.predict(X),
-            self.mass_model.predict(X)
-        )
+        """Прогноз статичних значень з корекцією"""
+        # Базовий прогноз
+        conc_fe_base = self.fe_model.predict(X)
+        conc_mass_base = self.mass_model.predict(X)
+        
+        # Степеневі поправочні коефіцієнти
+        feed_fe = X[:, 0]
+        feed_fe_ref = 35.0  # Опорне значення
+        
+        # Застосування корекції відносно опорного значення
+        fe_correction = np.power(feed_fe / feed_fe_ref, self.alpha_fe, where=feed_fe>0)
+        mass_correction = np.power(feed_fe / feed_fe_ref, self.alpha_mass, where=feed_fe>0)
+        
+        # Кінцевий прогноз
+        conc_fe = conc_fe_base * fe_correction
+        conc_mass = conc_mass_base * mass_correction
+        
+        # Фізичні обмеження
+        conc_fe = np.clip(conc_fe, 0, 65)  # Максимум 65% для заліза
+        conc_mass = np.maximum(conc_mass, 0)
+        
+        return conc_fe, conc_mass
     
     def predict_dynamic(self, X: np.ndarray, t: float) -> tuple:
-        """
-        Прогноз з урахуванням динаміки
-        :param t: час від початку процесу (сек)
-        :return: (conc_fe, conc_mass)
-        """
-        # Додати перевірку часу t (корекція 4)
+        """Прогноз з урахуванням динаміки"""
         if t < 0:
             raise ValueError("Час t не може бути від'ємним")
         
+        # Статичний прогноз
         fe_static, mass_static = self.predict_static(X)
         
-        # Динамічна корекція (експоненційне наближення)
-        fe_dynamic = fe_static * (1 - np.exp(-t / self.tech_constants['tau_fe']))
-        fe_dynamic = np.clip(fe_dynamic, 0, 100)  # для концентрації Fe
-    
-        mass_dynamic = mass_static * (1 - np.exp(-t / self.tech_constants['tau_mass']))
+        # Застосування динаміки
+        t_corrected = max(t - self.tech_constants['theta'], 0)
         
-        # Додати захист для маси (корекція 3)
-        mass_dynamic = np.maximum(mass_dynamic, 0)  # Маса не може бути від'ємною
+        # Коефіцієнти динаміки
+        fe_dynamic_factor = 1 - np.exp(-t_corrected / self.tech_constants['tau_fe'])
+        mass_dynamic_factor = 1 - np.exp(-t_corrected / self.tech_constants['tau_mass'])
+        
+        # Динамічний прогноз
+        fe_dynamic = fe_static * fe_dynamic_factor
+        mass_dynamic = mass_static * mass_dynamic_factor
+        
+        # Фізичні обмеження
+        fe_dynamic = np.clip(fe_dynamic, 0, 65)
+        mass_dynamic = np.maximum(mass_dynamic, 0)
         
         return fe_dynamic, mass_dynamic
     
@@ -191,13 +231,8 @@ if __name__ == '__main__':
         ore_flow_var_pct=3.0, 
         seed=42
         )
-    data_lin = true_gen.generate(T=2000, control_pts=200, n_neighbors=5)
-
-    nonlinear_config = {
-        'concentrate_fe_percent': ('pow', 2),
-        'concentrate_mass_flow': ('pow', 1.5)}
-    data = true_gen.generate_nonlinear_variant(base_df=data_lin,non_linear_factors=nonlinear_config)
-    
+    data = true_gen.generate(T=2000, control_pts=200, n_neighbors=5)
+   
     X = data[['feed_fe_percent', 'ore_mass_flow', 'solid_feed_percent']].values
     y_fe = data['concentrate_fe_percent'].values
     y_mass = data['concentrate_mass_flow'].values
@@ -252,9 +287,9 @@ if __name__ == '__main__':
         
         # Прогнозування
         fe_static, mass_static = model.predict_static(X_test)
-        fe_dynamic, mass_dynamic = model.predict_dynamic(X_test, t=10.0)
+        fe_dynamic, mass_dynamic = model.predict_dynamic(X_test, t=50.0)
         
         print(f"\nТест #{i+1}:")
         print(f"Вхідні дані: feed_fe={X_test[0,0]:.2f}, ore_flow={X_test[0,1]:.2f}, solid_feed={X_test[0,2]:.2f}")
         print(f"Статичний прогноз: conc_fe={fe_static[0]:.2f}%, mass={mass_static[0]:.2f} т/год")
-        print(f"Динамічний прогноз (t=10с): conc_fe={fe_dynamic[0]:.2f}%, mass={mass_dynamic[0]:.2f} т/год")
+        print(f"Динамічний прогноз (t=50с): conc_fe={fe_dynamic[0]:.2f}%, mass={mass_dynamic[0]:.2f} т/год")
