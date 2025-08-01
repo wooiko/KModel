@@ -1,12 +1,65 @@
 # mpc.py
+from __future__ import annotations
 
 import warnings
 import numpy as np
 import cvxpy as cp
 from model import KernelModel
 from sklearn.preprocessing import StandardScaler 
+from abc import ABC, abstractmethod
+from sklearn.preprocessing import StandardScaler
 
-class MPCController:
+class BaseMPC(ABC):
+    """
+    Абстрактний базовий клас для MPC контролерів.
+    Визначає спільний інтерфейс для використання в симуляторі.
+    """
+    def __init__(self, model, objective, x_scaler: StandardScaler, y_scaler: StandardScaler,
+                 n_targets: int, horizon: int, control_horizon: int, lag: int,
+                 u_min: float, u_max: float, delta_u_max: float,
+                 use_disturbance_estimator: bool, **kwargs):
+        # Зберігаємо всі параметри, навіть якщо дочірній клас їх не використовує,
+        # для забезпечення єдиного інтерфейсу ініціалізації.
+        self.model = model
+        self.objective = objective
+        self.x_scaler = x_scaler
+        self.y_scaler = y_scaler
+        self.L = lag
+        self.n_inputs = (lag + 1) * 3
+        self.n_targets = n_targets
+        self.Np = horizon
+        self.Nc = control_horizon or horizon
+        
+        self.u_min, self.u_max = u_min, u_max
+        self.delta_u_max = delta_u_max
+        
+        self.use_disturbance_estimator = use_disturbance_estimator
+        self.d_hat = np.zeros(self.n_targets)
+
+        # Історія стану
+        self.x_hist: np.ndarray | None = None
+
+    @abstractmethod
+    def fit(self, X_train: np.ndarray, Y_train: np.ndarray, **kwargs):
+        """Навчає внутрішню модель контролера."""
+        pass
+
+    @abstractmethod
+    def optimize(self, d_seq: np.ndarray, u_prev: float) -> np.ndarray:
+        """Виконує крок оптимізації та повертає послідовність керування."""
+        pass
+
+    def reset_history(self, initial_history: np.ndarray):
+        """
+        Скидає історію стану контролера.
+        initial_history: numpy array форми (L+1, 3)
+        """
+        expected = (self.L + 1, 3)
+        if initial_history.shape != expected:
+            raise ValueError(f"initial_history має форму {expected}, отримано {initial_history.shape}")
+        self.x_hist = initial_history.copy()
+
+class KMPCController(BaseMPC): 
     def __init__(self,
                  model: KernelModel,
                  objective,
@@ -256,3 +309,110 @@ class MPCController:
         if self.use_disturbance_estimator:
             self.n_targets = Y_train.shape[1]
             self.d_hat = np.zeros(self.n_targets)
+
+class LinPredictor:
+    def __init__(self, W: np.ndarray, b: np.ndarray, x_scaler: StandardScaler, y_scaler: StandardScaler):
+        self.W = W
+        self.b = b
+        self._x_scaler = x_scaler
+        self._y_scaler = y_scaler
+
+    def predict(self, X_unscaled: np.ndarray) -> np.ndarray:
+        """Прогноз на НЕмасштабованих даних."""
+        X_scaled = self._x_scaler.transform(X_unscaled)
+        Y_scaled = X_scaled @ self.W + self.b
+        return self._y_scaler.inverse_transform(Y_scaled)
+
+class LMPCController(BaseMPC):
+    def __init__(self, **kwargs):
+        # L-MPC не потребує зовнішньої моделі, тому ми передаємо None
+        # і створюємо її всередині методу fit.
+        super().__init__(model=None, **kwargs)
+        
+        # Ініціалізація атрибутів для оптимізаційної задачі
+        self.problem: cp.Problem | None = None
+        self._vars: dict[str, cp.Variable] = {}
+        self._pars: dict[str, cp.Parameter] = {}
+        
+        # Параметри для м'яких обмежень, як у K-MPC, для сумісності
+        self.rho_y = kwargs.get('rho_y', 1e6)
+        self.rho_delta_u = kwargs.get('rho_delta_u', 1e4)
+        self.y_max = kwargs.get('y_max')
+        self.y_min = kwargs.get('y_min')
+
+    def fit(self, X_train: np.ndarray, Y_train: np.ndarray, **kwargs):
+        """
+        Виконує лінійну регресію і створює внутрішню модель LinPredictor.
+        Приймає НЕмасштабовані дані.
+        """
+        # 1. Навчаємо лінійну модель
+        X_train_scaled = self.x_scaler.fit_transform(X_train)
+        Y_train_scaled = self.y_scaler.fit_transform(Y_train)
+        
+        W, _, _, _ = np.linalg.lstsq(X_train_scaled, Y_train_scaled, rcond=None)
+        b = Y_train_scaled.mean(axis=0) - X_train_scaled.mean(axis=0) @ W
+        
+        # 2. Створюємо сумісний об'єкт моделі
+        self.model = LinPredictor(W, b, self.x_scaler, self.y_scaler)
+
+        # 3. Налаштовуємо QP-задачу один раз
+        self._setup_optim_problem()
+
+    def _setup_optim_problem(self):
+        """Створює QP-задачу, аналогічну до K-MPC, але з фіксованою лінійною моделлю."""
+        # Цей код буде дуже схожий на _setup_optimization_problem з KMPCController,
+        # але замість параметрів W_param, b_param, він буде використовувати
+        # константи self.model.W та self.model.b.
+        
+        # 1. Змінні
+        u = cp.Variable(self.Nc, name="u")
+        # ... м'які змінні eps_... як у KMPCController ...
+        
+        # 2. Параметри
+        x_hist_param = cp.Parameter(self.n_inputs, name="x_hist_flat")
+        u_prev_param = cp.Parameter(name="u_prev")
+        d_hat_param = cp.Parameter(self.n_targets, name="d_hat")
+        d_seq_param = cp.Parameter((self.Np, 2), name="d_seq")
+
+        self._pars = {
+            'x_hist': x_hist_param, 'u_prev': u_prev_param,
+            'd_hat': d_hat_param, 'd_seq': d_seq_param
+        }
+
+        # 3. Константи моделі та масштабування
+        W_c = cp.Constant(self.model.W)
+        b_c = cp.Constant(self.model.b)
+        mean_c = cp.Constant(self.x_scaler.mean_)
+        scale_c = cp.Constant(self.x_scaler.scale_)
+        
+        # 4. Побудова прогнозу
+        # ... логіка циклу for k in range(self.Np) ...
+        # Xk_scaled = (Xk_unscaled - mean_c) / scale_c
+        # yk = Xk_scaled @ W_c + b_c + d_hat_param  # <<< КЛЮЧОВА ВІДМІННІСТЬ
+        # ...
+        
+        # 5. Цільова функція та обмеження
+        # Цей блок повністю копіюється з KMPCController, оскільки
+        # тепер LMPC має доступ до self.objective, self.rho_y і т.д.
+        # base_cost = self.objective.cost_full(...)
+        # ...
+        
+        # self.problem = cp.Problem(...)
+        # ЗАГЛУШКА: повний код _setup_optim_problem тут для стислості опущено,
+        # але він має бути реалізований за аналогією з KMPCController.
+
+    def optimize(self, d_seq: np.ndarray, u_prev: float) -> np.ndarray:
+        """Виконує крок оптимізації."""
+        if self.problem is None:
+            raise RuntimeError("Метод fit() має бути викликаний перед optimize()")
+
+        # Оновлюємо значення параметрів
+        self._pars['x_hist'].value = self.x_hist.flatten()
+        self._pars['u_prev'].value = u_prev
+        self._pars['d_seq'].value = d_seq
+        self._pars['d_hat'].value = self.d_hat
+        
+        # Розв'язуємо задачу
+        self.problem.solve(solver=cp.OSQP, warm_start=True)
+        # ... обробка результатів, як у KMPCController ...
+        return self._vars["u"].value

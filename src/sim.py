@@ -10,7 +10,7 @@ from collections import deque
 from data_gen import StatefulDataGenerator
 from model import KernelModel
 from objectives import MaxIronMassTrackingObjective
-from mpc import MPCController
+from mpc import BaseMPC, KMPCController, LMPCController
 from utils import (
     analize_errors, plot_control_and_disturbances, 
     evaluate_ekf_performance, plot_fact_vs_mpc_plans,
@@ -159,7 +159,7 @@ def initialize_mpc_controller(
     params: Dict[str, Any],
     x_scaler: StandardScaler,
     y_scaler: StandardScaler
-) -> MPCController:
+) -> BaseMPC:
     """
     Ініціалізує та налаштовує MPC контролер.
 
@@ -195,7 +195,7 @@ def initialize_mpc_controller(
     rho_du_val = params['λ_obj'] * 100
 
     # Створення контролера
-    mpc = MPCController(
+    mpc = KMPCController(
         model=kernel_model, objective=objective, x_scaler=x_scaler, y_scaler=y_scaler,
         n_targets=2, horizon=params['Np'], control_horizon=params['Nc'], lag=params['lag'],
         u_min=params['u_min'], u_max=params['u_max'], delta_u_max=params['delta_u_max'],
@@ -207,7 +207,7 @@ def initialize_mpc_controller(
 
 
 def train_and_evaluate_model(
-    mpc: MPCController,
+    mpc: BaseMPC,
     data: Dict[str, np.ndarray],
     y_scaler: StandardScaler
 ) -> Dict[str, float]:
@@ -242,7 +242,7 @@ def train_and_evaluate_model(
 
 
 def initialize_ekf(
-    mpc: MPCController,
+    mpc: BaseMPC,
     scalers: Tuple[StandardScaler, StandardScaler],
     hist0_unscaled: np.ndarray,
     Y_train_scaled: np.ndarray,
@@ -282,7 +282,7 @@ def initialize_ekf(
 
 def run_simulation_loop(
     true_gen: StatefulDataGenerator,
-    mpc: MPCController,
+    mpc: BaseMPC,
     ekf: ExtendedKalmanFilter,
     df_true: pd.DataFrame,
     # >>> НОВІ АРГУМЕНТИ <<<
@@ -534,8 +534,8 @@ def run_post_simulation_analysis(results_df, analysis_data, params):
 
 def simulate_mpc(
     reference_df: pd.DataFrame,             # DataFrame, що містить референсні дані для генерації даних симуляції.
-    N_data: int = 5000,                     # Загальна кількість точок даних, що генеруються для симуляції.
-    control_pts : int = 1000,               # Кількість точок (кроків) симуляції, на яких відбувається керування MPC.
+    N_data: int = 1000,                     # Загальна кількість точок даних, що генеруються для симуляції.
+    control_pts : int = 200,               # Кількість точок (кроків) симуляції, на яких відбувається керування MPC.
     time_step_s : int = 5,                  # Часовий крок виконання
     dead_times_s : dict = 
     {
@@ -594,6 +594,7 @@ def simulate_mpc(
         'concentrate_mass_flow': ('pow', 1.5)
     },                                      # Нелінійна конфігунація
     enable_nonlinear: bool =  False,        # Використовувати нелінійну конфігурацію
+    controller_type: str = 'kmpc',          # 'kmpc', 'lmpc' Тип контролера
     run_analysis: bool = True,              # Показати візуалізацію результатів роботи симулятора
     P0: float = 1e-2,
     Q_phys: float = 1500,
@@ -661,8 +662,8 @@ if __name__ == '__main__':
         progress_callback=my_progress, 
         
         # ---- Блок даних
-        N_data=1000, 
-        control_pts=200,
+        N_data=100, 
+        control_pts=20,
         seed=42,
         
         plant_model_type='rf',
@@ -720,6 +721,8 @@ if __name__ == '__main__':
         Nc=6, #8
         Np=10, #12
         lag=2, #2
+        
+        controller_type = 'kmpc',
         
         # ---- Цільові параметри/ваги
         w_fe=1.0,
