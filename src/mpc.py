@@ -4,22 +4,21 @@ from __future__ import annotations
 import warnings
 import numpy as np
 import cvxpy as cp
-from model import KernelModel
-from sklearn.preprocessing import StandardScaler 
-from abc import ABC, abstractmethod
+# Змінено: KernelModel тепер єдине джерело моделей
+from model import KernelModel, _BaseKernelModel
 from sklearn.preprocessing import StandardScaler
+from abc import ABC, abstractmethod
+
 
 class BaseMPC(ABC):
     """
     Абстрактний базовий клас для MPC контролерів.
     Визначає спільний інтерфейс для використання в симуляторі.
     """
-    def __init__(self, model, objective, x_scaler: StandardScaler, y_scaler: StandardScaler,
+    def __init__(self, model: _BaseKernelModel, objective, x_scaler: StandardScaler, y_scaler: StandardScaler,
                  n_targets: int, horizon: int, control_horizon: int, lag: int,
                  u_min: float, u_max: float, delta_u_max: float,
                  use_disturbance_estimator: bool, **kwargs):
-        # Зберігаємо всі параметри, навіть якщо дочірній клас їх не використовує,
-        # для забезпечення єдиного інтерфейсу ініціалізації.
         self.model = model
         self.objective = objective
         self.x_scaler = x_scaler
@@ -29,14 +28,12 @@ class BaseMPC(ABC):
         self.n_targets = n_targets
         self.Np = horizon
         self.Nc = control_horizon or horizon
-        
+
         self.u_min, self.u_max = u_min, u_max
         self.delta_u_max = delta_u_max
-        
+
         self.use_disturbance_estimator = use_disturbance_estimator
         self.d_hat = np.zeros(self.n_targets)
-
-        # Історія стану
         self.x_hist: np.ndarray | None = None
 
     @abstractmethod
@@ -50,18 +47,15 @@ class BaseMPC(ABC):
         pass
 
     def reset_history(self, initial_history: np.ndarray):
-        """
-        Скидає історію стану контролера.
-        initial_history: numpy array форми (L+1, 3)
-        """
         expected = (self.L + 1, 3)
         if initial_history.shape != expected:
             raise ValueError(f"initial_history має форму {expected}, отримано {initial_history.shape}")
         self.x_hist = initial_history.copy()
 
-class KMPCController(BaseMPC): 
+
+class KMPCController(BaseMPC):
     def __init__(self,
-                 model: KernelModel,
+                 model: KernelModel, # Явно вказуємо тип
                  objective,
                  x_scaler: StandardScaler,
                  y_scaler: StandardScaler,
@@ -79,55 +73,36 @@ class KMPCController(BaseMPC):
                  rho_delta_u: float = 1e4,
                  rho_trust: float = 0.1
                 ):
-        self.Np = horizon
-        self.Nc = control_horizon if control_horizon is not None else horizon
+        # Використовуємо super() для ініціалізації базового класу
+        super().__init__(
+            model=model, objective=objective, x_scaler=x_scaler, y_scaler=y_scaler,
+            n_targets=n_targets, horizon=horizon, control_horizon=control_horizon, lag=lag,
+            u_min=u_min, u_max=u_max, delta_u_max=delta_u_max,
+            use_disturbance_estimator=use_disturbance_estimator
+        )
 
         if self.Nc > self.Np:
             raise ValueError("control_horizon (Nc) не може бути більше за horizon (Np)")
 
-        # Збереження основних параметрів
-        self.model = model
-        self.objective = objective
-        self.x_scaler = x_scaler
-        self.y_scaler = y_scaler
-        self.L = lag
-        self.use_disturbance_estimator = use_disturbance_estimator
-        self.n_inputs = (lag + 1) * 3 # (feed_fe, ore_flow, u) * (L+1)
-        self.n_targets = n_targets
-
-        # Збереження обмежень та ваг штрафів
-        self.u_min = u_min
-        self.u_max = u_max
-        self.delta_u_max = delta_u_max
         self.y_max = np.array(y_max) if y_max is not None else None
         self.y_min = np.array(y_min) if y_min is not None else None
         self.rho_y = rho_y
         self.rho_delta_u = rho_delta_u
-        self.rho_trust = rho_trust # Зберігаємо вагу регіону довіри
+        self.rho_trust = rho_trust
 
-        # Ініціалізація історії та оцінки збурень
-        self.x_hist = None
-        self.d_hat = np.zeros(self.n_targets) if self.use_disturbance_estimator else None
-
-        # Атрибути для збереження задачі CVXPY
         self.problem = None
         self.variables = {}
         self.parameters = {}
 
-        # Налаштовуємо задачу оптимізації один раз при ініціалізації
         self._setup_optimization_problem()
 
-        # Приховуємо специфічне попередження від cvxpy
         warnings.filterwarnings("ignore",
             message="The problem includes expressions that don't support CPP backend.",
             category=UserWarning,
             module="cvxpy.reductions.solvers.solving_chain_utils")
 
     def _setup_optimization_problem(self):
-        """
-        Створює задачу оптимізації CVXPY один раз з використанням параметрів.
-        Це значно прискорює послідовні виклики методу optimize.
-        """
+        # ... (код без змін)
         # 1. Змінні оптимізації
         u_var = cp.Variable(self.Nc, name="u_seq")
         # Змінено: окремі змінні для верхніх та нижніх порушень дельти u
@@ -136,7 +111,7 @@ class KMPCController(BaseMPC):
         eps_y_upper = cp.Variable((self.Np, 2), nonneg=True, name="eps_y_upper") if self.y_max is not None else None
         eps_y_lower = cp.Variable((self.Np, 2), nonneg=True, name="eps_y_lower") if self.y_min is not None else None
         self.variables = {
-            'u': u_var, 
+            'u': u_var,
             'eps_delta_u_upper': eps_delta_u_upper, #
             'eps_delta_u_lower': eps_delta_u_lower, #
             'eps_y_upper': eps_y_upper, 'eps_y_lower': eps_y_lower
@@ -163,19 +138,19 @@ class KMPCController(BaseMPC):
         # 3. Побудова прогнозу на горизонті Np
         pred_fe, pred_mass = [], []
         trust_region_cost = 0
-        
+
         # Початковий стан з параметра
         xk_unscaled_list = [x_hist_param[i*3:(i+1)*3] for i in range(self.L + 1)]
 
         for k in range(self.Np):
             uk = u_var[k] if k < self.Nc else u_var[self.Nc - 1]
-            
+
             # Формуємо вектор стану Xk в ОРИГІНАЛЬНОМУ масштабі
             Xk_unscaled = cp.hstack(xk_unscaled_list)
-            
+
             # КОРЕКТНЕ МАСШТАБУВАННЯ ВЕКТОРА СТАНУ
             Xk_scaled = (Xk_unscaled - mean_c) / scale_c
-            
+
             # Прогноз за локальною лінійною моделлю
             yk = Xk_scaled @ W_param + b_param + d_hat_param
             pred_fe.append(yk[0])
@@ -201,8 +176,8 @@ class KMPCController(BaseMPC):
         if self.Nc > 1:
             Du_ext = cp.hstack([du0, du_rest])
         else:
-            Du_ext = cp.hstack([du0])        
-        
+            Du_ext = cp.hstack([du0])
+
         # Обмеження на Du_ext з м'якими змінними (виправлено)
         cons.extend([
             Du_ext <= self.delta_u_max + eps_delta_u_upper, #
@@ -228,15 +203,13 @@ class KMPCController(BaseMPC):
             penalty_cost += self.rho_y * cp.sum_squares(eps_y_lower)
 
         total_cost = base_cost + penalty_cost + trust_region_cost
-        
+
         # 6. Створення об'єкту задачі
         self.problem = cp.Problem(cp.Minimize(total_cost), cons)
 
+
     def optimize(self, d_seq: np.ndarray, u_prev: float) -> np.ndarray:
-        """
-        Знаходить оптимальну послідовність керування, оновлюючи параметри
-        попередньо скомпільованої задачі оптимізації.
-        """
+        # ... (код без змін)
         if self.x_hist is None:
             raise RuntimeError("Історія стану не ініціалізована. Викличте MPCController.reset_history().")
         if self.problem is None:
@@ -254,7 +227,7 @@ class KMPCController(BaseMPC):
         self.parameters['u_prev'].value = u_prev
         self.parameters['d_seq'].value = d_seq
         self.parameters['x0_scaled'].value = X0_current_scaled.flatten()
-        
+
         d_hat_val = self.d_hat if self.use_disturbance_estimator and self.d_hat is not None else np.zeros(self.n_targets)
         self.parameters['d_hat'].value = d_hat_val
 
@@ -269,10 +242,10 @@ class KMPCController(BaseMPC):
         if self.problem.status not in ["infeasible", "unbounded"]:
             u_optimal = self.variables['u'].value
             # Діагностичний вивід (виправлено для двох eps змінних)
-            if (self.variables['eps_y_upper'] is not None and 
+            if (self.variables['eps_y_upper'] is not None and
                 np.any(self.variables['eps_y_upper'].value > 1e-4)):
                 print(f"  -> УВАГА: Порушено верхнє обмеження Y! ε_y_upper = {np.round(self.variables['eps_y_upper'].value.flatten(), 3)}")
-            
+
             if (self.variables['eps_delta_u_upper'] is not None and np.any(self.variables['eps_delta_u_upper'].value > 1e-4)) or \
                (self.variables['eps_delta_u_lower'] is not None and np.any(self.variables['eps_delta_u_lower'].value > 1e-4)):
                 print(f"  -> УВАГА: Порушено обмеження Δu! ε_Δu_upper = {np.round(self.variables['eps_delta_u_upper'].value, 3)}, ε_Δu_lower = {np.round(self.variables['eps_delta_u_lower'].value, 3)}") #
@@ -282,71 +255,33 @@ class KMPCController(BaseMPC):
 
         return u_optimal
 
-    def reset_history(self, initial_history: np.ndarray):
-        """
-        initial_history: numpy array форми (L+1, 3)
-        кожний рядок = [feed_fe, ore_flow, u_applied]
-        """
-        expected = (self.L + 1, 3)
-        if initial_history.shape != expected:
-            raise ValueError(f"initial_history має форму {expected}, отримано {initial_history.shape}")
-        self.x_hist = initial_history.copy()
 
     def fit(self,
             X_train: np.ndarray,
             Y_train: np.ndarray,
-            x0_hist: np.ndarray = None):
+            **kwargs):
         """
-        Навчає KernelModel та опціонально ініціалізує історію і оцінювач збурень.
+        Навчає KernelModel. Дані мають бути вже масштабовані.
         """
         self.model.fit(X_train, Y_train)
-        
-        # Перевіряємо, чи була надана історія, перед тим як її встановлювати
-        if x0_hist is not None:
-            self.reset_history(x0_hist)
 
-        # Ініціалізація оцінювача збурень
-        if self.use_disturbance_estimator:
-            self.n_targets = Y_train.shape[1]
-            self.d_hat = np.zeros(self.n_targets)
 
-class LinPredictor:
-    def __init__(self, W: np.ndarray, b: np.ndarray, x_scaler: StandardScaler, y_scaler: StandardScaler):
-        self.W = W
-        self.b = b
-        self._x_scaler = x_scaler
-        self._y_scaler = y_scaler
+# ВИДАЛЕНО КЛАС LinPredictor
 
-    def predict(self, X_unscaled: np.ndarray) -> np.ndarray:
-        """Прогноз на НЕмасштабованих даних."""
-        X_scaled = self._x_scaler.transform(X_unscaled)
-        Y_scaled = X_scaled @ self.W + self.b
-        return self._y_scaler.inverse_transform(Y_scaled)
-    
-    def linearize(self, X):
-        """
-        Для лінійної моделі лінеаризація просто повертає 
-        матрицю ваг W та вектор зміщення b незалежно від точки X.
-        
-        Args:
-            X: Вхідний вектор або матриця даних (не використовується для лінійної моделі)
-        
-        Returns:
-            tuple: (W, b) - матриця ваг та вектор зміщення
-        """
-        return self.W, self.b
 
+# ======================================================================
+#                   ОНОВЛЕНИЙ LMPC CONTROLLER
+# ======================================================================
 class LMPCController(BaseMPC):
     def __init__(self, **kwargs):
-        # L-MPC не потребує зовнішньої моделі, тому ми передаємо None
-        # і створюємо її всередині методу fit.
-        super().__init__(model=None, **kwargs)
-        
-        # Ініціалізація атрибутів для оптимізаційної задачі
+        # Тепер LMPC приймає `model` як і KMPC.
+        # Всі параметри передаються в базовий клас.
+        super().__init__(**kwargs)
+
         self.problem: cp.Problem | None = None
         self._vars: dict[str, cp.Variable] = {}
         self._pars: dict[str, cp.Parameter] = {}
-        
+
         # Параметри для м'яких обмежень, як у K-MPC, для сумісності
         self.rho_y = kwargs.get('rho_y', 1e6)
         self.rho_delta_u = kwargs.get('rho_delta_u', 1e4)
@@ -355,38 +290,30 @@ class LMPCController(BaseMPC):
 
     def fit(self, X_train: np.ndarray, Y_train: np.ndarray, **kwargs):
         """
-        Виконує лінійну регресію і створює внутрішню модель LinPredictor.
-        Приймає НЕмасштабовані дані.
+        Навчає внутрішню лінійну модель та налаштовує QP-задачу.
+        Дані мають бути вже масштабовані.
         """
-        # 1. Навчаємо лінійну модель
-        X_train_scaled = self.x_scaler.fit_transform(X_train)
-        Y_train_scaled = self.y_scaler.fit_transform(Y_train)
-        
-        W, _, _, _ = np.linalg.lstsq(X_train_scaled, Y_train_scaled, rcond=None)
-        b = Y_train_scaled.mean(axis=0) - X_train_scaled.mean(axis=0) @ W
-        
-        # 2. Створюємо сумісний об'єкт моделі
-        self.model = LinPredictor(W, b, self.x_scaler, self.y_scaler)
+        # 1. Просто навчаємо модель (вся логіка тепер в model.py)
+        self.model.fit(X_train, Y_train)
 
-        # 3. Налаштовуємо QP-задачу один раз
+        # 2. Налаштовуємо QP-задачу один раз після навчання
         self._setup_optim_problem()
 
     def _setup_optim_problem(self):
-        """Створює QP-задачу, аналогічну до K-MPC, але з фіксованою лінійною моделлю."""
+        """Створює QP-задачу з фіксованою лінійною моделлю."""
         # 1. Змінні оптимізації
         u_var = cp.Variable(self.Nc, name="u")
         eps_delta_u_upper = cp.Variable(self.Nc, nonneg=True, name="eps_delta_u_upper")
         eps_delta_u_lower = cp.Variable(self.Nc, nonneg=True, name="eps_delta_u_lower")
-        eps_y_upper = cp.Variable((self.Np, 2), nonneg=True, name="eps_y_upper") if self.y_max is not None else None
-        eps_y_lower = cp.Variable((self.Np, 2), nonneg=True, name="eps_y_lower") if self.y_min is not None else None
+        eps_y_upper = cp.Variable((self.Np, self.n_targets), nonneg=True) if self.y_max is not None else None
+        eps_y_lower = cp.Variable((self.Np, self.n_targets), nonneg=True) if self.y_min is not None else None
         self._vars = {
-            'u': u_var, 
-            'eps_delta_u_upper': eps_delta_u_upper,
+            'u': u_var, 'eps_delta_u_upper': eps_delta_u_upper,
             'eps_delta_u_lower': eps_delta_u_lower,
             'eps_y_upper': eps_y_upper, 'eps_y_lower': eps_y_lower
         }
-    
-        # 2. Параметри, що будуть оновлюватись на кожному кроці
+
+        # 2. Параметри, що оновлюються на кожному кроці
         x_hist_param = cp.Parameter(self.n_inputs, name="x_hist_flat")
         u_prev_param = cp.Parameter(name="u_prev")
         d_hat_param = cp.Parameter(self.n_targets, name="d_hat")
@@ -395,110 +322,80 @@ class LMPCController(BaseMPC):
             'x_hist': x_hist_param, 'u_prev': u_prev_param,
             'd_hat': d_hat_param, 'd_seq': d_seq_param
         }
-    
-        # 3. Константи моделі та масштабування
+
+        # 3. Константи моделі та масштабування (W та b тепер константи!)
         W_c = cp.Constant(self.model.W)
         b_c = cp.Constant(self.model.b)
         mean_c = cp.Constant(self.x_scaler.mean_)
         scale_c = cp.Constant(self.x_scaler.scale_)
-    
-        # 4. Побудова прогнозу на горизонті Np
-        pred_fe, pred_mass = [], []
-        
-        # Початковий стан з параметра
+
+        # 4. Побудова прогнозу
+        preds = []
         xk_unscaled_list = [x_hist_param[i*3:(i+1)*3] for i in range(self.L + 1)]
-    
+
         for k in range(self.Np):
             uk = u_var[k] if k < self.Nc else u_var[self.Nc - 1]
-            
-            # Формуємо вектор стану Xk в ОРИГІНАЛЬНОМУ масштабі
             Xk_unscaled = cp.hstack(xk_unscaled_list)
-            
-            # Масштабування вектора стану
             Xk_scaled = (Xk_unscaled - mean_c) / scale_c
-            
-            # Прогноз за лінійною моделлю
             yk = Xk_scaled @ W_c + b_c + d_hat_param
-            pred_fe.append(yk[0])
-            pred_mass.append(yk[1])
-    
-            # Оновлюємо стан для наступного кроку
+            preds.append(yk)
+
             feed_fe, ore_flow = d_seq_param[k, 0], d_seq_param[k, 1]
             xk_unscaled_list.pop(0)
             xk_unscaled_list.append(cp.hstack([feed_fe, ore_flow, uk]))
-    
-        conc_fe_preds = cp.hstack(pred_fe)
-        conc_mass_preds = cp.hstack(pred_mass)
-    
+
+        y_preds_stacked = cp.vstack(preds)
+        conc_fe_preds = y_preds_stacked[:, 0]
+        conc_mass_preds = y_preds_stacked[:, 1]
+
         # 5. Формування обмежень
         cons = [u_var >= self.u_min, u_var <= self.u_max]
         du0 = u_var[0] - u_prev_param
         du_rest = u_var[1:] - u_var[:-1] if self.Nc > 1 else []
-        if self.Nc > 1:
-            Du_ext = cp.hstack([du0, du_rest])
-        else:
-            Du_ext = cp.hstack([du0])        
-        
-        # Обмеження на Du_ext з м'якими змінними
+        Du_ext = cp.hstack([du0] + ([du_rest] if self.Nc > 1 else []))
+
         cons.extend([
             Du_ext <= self.delta_u_max + eps_delta_u_upper,
             Du_ext >= -self.delta_u_max - eps_delta_u_lower
         ])
-    
-        y_preds_stacked = cp.vstack([conc_fe_preds, conc_mass_preds]).T
+
         if eps_y_upper is not None:
             cons.append(y_preds_stacked <= self.y_max + eps_y_upper)
         if eps_y_lower is not None:
             cons.append(y_preds_stacked >= self.y_min - eps_y_lower)
-    
+
         # 6. Формування цільової функції
         base_cost = self.objective.cost_full(
             conc_fe_preds=conc_fe_preds, conc_mass_preds=conc_mass_preds,
             u_seq=u_var, u_prev=u_prev_param
         )
-        # Штраф за порушення обмежень
         penalty_cost = self.rho_delta_u * (cp.sum_squares(eps_delta_u_upper) + cp.sum_squares(eps_delta_u_lower))
-        if eps_y_upper is not None:
-            penalty_cost += self.rho_y * cp.sum_squares(eps_y_upper)
-        if eps_y_lower is not None:
-            penalty_cost += self.rho_y * cp.sum_squares(eps_y_lower)
-    
+        if eps_y_upper is not None: penalty_cost += self.rho_y * cp.sum_squares(eps_y_upper)
+        if eps_y_lower is not None: penalty_cost += self.rho_y * cp.sum_squares(eps_y_lower)
+
         total_cost = base_cost + penalty_cost
-        
-        # 7. Створення об'єкту задачі
         self.problem = cp.Problem(cp.Minimize(total_cost), cons)
 
+
     def optimize(self, d_seq: np.ndarray, u_prev: float) -> np.ndarray:
-        """Виконує крок оптимізації."""
         if self.problem is None:
             raise RuntimeError("Метод fit() має бути викликаний перед optimize()")
-    
-        # Оновлюємо значення параметрів
+
         self._pars['x_hist'].value = self.x_hist.flatten()
         self._pars['u_prev'].value = u_prev
         self._pars['d_seq'].value = d_seq
         self._pars['d_hat'].value = self.d_hat if self.use_disturbance_estimator and self.d_hat is not None else np.zeros(self.n_targets)
-        
-        # Розв'язуємо задачу
+
         try:
             self.problem.solve(solver=cp.OSQP, warm_start=True)
         except cp.error.SolverError:
             print("ПОПЕРЕДЖЕННЯ: Помилка солвера. Використовується попереднє керування.")
             return np.array([u_prev] * self.Nc)
-    
-        # Діагностика та повернення результату
-        if self.problem.status not in ["infeasible", "unbounded"]:
-            u_optimal = self._vars['u'].value
-            # Діагностичний вивід
-            if (self._vars['eps_y_upper'] is not None and 
-                np.any(self._vars['eps_y_upper'].value > 1e-4)):
-                print(f"  -> УВАГА: Порушено верхнє обмеження Y! ε_y_upper = {np.round(self._vars['eps_y_upper'].value.flatten(), 3)}")
-            
-            if (self._vars['eps_delta_u_upper'] is not None and np.any(self._vars['eps_delta_u_upper'].value > 1e-4)) or \
-               (self._vars['eps_delta_u_lower'] is not None and np.any(self._vars['eps_delta_u_lower'].value > 1e-4)):
-                print(f"  -> УВАГА: Порушено обмеження Δu! ε_Δu_upper = {np.round(self._vars['eps_delta_u_upper'].value, 3)}, ε_Δu_lower = {np.round(self._vars['eps_delta_u_lower'].value, 3)}")
-        else:
+
+        if self.problem.status in ["infeasible", "unbounded"]:
             print(f"ПОПЕРЕДЖЕННЯ: Задача оптимізації не має розв'язку (статус: {self.problem.status}). Використовується попереднє керування.")
             return np.array([u_prev] * self.Nc)
-    
+
+        u_optimal = self._vars['u'].value
+        # (Опціонально) Діагностика порушень, як у KMPC
         return u_optimal

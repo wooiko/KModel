@@ -43,6 +43,54 @@ class _BaseKernelModel(ABC):
     def kernel(self, value: str) -> None:
         self._kernel = value.lower() if value else None
 
+# ======================================================================
+#               НОВА СТРАТЕГІЯ - ЛІНІЙНА МОДЕЛЬ
+# ======================================================================
+class _LinearModel(_BaseKernelModel):
+    """
+    Реалізація простої лінійної моделі, навченої за допомогою
+    методу найменших квадратів (Least Squares).
+    """
+    def __init__(self, **kwargs): # Приймає невикористані kwargs для сумісності
+        super().__init__()
+        self.W: np.ndarray | None = None
+        self.b: np.ndarray | None = None
+        self._kernel = "linear" # Фіксоване значення для ясності
+
+    def fit(self, X: np.ndarray, Y: np.ndarray) -> None:
+        """
+        Навчає лінійну модель. Очікує на вході вже масштабовані дані.
+        X: Масштабовані вхідні дані (n_samples, n_features)
+        Y: Масштабовані вихідні дані (n_samples, n_targets)
+        """
+        # Додаємо стовпець одиниць до X для знаходження коефіцієнта b (зміщення)
+        X_b = np.c_[X, np.ones(X.shape[0])]
+
+        # Використовуємо lstsq для знаходження коефіцієнтів [W, b]
+        # W - матриця ваг, b - вектор зміщення
+        coeffs, _, _, _ = np.linalg.lstsq(X_b, Y, rcond=None)
+
+        self.W = coeffs[:-1, :]  # (n_features, n_targets)
+        self.b = coeffs[-1, :]   # (n_targets,)
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        """
+        Робить прогноз на основі навченої моделі.
+        X: Масштабовані вхідні дані.
+        """
+        if self.W is None or self.b is None:
+            raise RuntimeError("Модель не навчена. Викличте метод fit() спочатку.")
+        return X @ self.W + self.b
+
+    def linearize(self, X0: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Для лінійної моделі лінеаризація є самою моделлю.
+        Повертає матрицю ваг W та вектор зміщення b незалежно від точки X0.
+        """
+        if self.W is None or self.b is None:
+            raise RuntimeError("Модель не навчена. Викличте метод fit() спочатку.")
+        return self.W, self.b
+
 
 # ======================================================================
 #                    KRR (Kernel Ridge Regression)
@@ -360,15 +408,17 @@ class _SVRModel(_BaseKernelModel):
 # ======================================================================
 class KernelModel:
     """
-    Являє собою «тонкий» фасад.  
+    Являє собою «тонкий» фасад.
     За `model_type` вибирається конкретна стратегія, а зайві kwargs
     автоматично відкидаються (щоб не виникало TypeError).
     """
 
+    # ОНОВЛЕНИЙ РЕЄСТР: додано 'linear'
     _REGISTRY: Dict[str, Type[_BaseKernelModel]] = {
         "krr": _KRRModel,
         "gpr": _GPRModel,
         "svr": _SVRModel,
+        "linear": _LinearModel,
     }
 
     def __init__(self, model_type: str = "krr", **kwargs):
@@ -394,4 +444,5 @@ class KernelModel:
         return self._impl.linearize(X0)
 
     def __getattr__(self, item):
+        # Делегуємо доступ до атрибутів внутрішньої реалізації (наприклад, до W, b)
         return getattr(self._impl, item)

@@ -69,8 +69,8 @@ def prepare_simulation_data(
         #    - Зробимо залежність 'concentrate_fe_percent' більш "опуклою" (коеф > 1)
         #    - Зробимо залежність 'concentrate_mass_flow' більш "опуклою" (коеф > 1)
         nonlinear_config = {
-            'concentrate_fe_percent': ('pow', 2),
-            'concentrate_mass_flow': ('pow', 1.5)
+            'concentrate_fe_percent': ('pow', 1.5),
+            'concentrate_mass_flow': ('pow', 1.3)
         }
            
         # 5. Створюємо новий датасет з посиленою нелінійністю
@@ -155,95 +155,59 @@ def split_and_scale_data(
 # === БЛОК 2: ІНІЦІАЛІЗАЦІЯ КОМПОНЕНТІВ MPC та EKF ===
 # =============================================================================
 
-def initialize_mpc_controller(params, x_scaler, y_scaler)-> BaseMPC:
+def initialize_mpc_controller(params: Dict[str, Any], x_scaler: StandardScaler, y_scaler: StandardScaler) -> BaseMPC:
+    """
+    ОНОВЛЕНА ФУНКЦІЯ: Уніфікує створення KMPC та LMPC контролерів.
+    """
     print("Крок 2: Ініціалізація MPC контролера...")
     ref_point_scaled = y_scaler.transform(np.array([[params['ref_fe'], params['ref_mass']]]))[0]
     y_max_scaled = y_scaler.transform(np.array([[params['y_max_fe'], params['y_max_mass']]]))[0]
+
     objective = MaxIronMassTrackingObjective(
         λ=params['λ_obj'], w_fe=params['w_fe'], w_mass=params['w_mass'],
         ref_fe=ref_point_scaled[0], ref_mass=ref_point_scaled[1], K_I=params['K_I']
     )
+
     avg_tracking_weight = (params['w_fe'] + params['w_mass']) / 2.
     rho_y_val = avg_tracking_weight * 1000
     rho_du_val = params['λ_obj'] * 100
 
-    if params['controller_type'] == 'kmpc':
-        kernel_model = KernelModel(
+    # Спільні параметри для обох контролерів
+    base_mpc_params = {
+        'objective': objective, 'x_scaler': x_scaler, 'y_scaler': y_scaler,
+        'n_targets': 2, 'horizon': params['Np'], 'control_horizon': params['Nc'], 'lag': params['lag'],
+        'u_min': params['u_min'], 'u_max': params['u_max'], 'delta_u_max': params['delta_u_max'],
+        'use_disturbance_estimator': params['use_disturbance_estimator'],
+        'y_max': list(y_max_scaled) if params['use_soft_constraints'] else None,
+        'rho_y': rho_y_val, 'rho_delta_u': rho_du_val
+    }
+
+    controller_type = params['controller_type']
+
+    if controller_type == 'kmpc':
+        # Створюємо модель для KMPC
+        model = KernelModel(
             model_type=params['model_type'],
             kernel=params['kernel'],
             find_optimal_params=params['find_optimal_params']
         )
+        # Створюємо контролер
         mpc = KMPCController(
-            model=kernel_model, objective=objective, x_scaler=x_scaler, y_scaler=y_scaler,
-            n_targets=2, horizon=params['Np'], control_horizon=params['Nc'], lag=params['lag'],
-            u_min=params['u_min'], u_max=params['u_max'], delta_u_max=params['delta_u_max'],
-            use_disturbance_estimator=params['use_disturbance_estimator'],
-            y_max=list(y_max_scaled) if params['use_soft_constraints'] else None,
-            rho_y=rho_y_val, rho_delta_u=rho_du_val, rho_trust=params['rho_trust']
+            model=model,
+            rho_trust=params['rho_trust'],
+            **base_mpc_params
         )
-    elif params['controller_type'] == 'lmpc':
-        mpc = LMPCController(
-            objective=objective, x_scaler=x_scaler, y_scaler=y_scaler,
-            n_targets=2, horizon=params['Np'], control_horizon=params['Nc'], lag=params['lag'],
-            u_min=params['u_min'], u_max=params['u_max'], delta_u_max=params['delta_u_max'],
-            use_disturbance_estimator=params['use_disturbance_estimator'],
-            y_max=list(y_max_scaled) if params['use_soft_constraints'] else None,
-            rho_y=rho_y_val, rho_delta_u=rho_du_val
-        )
+
+    elif controller_type == 'lmpc':
+        # Для LMPC створюємо модель типу 'linear'
+        model = KernelModel(model_type='linear')
+        # Створюємо контролер LMPC з цією моделлю
+        mpc = LMPCController(model=model, **base_mpc_params)
+
     else:
-        raise ValueError(f"Невідомий тип контролера: {params['controller_type']}")
+        raise ValueError(f"Невідомий тип контролера: {controller_type}")
+
     return mpc
-
-
-# def initialize_mpc_controller(
-#     params: Dict[str, Any],
-#     x_scaler: StandardScaler,
-#     y_scaler: StandardScaler
-# ) -> BaseMPC:
-#     """
-#     Ініціалізує та налаштовує MPC контролер.
-
-#     Args:
-#         params: Словник з параметрами MPC.
-#         x_scaler: Навчений скалер для вхідних даних.
-#         y_scaler: Навчений скалер для вихідних даних.
-
-#     Returns:
-#         Налаштований екземпляр MPCController.
-#     """
-#     print("Крок 2: Ініціалізація MPC контролера...")
-#     # Створення моделі процесу
-#     kernel_model = KernelModel(
-#         model_type=params['model_type'],
-#         kernel=params['kernel'],
-#         find_optimal_params=params['find_optimal_params']
-#     )
-    
-#     # Масштабування уставк та обмежень
-#     ref_point_scaled = y_scaler.transform(np.array([[params['ref_fe'], params['ref_mass']]]))[0]
-#     y_max_scaled = y_scaler.transform(np.array([[params['y_max_fe'], params['y_max_mass']]]))[0]
-
-#     # Створення цільової функції
-#     objective = MaxIronMassTrackingObjective(
-#         λ=params['λ_obj'], w_fe=params['w_fe'], w_mass=params['w_mass'],
-#         ref_fe=ref_point_scaled[0], ref_mass=ref_point_scaled[1], K_I=params['K_I']
-#     )
-    
-#     # Розрахунок ваг для м'яких обмежень
-#     avg_tracking_weight = (params['w_fe'] + params['w_mass']) / 2.
-#     rho_y_val = avg_tracking_weight * 1000
-#     rho_du_val = params['λ_obj'] * 100
-
-#     # Створення контролера
-#     mpc = KMPCController(
-#         model=kernel_model, objective=objective, x_scaler=x_scaler, y_scaler=y_scaler,
-#         n_targets=2, horizon=params['Np'], control_horizon=params['Nc'], lag=params['lag'],
-#         u_min=params['u_min'], u_max=params['u_max'], delta_u_max=params['delta_u_max'],
-#         use_disturbance_estimator=params['use_disturbance_estimator'],
-#         y_max=list(y_max_scaled) if params['use_soft_constraints'] else None,
-#         rho_y=rho_y_val, rho_delta_u=rho_du_val, rho_trust=params['rho_trust']
-#     )
-#     return mpc
 
 def train_and_evaluate_model(
     mpc: BaseMPC,
@@ -252,31 +216,26 @@ def train_and_evaluate_model(
 ) -> Dict[str, float]:
     """
     Навчає модель всередині MPC та оцінює її якість на тестових даних.
-
-    Args:
-        mpc: Екземпляр MPC контролера з ненавченою моделлю.
-        data: Словник з розбитими та масштабованими даними.
-        y_scaler: Навчений скалер для вихідних даних.
-        
-    Returns:
-        Словник з метриками якості моделі.
+    Тепер ця функція працює однаково для KMPC і LMPC.
     """
     print("Крок 3: Навчання та оцінка моделі процесу...")
+    # Передаємо масштабовані дані для навчання
     mpc.fit(data['X_train_scaled'], data['Y_train_scaled'])
 
+    # Оцінюємо на тестових даних
     y_pred_scaled = mpc.model.predict(data['X_test_scaled'])
     y_pred_orig = y_scaler.inverse_transform(y_pred_scaled)
-    
+
     test_mse = mean_squared_error(data['Y_test'], y_pred_orig)
     print(f"-> Загальна помилка моделі на тестових даних (MSE): {test_mse:.4f}")
-    
+
     metrics = {'test_mse_total': test_mse}
     output_columns = ['conc_fe', 'conc_mass']
     for i, col in enumerate(output_columns):
         rmse = np.sqrt(mean_squared_error(data['Y_test'][:, i], y_pred_orig[:, i]))
         metrics[f'test_rmse_{col}'] = rmse
         print(f"-> RMSE для {col}: {rmse:.3f}")
-        
+
     return metrics
 
 
@@ -701,8 +660,8 @@ if __name__ == '__main__':
         progress_callback=my_progress, 
         
         # ---- Блок даних
-        N_data=100, 
-        control_pts=20,
+        N_data=500, 
+        control_pts=100,
         seed=42,
         
         plant_model_type='rf',
@@ -711,6 +670,8 @@ if __name__ == '__main__':
         val_size=0.2,
         test_size=0.15,
     
+        enable_nonlinear=True, 
+        
         # ---- Налаштування моделі
         noise_level='low',
         model_type='svr',
