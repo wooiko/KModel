@@ -322,6 +322,19 @@ class LinPredictor:
         X_scaled = self._x_scaler.transform(X_unscaled)
         Y_scaled = X_scaled @ self.W + self.b
         return self._y_scaler.inverse_transform(Y_scaled)
+    
+    def linearize(self, X):
+        """
+        Для лінійної моделі лінеаризація просто повертає 
+        матрицю ваг W та вектор зміщення b незалежно від точки X.
+        
+        Args:
+            X: Вхідний вектор або матриця даних (не використовується для лінійної моделі)
+        
+        Returns:
+            tuple: (W, b) - матриця ваг та вектор зміщення
+        """
+        return self.W, self.b
 
 class LMPCController(BaseMPC):
     def __init__(self, **kwargs):
@@ -360,59 +373,132 @@ class LMPCController(BaseMPC):
 
     def _setup_optim_problem(self):
         """Створює QP-задачу, аналогічну до K-MPC, але з фіксованою лінійною моделлю."""
-        # Цей код буде дуже схожий на _setup_optimization_problem з KMPCController,
-        # але замість параметрів W_param, b_param, він буде використовувати
-        # константи self.model.W та self.model.b.
-        
-        # 1. Змінні
-        u = cp.Variable(self.Nc, name="u")
-        # ... м'які змінні eps_... як у KMPCController ...
-        
-        # 2. Параметри
+        # 1. Змінні оптимізації
+        u_var = cp.Variable(self.Nc, name="u")
+        eps_delta_u_upper = cp.Variable(self.Nc, nonneg=True, name="eps_delta_u_upper")
+        eps_delta_u_lower = cp.Variable(self.Nc, nonneg=True, name="eps_delta_u_lower")
+        eps_y_upper = cp.Variable((self.Np, 2), nonneg=True, name="eps_y_upper") if self.y_max is not None else None
+        eps_y_lower = cp.Variable((self.Np, 2), nonneg=True, name="eps_y_lower") if self.y_min is not None else None
+        self._vars = {
+            'u': u_var, 
+            'eps_delta_u_upper': eps_delta_u_upper,
+            'eps_delta_u_lower': eps_delta_u_lower,
+            'eps_y_upper': eps_y_upper, 'eps_y_lower': eps_y_lower
+        }
+    
+        # 2. Параметри, що будуть оновлюватись на кожному кроці
         x_hist_param = cp.Parameter(self.n_inputs, name="x_hist_flat")
         u_prev_param = cp.Parameter(name="u_prev")
         d_hat_param = cp.Parameter(self.n_targets, name="d_hat")
         d_seq_param = cp.Parameter((self.Np, 2), name="d_seq")
-
         self._pars = {
             'x_hist': x_hist_param, 'u_prev': u_prev_param,
             'd_hat': d_hat_param, 'd_seq': d_seq_param
         }
-
+    
         # 3. Константи моделі та масштабування
         W_c = cp.Constant(self.model.W)
         b_c = cp.Constant(self.model.b)
         mean_c = cp.Constant(self.x_scaler.mean_)
         scale_c = cp.Constant(self.x_scaler.scale_)
+    
+        # 4. Побудова прогнозу на горизонті Np
+        pred_fe, pred_mass = [], []
         
-        # 4. Побудова прогнозу
-        # ... логіка циклу for k in range(self.Np) ...
-        # Xk_scaled = (Xk_unscaled - mean_c) / scale_c
-        # yk = Xk_scaled @ W_c + b_c + d_hat_param  # <<< КЛЮЧОВА ВІДМІННІСТЬ
-        # ...
+        # Початковий стан з параметра
+        xk_unscaled_list = [x_hist_param[i*3:(i+1)*3] for i in range(self.L + 1)]
+    
+        for k in range(self.Np):
+            uk = u_var[k] if k < self.Nc else u_var[self.Nc - 1]
+            
+            # Формуємо вектор стану Xk в ОРИГІНАЛЬНОМУ масштабі
+            Xk_unscaled = cp.hstack(xk_unscaled_list)
+            
+            # Масштабування вектора стану
+            Xk_scaled = (Xk_unscaled - mean_c) / scale_c
+            
+            # Прогноз за лінійною моделлю
+            yk = Xk_scaled @ W_c + b_c + d_hat_param
+            pred_fe.append(yk[0])
+            pred_mass.append(yk[1])
+    
+            # Оновлюємо стан для наступного кроку
+            feed_fe, ore_flow = d_seq_param[k, 0], d_seq_param[k, 1]
+            xk_unscaled_list.pop(0)
+            xk_unscaled_list.append(cp.hstack([feed_fe, ore_flow, uk]))
+    
+        conc_fe_preds = cp.hstack(pred_fe)
+        conc_mass_preds = cp.hstack(pred_mass)
+    
+        # 5. Формування обмежень
+        cons = [u_var >= self.u_min, u_var <= self.u_max]
+        du0 = u_var[0] - u_prev_param
+        du_rest = u_var[1:] - u_var[:-1] if self.Nc > 1 else []
+        if self.Nc > 1:
+            Du_ext = cp.hstack([du0, du_rest])
+        else:
+            Du_ext = cp.hstack([du0])        
         
-        # 5. Цільова функція та обмеження
-        # Цей блок повністю копіюється з KMPCController, оскільки
-        # тепер LMPC має доступ до self.objective, self.rho_y і т.д.
-        # base_cost = self.objective.cost_full(...)
-        # ...
+        # Обмеження на Du_ext з м'якими змінними
+        cons.extend([
+            Du_ext <= self.delta_u_max + eps_delta_u_upper,
+            Du_ext >= -self.delta_u_max - eps_delta_u_lower
+        ])
+    
+        y_preds_stacked = cp.vstack([conc_fe_preds, conc_mass_preds]).T
+        if eps_y_upper is not None:
+            cons.append(y_preds_stacked <= self.y_max + eps_y_upper)
+        if eps_y_lower is not None:
+            cons.append(y_preds_stacked >= self.y_min - eps_y_lower)
+    
+        # 6. Формування цільової функції
+        base_cost = self.objective.cost_full(
+            conc_fe_preds=conc_fe_preds, conc_mass_preds=conc_mass_preds,
+            u_seq=u_var, u_prev=u_prev_param
+        )
+        # Штраф за порушення обмежень
+        penalty_cost = self.rho_delta_u * (cp.sum_squares(eps_delta_u_upper) + cp.sum_squares(eps_delta_u_lower))
+        if eps_y_upper is not None:
+            penalty_cost += self.rho_y * cp.sum_squares(eps_y_upper)
+        if eps_y_lower is not None:
+            penalty_cost += self.rho_y * cp.sum_squares(eps_y_lower)
+    
+        total_cost = base_cost + penalty_cost
         
-        # self.problem = cp.Problem(...)
-        # ЗАГЛУШКА: повний код _setup_optim_problem тут для стислості опущено,
-        # але він має бути реалізований за аналогією з KMPCController.
+        # 7. Створення об'єкту задачі
+        self.problem = cp.Problem(cp.Minimize(total_cost), cons)
 
     def optimize(self, d_seq: np.ndarray, u_prev: float) -> np.ndarray:
         """Виконує крок оптимізації."""
         if self.problem is None:
             raise RuntimeError("Метод fit() має бути викликаний перед optimize()")
-
+    
         # Оновлюємо значення параметрів
         self._pars['x_hist'].value = self.x_hist.flatten()
         self._pars['u_prev'].value = u_prev
         self._pars['d_seq'].value = d_seq
-        self._pars['d_hat'].value = self.d_hat
+        self._pars['d_hat'].value = self.d_hat if self.use_disturbance_estimator and self.d_hat is not None else np.zeros(self.n_targets)
         
         # Розв'язуємо задачу
-        self.problem.solve(solver=cp.OSQP, warm_start=True)
-        # ... обробка результатів, як у KMPCController ...
-        return self._vars["u"].value
+        try:
+            self.problem.solve(solver=cp.OSQP, warm_start=True)
+        except cp.error.SolverError:
+            print("ПОПЕРЕДЖЕННЯ: Помилка солвера. Використовується попереднє керування.")
+            return np.array([u_prev] * self.Nc)
+    
+        # Діагностика та повернення результату
+        if self.problem.status not in ["infeasible", "unbounded"]:
+            u_optimal = self._vars['u'].value
+            # Діагностичний вивід
+            if (self._vars['eps_y_upper'] is not None and 
+                np.any(self._vars['eps_y_upper'].value > 1e-4)):
+                print(f"  -> УВАГА: Порушено верхнє обмеження Y! ε_y_upper = {np.round(self._vars['eps_y_upper'].value.flatten(), 3)}")
+            
+            if (self._vars['eps_delta_u_upper'] is not None and np.any(self._vars['eps_delta_u_upper'].value > 1e-4)) or \
+               (self._vars['eps_delta_u_lower'] is not None and np.any(self._vars['eps_delta_u_lower'].value > 1e-4)):
+                print(f"  -> УВАГА: Порушено обмеження Δu! ε_Δu_upper = {np.round(self._vars['eps_delta_u_upper'].value, 3)}, ε_Δu_lower = {np.round(self._vars['eps_delta_u_lower'].value, 3)}")
+        else:
+            print(f"ПОПЕРЕДЖЕННЯ: Задача оптимізації не має розв'язку (статус: {self.problem.status}). Використовується попереднє керування.")
+            return np.array([u_prev] * self.Nc)
+    
+        return u_optimal

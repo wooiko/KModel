@@ -155,56 +155,95 @@ def split_and_scale_data(
 # === БЛОК 2: ІНІЦІАЛІЗАЦІЯ КОМПОНЕНТІВ MPC та EKF ===
 # =============================================================================
 
-def initialize_mpc_controller(
-    params: Dict[str, Any],
-    x_scaler: StandardScaler,
-    y_scaler: StandardScaler
-) -> BaseMPC:
-    """
-    Ініціалізує та налаштовує MPC контролер.
-
-    Args:
-        params: Словник з параметрами MPC.
-        x_scaler: Навчений скалер для вхідних даних.
-        y_scaler: Навчений скалер для вихідних даних.
-
-    Returns:
-        Налаштований екземпляр MPCController.
-    """
+def initialize_mpc_controller(params, x_scaler, y_scaler)-> BaseMPC:
     print("Крок 2: Ініціалізація MPC контролера...")
-    # Створення моделі процесу
-    kernel_model = KernelModel(
-        model_type=params['model_type'],
-        kernel=params['kernel'],
-        find_optimal_params=params['find_optimal_params']
-    )
-    
-    # Масштабування уставк та обмежень
     ref_point_scaled = y_scaler.transform(np.array([[params['ref_fe'], params['ref_mass']]]))[0]
     y_max_scaled = y_scaler.transform(np.array([[params['y_max_fe'], params['y_max_mass']]]))[0]
-
-    # Створення цільової функції
     objective = MaxIronMassTrackingObjective(
         λ=params['λ_obj'], w_fe=params['w_fe'], w_mass=params['w_mass'],
         ref_fe=ref_point_scaled[0], ref_mass=ref_point_scaled[1], K_I=params['K_I']
     )
-    
-    # Розрахунок ваг для м'яких обмежень
     avg_tracking_weight = (params['w_fe'] + params['w_mass']) / 2.
     rho_y_val = avg_tracking_weight * 1000
     rho_du_val = params['λ_obj'] * 100
 
-    # Створення контролера
-    mpc = KMPCController(
-        model=kernel_model, objective=objective, x_scaler=x_scaler, y_scaler=y_scaler,
-        n_targets=2, horizon=params['Np'], control_horizon=params['Nc'], lag=params['lag'],
-        u_min=params['u_min'], u_max=params['u_max'], delta_u_max=params['delta_u_max'],
-        use_disturbance_estimator=params['use_disturbance_estimator'],
-        y_max=list(y_max_scaled) if params['use_soft_constraints'] else None,
-        rho_y=rho_y_val, rho_delta_u=rho_du_val, rho_trust=params['rho_trust']
-    )
+    if params['controller_type'] == 'kmpc':
+        kernel_model = KernelModel(
+            model_type=params['model_type'],
+            kernel=params['kernel'],
+            find_optimal_params=params['find_optimal_params']
+        )
+        mpc = KMPCController(
+            model=kernel_model, objective=objective, x_scaler=x_scaler, y_scaler=y_scaler,
+            n_targets=2, horizon=params['Np'], control_horizon=params['Nc'], lag=params['lag'],
+            u_min=params['u_min'], u_max=params['u_max'], delta_u_max=params['delta_u_max'],
+            use_disturbance_estimator=params['use_disturbance_estimator'],
+            y_max=list(y_max_scaled) if params['use_soft_constraints'] else None,
+            rho_y=rho_y_val, rho_delta_u=rho_du_val, rho_trust=params['rho_trust']
+        )
+    elif params['controller_type'] == 'lmpc':
+        mpc = LMPCController(
+            objective=objective, x_scaler=x_scaler, y_scaler=y_scaler,
+            n_targets=2, horizon=params['Np'], control_horizon=params['Nc'], lag=params['lag'],
+            u_min=params['u_min'], u_max=params['u_max'], delta_u_max=params['delta_u_max'],
+            use_disturbance_estimator=params['use_disturbance_estimator'],
+            y_max=list(y_max_scaled) if params['use_soft_constraints'] else None,
+            rho_y=rho_y_val, rho_delta_u=rho_du_val
+        )
+    else:
+        raise ValueError(f"Невідомий тип контролера: {params['controller_type']}")
     return mpc
 
+
+# def initialize_mpc_controller(
+#     params: Dict[str, Any],
+#     x_scaler: StandardScaler,
+#     y_scaler: StandardScaler
+# ) -> BaseMPC:
+#     """
+#     Ініціалізує та налаштовує MPC контролер.
+
+#     Args:
+#         params: Словник з параметрами MPC.
+#         x_scaler: Навчений скалер для вхідних даних.
+#         y_scaler: Навчений скалер для вихідних даних.
+
+#     Returns:
+#         Налаштований екземпляр MPCController.
+#     """
+#     print("Крок 2: Ініціалізація MPC контролера...")
+#     # Створення моделі процесу
+#     kernel_model = KernelModel(
+#         model_type=params['model_type'],
+#         kernel=params['kernel'],
+#         find_optimal_params=params['find_optimal_params']
+#     )
+    
+#     # Масштабування уставк та обмежень
+#     ref_point_scaled = y_scaler.transform(np.array([[params['ref_fe'], params['ref_mass']]]))[0]
+#     y_max_scaled = y_scaler.transform(np.array([[params['y_max_fe'], params['y_max_mass']]]))[0]
+
+#     # Створення цільової функції
+#     objective = MaxIronMassTrackingObjective(
+#         λ=params['λ_obj'], w_fe=params['w_fe'], w_mass=params['w_mass'],
+#         ref_fe=ref_point_scaled[0], ref_mass=ref_point_scaled[1], K_I=params['K_I']
+#     )
+    
+#     # Розрахунок ваг для м'яких обмежень
+#     avg_tracking_weight = (params['w_fe'] + params['w_mass']) / 2.
+#     rho_y_val = avg_tracking_weight * 1000
+#     rho_du_val = params['λ_obj'] * 100
+
+#     # Створення контролера
+#     mpc = KMPCController(
+#         model=kernel_model, objective=objective, x_scaler=x_scaler, y_scaler=y_scaler,
+#         n_targets=2, horizon=params['Np'], control_horizon=params['Nc'], lag=params['lag'],
+#         u_min=params['u_min'], u_max=params['u_max'], delta_u_max=params['delta_u_max'],
+#         use_disturbance_estimator=params['use_disturbance_estimator'],
+#         y_max=list(y_max_scaled) if params['use_soft_constraints'] else None,
+#         rho_y=rho_y_val, rho_delta_u=rho_du_val, rho_trust=params['rho_trust']
+#     )
+#     return mpc
 
 def train_and_evaluate_model(
     mpc: BaseMPC,
