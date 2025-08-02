@@ -55,6 +55,8 @@ def prepare_simulation_data(
         test_frac=params['test_size'],
         seed=params['seed']
     )
+    anomaly_cfg = None
+    
     # 3. Генеруємо повний часовий ряд (з артефактами)
     df_true_orig = true_gen.generate(
         T=params['N_data'],
@@ -68,10 +70,7 @@ def prepare_simulation_data(
         # 4. Визначаємо, як ми хочемо посилити нелінійність
         #    - Зробимо залежність 'concentrate_fe_percent' більш "опуклою" (коеф > 1)
         #    - Зробимо залежність 'concentrate_mass_flow' більш "опуклою" (коеф > 1)
-        nonlinear_config = {
-            'concentrate_fe_percent': ('pow', 1.5),
-            'concentrate_mass_flow': ('pow', 1.3)
-        }
+        nonlinear_config = params['nonlinear_config']
            
         # 5. Створюємо новий датасет з посиленою нелінійністю
         #    Можна передати той самий рівень шуму та конфігурацію аномалій
@@ -660,7 +659,7 @@ if __name__ == '__main__':
         progress_callback=my_progress, 
         
         # ---- Блок даних
-        N_data=500, 
+        N_data=1000, 
         control_pts=100,
         seed=42,
         
@@ -671,10 +670,14 @@ if __name__ == '__main__':
         test_size=0.15,
     
         enable_nonlinear=True, 
+        nonlinear_config={
+            'concentrate_fe_percent': ('pow', 2),
+            'concentrate_mass_flow': ('pow', 1.8)
+        },
         
         # ---- Налаштування моделі
-        noise_level='low',
-        model_type='svr',
+        noise_level= 'low',
+        model_type='krr',
         kernel='rbf', 
         find_optimal_params=True,
         use_soft_constraints=True,
@@ -706,7 +709,7 @@ if __name__ == '__main__':
             'concentrate_mass_flow': 20.0,
             'tailings_mass_flow': 25.0
         },
-                time_constants_s = 
+        time_constants_s = 
         {
             'concentrate_fe_percent': 8.0,
             'tailings_fe_percent': 10.0,
@@ -715,8 +718,9 @@ if __name__ == '__main__':
         },
         
         # ---- Обмеження моделі
-        delta_u_max = 0.3,
-        λ_obj=1.5,
+        delta_u_max = 1.0,
+        λ_obj= 0.01, #1.5,
+        rho_trust=0.1, # 0.1
         
         Nc=6, #8
         Np=10, #12
