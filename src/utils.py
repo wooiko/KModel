@@ -361,3 +361,165 @@ def evaluate_ekf_performance(
         nees_cov=nees_cov, 
         nis_cov=nis_cov
     )
+
+def plot_trust_region_evolution(trust_stats_hist):
+    """Візуалізація еволюції trust region."""
+    import matplotlib.pyplot as plt
+    
+    if not trust_stats_hist:
+        print("Немає даних для візуалізації trust region")
+        return
+    
+    steps = range(len(trust_stats_hist))
+    radii = [stats['current_radius'] for stats in trust_stats_hist]
+    
+    plt.figure(figsize=(12, 6))
+    
+    plt.subplot(2, 1, 1)
+    plt.plot(steps, radii, 'b-', linewidth=2, label='Trust Region Radius')
+    plt.axhline(y=trust_stats_hist[0].get('min_radius', 0.1), 
+                color='r', linestyle='--', alpha=0.7, label='Min Radius')
+    plt.axhline(y=trust_stats_hist[0].get('max_radius', 5.0), 
+                color='r', linestyle='--', alpha=0.7, label='Max Radius')
+    plt.ylabel('Trust Region Radius')
+    plt.title('Еволюція Trust Region Radius')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    # Аналіз стабільності
+    plt.subplot(2, 1, 2)
+    if len(radii) > 10:
+        moving_avg = pd.Series(radii).rolling(window=10, center=True).mean()
+        plt.plot(steps, moving_avg, 'g-', linewidth=2, label='Ковзне середнє (10 кроків)')
+    
+    plt.plot(steps, radii, 'b-', alpha=0.5, label='Фактичний radius')
+    plt.xlabel('Кроки симуляції')
+    plt.ylabel('Trust Region Radius')
+    plt.title('Згладжена еволюція Trust Region')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.show()
+    
+def plot_linearization_quality(lin_quality_hist, params):
+    """Візуалізація якості лінеаризації."""
+    import matplotlib.pyplot as plt
+    
+    if not lin_quality_hist:
+        print("Немає даних для візуалізації якості лінеаризації")
+        return
+    
+    # ВИПРАВЛЕННЯ: правильно обробляємо різні типи даних
+    if isinstance(lin_quality_hist[0], dict):
+        # Якщо це словники з детальною інформацією
+        distances = [h['euclidean_distance'] for h in lin_quality_hist]
+    else:
+        # Якщо це прості числа
+        distances = lin_quality_hist
+    
+    steps = range(len(distances))
+    
+    plt.figure(figsize=(12, 4))
+    plt.plot(steps, distances, 'purple', alpha=0.7, label='Відстань лінеаризації')
+    
+    # Додаємо поріг
+    threshold = params.get('max_linearization_distance', 2.0)
+    plt.axhline(y=threshold, color='red', linestyle='--', 
+                label=f'Поріг ({threshold})', alpha=0.8)
+    
+    # Ковзне середнє
+    if len(distances) > 20:
+        moving_avg = pd.Series(distances).rolling(window=20, center=True).mean()
+        plt.plot(steps, moving_avg, 'darkred', linewidth=2, 
+                 label='Ковзне середнє (20 кроків)')
+    
+    plt.xlabel('Кроки симуляції')
+    plt.ylabel('Відстань від точки лінеаризації')
+    plt.title('Якість лінеаризації протягом симуляції')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.show()
+    
+    # Статистика
+    avg_quality = np.mean(distances)
+    max_quality = np.max(distances)
+    violations = sum(1 for q in distances if q > threshold)
+    
+    print(f"\n--- Статистика якості лінеаризації ---")
+    print(f"Середня відстань: {avg_quality:.4f}")
+    print(f"Максимальна відстань: {max_quality:.4f}")
+    print(f"Порушень порогу: {violations}/{len(distances)} ({100*violations/len(distances):.1f}%)")
+    
+def run_post_simulation_analysis_enhanced(results_df, analysis_data, params):
+    """Розширений аналіз результатів симуляції з trust region статистикою."""
+    print("\n" + "="*20 + " РОЗШИРЕНИЙ АНАЛІЗ РЕЗУЛЬТАТІВ " + "="*20)
+    
+    u_applied = results_df['solid_feed_percent'].values
+    d_all = analysis_data['d_all_test']
+    
+    # 1. Загальна поведінка керування та збурень
+    plot_control_and_disturbances(u_applied, d_all, title="Фінальне керування та збурення")
+    
+    # 2. Помилки відстеження уставки
+    analize_errors(results_df, params['ref_fe'], params['ref_mass'])
+    
+    # 3. Агресивність керування
+    agg_metrics = control_aggressiveness_metrics(u_applied, params['delta_u_max'])
+    print("\n--- Метрики агресивності керування ---")
+    for key, val in agg_metrics.items():
+        print(f"{key:<20}: {val:.4f}")
+    plot_delta_u_histogram(u_applied)
+
+    # 4. Аналіз роботи EKF
+    if analysis_data['y_true'] is not None:
+        evaluate_ekf_performance(
+            analysis_data['y_true'], analysis_data['x_hat'], analysis_data['P'],
+            analysis_data['innov'], analysis_data['R']
+        )
+    
+    # 5. Аналіз оцінки збурень
+    if analysis_data['d_hat'].size > 0:
+        d_hat_df = pd.DataFrame(analysis_data['d_hat'], columns=['d_conc_fe', 'd_conc_mass'])
+        plot_disturbance_estimation(d_hat_df)
+    
+    # 6. Візуалізація планів MPC
+    if analysis_data['u_seq']:
+        plot_fact_vs_mpc_plans(results_df, analysis_data['u_seq'], control_steps=results_df.index)
+    
+    # === НОВІ АНАЛІЗИ ===
+    # 7. Аналіз Trust Region
+    if 'trust_region_stats' in analysis_data and analysis_data['trust_region_stats']:
+        plot_trust_region_evolution(analysis_data['trust_region_stats'])
+        analyze_trust_region_performance(analysis_data['trust_region_stats'])
+    
+    # 8. Аналіз якості лінеаризації
+    if 'linearization_quality' in analysis_data and analysis_data['linearization_quality']:
+        plot_linearization_quality(analysis_data['linearization_quality'], params)
+        
+    print("="*60 + "\n")
+
+def analyze_trust_region_performance(trust_stats_hist):
+    """Аналіз ефективності адаптивного trust region."""
+    if not trust_stats_hist:
+        return
+    
+    radii = [stats['current_radius'] for stats in trust_stats_hist]
+    
+    # Статистика
+    avg_radius = np.mean(radii)
+    std_radius = np.std(radii)
+    min_radius = np.min(radii)
+    max_radius = np.max(radii)
+    
+    # Аналіз адаптивності
+    radius_changes = np.diff(radii)
+    num_increases = sum(1 for change in radius_changes if change > 0.01)
+    num_decreases = sum(1 for change in radius_changes if change < -0.01)
+    
+    print(f"\n--- Аналіз Trust Region ---")
+    print(f"Середній radius: {avg_radius:.4f} ± {std_radius:.4f}")
+    print(f"Діапазон: [{min_radius:.4f}, {max_radius:.4f}]")
+    print(f"Збільшень radius: {num_increases}")
+    print(f"Зменшень radius: {num_decreases}")
+    print(f"Коефіцієнт адаптивності: {(num_increases + num_decreases)/len(radius_changes):.3f}")

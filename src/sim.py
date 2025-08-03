@@ -159,17 +159,22 @@ def train_and_evaluate_model(
 ) -> Dict[str, float]:
     """
     Навчає модель всередині MPC та оцінює її якість на тестових даних.
-
-    Args:
-        mpc: Екземпляр MPC контролера з ненавченою моделлю.
-        data: Словник з розбитими та масштабованими даними.
-        y_scaler: Навчений скалер для вихідних даних.
-        
-    Returns:
-        Словник з метриками якості моделі.
     """
     print("Крок 3: Навчання та оцінка моделі процесу...")
     mpc.fit(data['X_train_scaled'], data['Y_train_scaled'])
+
+    # ✅ ДОДАЙ ДІАГНОСТИКУ SVR ТУТ:
+    if hasattr(mpc.model, '_impl') and hasattr(mpc.model._impl, 'models'):  # Перевіряємо чи це SVR
+        print("\n🔍 ЗАПУСК ДІАГНОСТИКИ SVR...")
+        svr_diagnostics = diagnose_svr_quality(
+            svr_model=mpc.model._impl,  # ВАЖЛИВО: ._impl для доступу до SVR
+            X_train=data['X_train_scaled'], 
+            y_train=data['Y_train_scaled'],
+            X_test=data['X_test_scaled'],
+            y_test=data['Y_test_scaled'],
+            x_scaler=None,  # Дані вже масштабовані
+            y_scaler=y_scaler
+        )
 
     y_pred_scaled = mpc.model.predict(data['X_test_scaled'])
     y_pred_orig = y_scaler.inverse_transform(y_pred_scaled)
@@ -344,6 +349,14 @@ def run_simulation_loop_enhanced(
         u_seq = mpc.optimize(d_seq, u_prev)
         u_cur = u_prev if u_seq is None else float(u_seq[0])
 
+        '''---'''       
+        # ДОДАЙ ДІАГНОСТИКУ ТУТ:
+        if t % 10 == 0:  # Кожні 10 кроків
+            diagnose_mpc_behavior(mpc, t, u_seq, u_prev, d_seq)
+        
+        u_cur = u_prev if u_seq is None else float(u_seq[0])
+        '''---'''
+
         # 7. Крок «реального» процесу
         y_full = true_gen.step(feed_fe_raw, ore_flow_raw, u_cur)
 
@@ -481,61 +494,6 @@ def run_simulation_loop_enhanced(
     }
 
     return pd.DataFrame(records), analysis_data
-
-# Модифікована головна функція симулятора
-def simulate_mpc_enhanced(
-    reference_df: pd.DataFrame,
-    # ... всі існуючі параметри ...
-    # === НОВІ ПАРАМЕТРИ ===
-    adaptive_trust_region: bool = True,
-    initial_trust_radius: float = 1.0,
-    min_trust_radius: float = 0.1,
-    max_trust_radius: float = 5.0,
-    trust_decay_factor: float = 0.8,
-    linearization_check_enabled: bool = True,
-    max_linearization_distance: float = 2.0,
-    retrain_linearization_threshold: float = 1.5,
-    **kwargs  # Для зворотної сумісності
-):
-    """
-    Покращена версія головної функції-оркестратора.
-    """
-    # Збираємо всі параметри в один словник
-    params = locals()
-    params.update(kwargs)  # Додаємо будь-які додаткові параметри
-    
-    # 1. Підготовка даних (без змін)
-    true_gen, df_true, X, Y = prepare_simulation_data(reference_df, params)
-    data, x_scaler, y_scaler = split_and_scale_data(X, Y, params)
-
-    # 2. Ініціалізація покращеного MPC
-    mpc = initialize_mpc_controller_enhanced(params, x_scaler, y_scaler)
-    metrics = train_and_evaluate_model(mpc, data, y_scaler)
-    
-    # 3. Ініціалізація EKF (без змін)
-    n_train_pts = len(data['X_train'])
-    n_val_pts = len(data['X_val'])
-    test_idx_start = params['lag'] + 1 + n_train_pts + n_val_pts
-    hist0_unscaled = df_true[['feed_fe_percent', 'ore_mass_flow', 'solid_feed_percent']].iloc[
-        test_idx_start - (params['lag'] + 1): test_idx_start
-    ].values
-    
-    ekf = initialize_ekf(mpc, (x_scaler, y_scaler), hist0_unscaled, data['Y_train_scaled'], params['lag'], params)
-
-    # 4. Запуск покращеної симуляції
-    results_df, analysis_data = run_simulation_loop_enhanced(
-        true_gen, mpc, ekf, df_true, data, (x_scaler, y_scaler), params, 
-        params.get('progress_callback')
-    )
-    
-    # 5. Розширений аналіз результатів
-    test_idx_start = params['lag'] + 1 + len(data['X_train']) + len(data['X_val'])
-    analysis_data['d_all_test'] = df_true.iloc[test_idx_start:][['feed_fe_percent','ore_mass_flow']].values
-    
-    if params.get('run_analysis', True):
-        run_post_simulation_analysis_enhanced(results_df, analysis_data, params)
-    
-    return results_df, metrics
 
 def initialize_ekf(
     mpc: MPCController,
@@ -703,9 +661,130 @@ def simulate_mpc(
     
     return results_df, metrics
 
+def diagnose_svr_quality(svr_model, X_train, y_train, X_test, y_test, x_scaler, y_scaler):
+    """Діагностика якості SVR моделі"""
+    
+    print("\n" + "="*50)
+    print("=== ДІАГНОСТИКА SVR МОДЕЛІ ===")
+    print("="*50)
+    
+    # 1. Перевір support vectors
+    print("\n--- Support Vectors Analysis ---")
+    for i, svr in enumerate(svr_model.models):
+        sv_count = len(svr.support_vectors_)
+        sv_ratio = sv_count / len(X_train)
+        print(f"Вихід {i}: Support Vectors = {sv_count}/{len(X_train)} ({sv_ratio:.1%})")
+        print(f"  C = {svr.C:.3f}, gamma = {getattr(svr, 'gamma', 'N/A')}, epsilon = {svr.epsilon:.3f}")
+        
+        if sv_ratio > 0.8:
+            print(f"  ❌ ПЕРЕНАВЧАННЯ! {sv_ratio:.1%} > 80% зразків є support vectors")
+        elif sv_ratio < 0.1:
+            print(f"  ❌ НЕДОНАВЧАННЯ! {sv_ratio:.1%} < 10% support vectors")
+        else:
+            print(f"  ✅ Нормальна кількість support vectors")
+    
+    # 2. Прямий тест SVR (без EKF)
+    print("\n--- Direct SVR Performance ---")
+    y_pred_train = svr_model.predict(X_train)
+    y_pred_test = svr_model.predict(X_test)
+    
+    # Train error
+    rmse_train = np.sqrt(np.mean((y_train - y_pred_train)**2, axis=0))
+    nrmse_train = rmse_train / (np.max(y_train, axis=0) - np.min(y_train, axis=0))
+    
+    # Test error  
+    rmse_test = np.sqrt(np.mean((y_test - y_pred_test)**2, axis=0))
+    nrmse_test = rmse_test / (np.max(y_test, axis=0) - np.min(y_test, axis=0))
+    
+    print(f"SVR Train RMSE: {rmse_train}")
+    print(f"SVR Train NRMSE: {nrmse_train}")
+    print(f"SVR Test RMSE: {rmse_test}")
+    print(f"SVR Test NRMSE: {nrmse_test}")
+    
+    # Overfitting check
+    overfitting = nrmse_test / nrmse_train
+    print(f"Overfitting ratio (test/train NRMSE): {overfitting}")
+    
+    for i in range(len(nrmse_test)):
+        if nrmse_test[i] > 5.0:
+            print(f"  ❌ Вихід {i}: SVR МОДЕЛЬ ПОГАНА! NRMSE = {nrmse_test[i]:.2f} > 5.0")
+        elif nrmse_test[i] > 2.0:
+            print(f"  ⚠️  Вихід {i}: SVR якість низька. NRMSE = {nrmse_test[i]:.2f}")
+        else:
+            print(f"  ✅ Вихід {i}: SVR якість прийнятна. NRMSE = {nrmse_test[i]:.2f}")
+            
+        if overfitting[i] > 2.0:
+            print(f"  ❌ Вихід {i}: Сильне перенавчання! Test/Train = {overfitting[i]:.2f}")
+    
+    # 3. Перевір діапазони даних
+    print("\n--- Data Range Analysis ---")
+    print(f"X_train shape: {X_train.shape}")
+    print(f"X_train range: min={np.min(X_train, axis=0)}, max={np.max(X_train, axis=0)}")
+    print(f"y_train shape: {y_train.shape}")
+    print(f"y_train range: min={np.min(y_train, axis=0)}, max={np.max(y_train, axis=0)}")
+    
+    # 4. Linearization check
+    print("\n--- Linearization Analysis ---")
+    try:
+        X_mid = X_test[:5]  # Перші 5 тестових зразків
+        W, b = svr_model.linearize(X_mid)
+        print(f"Jacobian W shape: {W.shape}")
+        print(f"Bias b shape: {b.shape}")
+        print(f"W range: min={np.min(W):.3f}, max={np.max(W):.3f}")
+        print(f"b range: min={np.min(b):.3f}, max={np.max(b):.3f}")
+        
+        # Check for extreme values
+        if np.any(np.abs(W) > 100) or np.any(np.abs(b) > 100):
+            print("  ❌ ПОПЕРЕДЖЕННЯ: Екстремальні значення в лінеаризації!")
+        else:
+            print("  ✅ Лінеаризація в нормальних межах")
+            
+    except Exception as e:
+        print(f"  ❌ ПОМИЛКА лінеаризації: {e}")
+    
+    print("="*50)
+    
+    return {
+        'train_nrmse': nrmse_train,
+        'test_nrmse': nrmse_test,
+        'overfitting_ratio': overfitting,
+        'support_vector_ratios': [len(m.support_vectors_)/len(X_train) for m in svr_model.models]
+    }
 
-
+def diagnose_mpc_behavior(mpc, step, u_optimal, u_prev, d_seq):
+    """Діагностика поведінки MPC"""
+    
+    print(f"\n--- MPC ДІАГНОСТИКА (крок {step}) ---")
+    print(f"u_prev: {u_prev:.4f}")
+    
+    if u_optimal is not None and len(u_optimal) > 0:
+        print(f"u_optimal: {u_optimal[0]:.4f}")
+        print(f"delta_u: {u_optimal[0] - u_prev:.4f}")
+    else:
+        print("u_optimal: None")
+        
+    print(f"trust_radius: {mpc.trust_region_radius:.4f}")
+    print(f"problem_status: {mpc.problem.status}")
+    print(f"problem_value: {mpc.problem.value}")
+    
+    # Перевіряємо лінеаризацію
+    if 'W' in mpc.parameters and mpc.parameters['W'].value is not None:
+        W = mpc.parameters['W'].value
+        print(f"Якобіан W: min={np.min(W):.4f}, max={np.max(W):.4f}")
+        print(f"Якобіан W norm: {np.linalg.norm(W):.4f}")
+        
+        if np.all(np.abs(W) < 0.01):
+            print("❌ ПРОБЛЕМА: Якобіан майже нульовий! MPC не бачить впливу u на y")
+        else:
+            print("✅ Якобіан має нормальні значення")
+    
+    # Перевіряємо збурення
+    if d_seq is not None:
+        print(f"d_seq mean: {np.mean(d_seq, axis=0)}")
+        print(f"d_seq std: {np.std(d_seq, axis=0)}")
+        
 if __name__ == '__main__':
+    
     def my_progress(step, total, msg):
         # Простий callback для виводу прогресу в консоль
         print(f"[{step}/{total}] {msg}")
