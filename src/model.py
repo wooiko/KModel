@@ -222,16 +222,13 @@ class _SVRModel(_BaseKernelModel):
     def __init__(
         self,
         kernel: str = "rbf",
-        C: float = 1.0,
-        epsilon: float = 0.1,
+        C: float = 100.0,        # ✅ Збільшено для кращої точності
+        epsilon: float = 0.01,   # ✅ Зменшено для меншої толерантності
         gamma: float | None = None,
         degree: int = 3,
         find_optimal_params: bool = False,
         n_iter_random_search: int = 30,
     ):
-        """
-        Підтримувані ядра: 'linear', 'rbf', 'poly'.
-        """
         super().__init__()
         self.kernel = kernel.lower()
         if self.kernel not in ("linear", "rbf", "poly"):
@@ -243,16 +240,11 @@ class _SVRModel(_BaseKernelModel):
         self.degree = degree
         self.find_optimal_params = find_optimal_params
         self.n_iter_random_search = n_iter_random_search
-
-        # після fit -> список SVR (по координатах)
         self.models: list[SVR] = []
 
-    # ------------------------------------------------------------------ fit
     def fit(self, X: np.ndarray, Y: np.ndarray) -> None:
         n_targets = Y.shape[1]
         self.models.clear()
-        
-        # Зберігаємо тренувальні дані для майбутньої лінеаризації
         self.X_train_ = X.copy()
     
         for k in range(n_targets):
@@ -261,13 +253,13 @@ class _SVRModel(_BaseKernelModel):
             if self.find_optimal_params:
                 mdl = self._run_random_search(X, y)
             else:
-                # ВИПРАВЛЕННЯ: консистентне обчислення gamma
+                # ✅ ВИПРАВЛЕНА логіка gamma
                 if self.kernel == "rbf":
                     if self.gamma is not None:
                         gamma_eff = self.gamma
                     else:
-                        # Використовуємо стандартну sklearn формулу для "scale"
-                        gamma_eff = 1.0 / (X.shape[1] * np.var(X))
+                        # ✅ ПРАВИЛЬНА sklearn формула для "scale"
+                        gamma_eff = 1.0 / (X.shape[1] * X.var())
                 else:
                     gamma_eff = self.gamma
     
@@ -280,60 +272,46 @@ class _SVRModel(_BaseKernelModel):
                 )
                 mdl.fit(X, y)
                 
-                # ВИПРАВЛЕННЯ: зберігаємо фактичне gamma після навчання
-                if self.kernel == "rbf":
-                    if hasattr(mdl, 'gamma_'):
-                        mdl._actual_gamma = mdl.gamma_
-                    else:
-                        mdl._actual_gamma = gamma_eff
+                # ✅ Зберігаємо точне gamma для linearize()
+                mdl._actual_gamma = gamma_eff if gamma_eff is not None else 'scale'
     
             self.models.append(mdl)
 
-    # -------------------------------------------------------------- predict
     def predict(self, X: np.ndarray) -> np.ndarray:
         if not self.models:
             raise RuntimeError("SVRModel не навчена.")
-        preds = [m.predict(X) for m in self.models]          # list of (n,)
-        return np.vstack(preds).T                            # (n, m)
+        preds = [m.predict(X) for m in self.models]
+        return np.vstack(preds).T
 
-    # ----------------------------------------------------------- linearize
     def linearize(self, X0: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Локальна лінеаризація навколо X0 (1×d або n×d) для усіх вихідних координат.
-        ВИПРАВЛЕНА версія з консистентним gamma.
-        """
         if X0.ndim == 1:
-            X0 = X0[None, :]          # (1, d)
+            X0 = X0[None, :]
     
         W_cols, b_cols = [], []
         for mdl in self.models:
             if self.kernel == "linear":
-                W = mdl.coef_.reshape(-1, 1)                 # (d,1)
+                W = mdl.coef_.reshape(-1, 1)
                 b = mdl.intercept_.copy()
                 
             elif self.kernel == "rbf":
-                # ВИПРАВЛЕННЯ: використовуємо те саме gamma, що й при навчанні
-                if hasattr(mdl, '_actual_gamma'):
+                # ✅ ВИПРАВЛЕНА логіка gamma в linearize()
+                if hasattr(mdl, '_actual_gamma') and isinstance(mdl._actual_gamma, float):
                     gamma_eff = mdl._actual_gamma
-                elif mdl.gamma == "scale":
-                    # Використовуємо ту саму формулу, що й при fit()
-                    gamma_eff = 1.0 / (self.X_train_.shape[1] * np.var(self.X_train_))
-                elif mdl.gamma == "auto":
-                    gamma_eff = 1.0 / self.X_train_.shape[1]
                 else:
-                    gamma_eff = mdl.gamma
+                    # ✅ ПРАВИЛЬНА sklearn формула
+                    gamma_eff = 1.0 / (self.X_train_.shape[1] * self.X_train_.var())
                 
-                sv   = mdl.support_vectors_                  # (m,d)
-                coef = mdl.dual_coef_.ravel()                # (m,)
+                sv = mdl.support_vectors_
+                coef = mdl.dual_coef_.ravel()
     
-                diffs = X0[:, None, :] - sv[None, :, :]      # (1,m,d)
-                sq    = np.sum(diffs**2, axis=-1)            # (1,m)
-                K_row = np.exp(-gamma_eff * sq)              # (1,m)
-                dK    = -2 * gamma_eff * diffs * K_row[..., None]  # (1,m,d)
+                diffs = X0[:, None, :] - sv[None, :, :]
+                sq = np.sum(diffs**2, axis=-1)
+                K_row = np.exp(-gamma_eff * sq)
+                dK = -2 * gamma_eff * diffs * K_row[..., None]
     
-                W = (dK.squeeze(0).T @ coef).reshape(-1, 1)  # (d,1)
+                W = (dK.squeeze(0).T @ coef).reshape(-1, 1)
                 y0 = mdl.predict(X0)
-                b  = (y0 - X0 @ W).flatten()                 # (1,)
+                b = (y0 - X0 @ W).flatten()
                 
             else:
                 raise NotImplementedError(
@@ -343,41 +321,43 @@ class _SVRModel(_BaseKernelModel):
             W_cols.append(np.clip(W, -1e3, 1e3))
             b_cols.append(np.clip(b, -1e3, 1e3))
     
-        W_local = np.hstack(W_cols)      # (d, m)
-        b_local = np.hstack(b_cols)      # (m,)
+        W_local = np.hstack(W_cols)
+        b_local = np.hstack(b_cols)
         return W_local, b_local
 
-    # ---------------------------------------------------- helper: RandomSearch
     def _run_random_search(self, X, y) -> SVR:
-        param_dist = {"C": loguniform(1e-1, 1e3), "epsilon": loguniform(1e-3, 1)}
+        # ✅ ПОКРАЩЕНІ діапазони параметрів
+        param_dist = {
+            "C": loguniform(10, 1000),      # Фокус на високих C
+            "epsilon": loguniform(1e-3, 0.1)  # Менші epsilon
+        }
+        
         if self.kernel == "rbf":
-            param_dist["gamma"] = loguniform(1e-3, 10)
+            # ✅ РОЗУМНІШИЙ діапазон gamma
+            param_dist["gamma"] = loguniform(1e-4, 1e-1)
         elif self.kernel == "poly":
-            param_dist["gamma"] = loguniform(1e-3, 10)
-            param_dist["degree"] = [2, 3, 4, 5]
+            param_dist["gamma"] = loguniform(1e-4, 1e-1)
+            param_dist["degree"] = [2, 3, 4]
 
         base = SVR(kernel=self.kernel, degree=self.degree)
         rs = RandomizedSearchCV(
             base,
             param_dist,
             n_iter=self.n_iter_random_search,
-            cv=3,
+            cv=min(3, len(y) // 50),  # ✅ Адаптивна кількість фолдів
             scoring="neg_mean_squared_error",
             random_state=42,
             n_jobs=-1,
             verbose=0,
         )
         rs.fit(X, y)
-        return rs.best_estimator_
-
-    # ---------------------------------------------------- helper: gamma heuristic
-    @staticmethod
-    def _median_gamma(X: np.ndarray) -> float:
-        n = X.shape[0]
-        subset = X if n <= 1000 else X[np.random.choice(n, 1000, False)]
-        d2 = np.sum((subset[:, None] - subset[None]) ** 2, axis=-1)
-        med = np.median(d2[np.triu_indices_from(d2, 1)]) or 1.0
-        return 1.0 / med
+        
+        # ✅ Зберігаємо оптимальне gamma
+        best_model = rs.best_estimator_
+        if hasattr(best_model, 'gamma'):
+            best_model._actual_gamma = best_model.gamma
+        
+        return best_model
 
 # ======================================================================
 #                              FACADE

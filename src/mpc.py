@@ -27,10 +27,10 @@ class MPCController:
                  rho_trust: float = 0.1,
                  # === НОВІ ПАРАМЕТРИ ===
                  adaptive_trust_region: bool = True,
-                 initial_trust_radius: float = 1.0,
-                 min_trust_radius: float = 0.1,
+                 initial_trust_radius: float = 2.0,
+                 min_trust_radius: float = 0.5,
                  max_trust_radius: float = 5.0,
-                 trust_decay_factor: float = 0.8,
+                 trust_decay_factor: float = 0.9,
                  linearization_check_enabled: bool = True,
                  max_linearization_distance: float = 2.0
                 ):
@@ -301,103 +301,69 @@ class MPCController:
 
 
     def optimize(self, d_seq: np.ndarray, u_prev: float) -> np.ndarray:
-        """
-        ПОКРАЩЕНИЙ метод оптимізації з кращою логікою адаптації.
-        """
+        """СТАБІЛІЗОВАНИЙ MPC з розумним trust region"""
+        
         if self.x_hist is None:
             raise RuntimeError("Історія стану не ініціалізована.")
-        if self.problem is None:
-            raise RuntimeError("Задача оптимізації не була налаштована.")
-    
-        # 1. Лінеаризація в поточній точці
-        X0_current_unscaled = self.x_hist.flatten().reshape(1, -1)
-        X0_current_scaled = self.x_scaler.transform(X0_current_unscaled)
+        
+        # ВИПРАВЛЕННЯ: витягуємо останні 9 змінних для моделі
+        X0_for_model = self.x_hist.flatten()[-9:].reshape(1, -1)  # (1, 9)
+        X0_current_scaled = self.x_scaler.transform(X0_for_model)
+        
+        # Лінеаризація
         W_local, b_local = self.model.linearize(X0_current_scaled)
-    
-        # 2. Оновлення параметрів
+        
+        # Оновлення параметрів
         self.parameters['W'].value = W_local
         self.parameters['b'].value = b_local
-        self.parameters['x_hist'].value = X0_current_unscaled.flatten()
+        self.parameters['x_hist'].value = self.x_hist.flatten()  # Повна історія для прогнозу
         self.parameters['u_prev'].value = u_prev
         self.parameters['d_seq'].value = d_seq
         self.parameters['x0_scaled'].value = X0_current_scaled.flatten()
-        self.parameters['trust_radius'].value = self.trust_region_radius
+        self.parameters['trust_radius'].value = max(self.trust_region_radius, 0.1)  # Мінімум
         
         d_hat_val = self.d_hat if self.use_disturbance_estimator and self.d_hat is not None else np.zeros(self.n_targets)
         self.parameters['d_hat'].value = d_hat_val
-    
-        # 3. Зберігаємо попередню вартість для адаптації
-        previous_cost = self.previous_cost
-    
-        # 4. Розв'язування
+        
+        # Розв'язування
         try:
             self.problem.solve(solver=cp.OSQP, warm_start=True, verbose=False)
         except cp.error.SolverError:
             print("ПОПЕРЕДЖЕННЯ: Помилка солвера.")
             return np.array([u_prev] * self.Nc)
-    
-        # 5. Перевірка статусу
+        
         if self.problem.status in ["infeasible", "unbounded"]:
             print(f"ПОПЕРЕДЖЕННЯ: Задача не має розв'язку (статус: {self.problem.status}).")
             return np.array([u_prev] * self.Nc)
-    
+        
         u_optimal = self.variables['u'].value
         if u_optimal is None:
             print("ПОПЕРЕДЖЕННЯ: Оптимальне керування не знайдено.")
             return np.array([u_prev] * self.Nc)
-    
-        # 6. ПОКРАЩЕНА перевірка лінеаризації
-        if self.linearization_check_enabled and len(u_optimal) > 0:
-            # Прогнозуємо стан на наступному кроці
-            next_state_unscaled = np.hstack([
-                self.x_hist[1:].flatten(),
-                [d_seq[0, 0], d_seq[0, 1], u_optimal[0]]
-            ]).reshape(1, -1)
-            next_state_scaled = self.x_scaler.transform(next_state_unscaled)
-            
-            is_valid, distance = self.check_linearization_validity(
-                X0_current_scaled[0], next_state_scaled[0]
-            )
-            
-            if not is_valid:
-                print(f"ПОПЕРЕДЖЕННЯ: Лінеаризація неточна! Відстань: {distance:.4f} > {self.max_linearization_distance}")
-                # ДОДАТКОВА РЕАКЦІЯ: зменшуємо trust region агресивніше
-                if self.adaptive_trust_region:
-                    self.trust_region_radius = max(
-                        self.trust_region_radius * 0.5, 
-                        self.min_trust_radius
-                    )
-                    print(f"  -> Агресивно зменшуємо trust region до {self.trust_region_radius:.3f}")
-    
-        # 7. ВИПРАВЛЕНА адаптація trust region
+        
+        # СТАБІЛІЗОВАНИЙ trust region update
         if self.adaptive_trust_region:
             current_cost = self.problem.value
             
-            if previous_cost is not None:
-                actual_cost_reduction = previous_cost - current_cost
-                predicted_cost_reduction = self._estimate_cost_reduction(u_optimal, u_prev)
+            if self.previous_cost is not None and current_cost is not None:
+                actual_cost_reduction = self.previous_cost - current_cost
                 
-                if abs(predicted_cost_reduction) > 1e-6:
-                    self.update_trust_region(predicted_cost_reduction, actual_cost_reduction)
+                # ПРОСТІША оцінка зміни вартості
+                if abs(actual_cost_reduction) > 1e-8:
+                    # Просто базуємося на знаку зміни вартості
+                    if actual_cost_reduction > 0:  # Покращення
+                        self.trust_region_radius = min(
+                            self.trust_region_radius * 1.1, 
+                            self.max_trust_radius
+                        )
+                    else:  # Погіршення  
+                        self.trust_region_radius = max(
+                            self.trust_region_radius * 0.8,
+                            self.min_trust_radius
+                        )
             
             self.previous_cost = current_cost
-    
-        # 8. Діагностика (спрощена)
-        if hasattr(self, 'trust_region_radius'):
-            if len(self.linearization_quality_history) > 0:
-                if isinstance(self.linearization_quality_history[-1], dict):
-                    recent_distance = self.linearization_quality_history[-1]['euclidean_distance']
-                else:
-                    recent_distance = self.linearization_quality_history[-1]
-                
-                # Виводити тільки якщо є проблеми
-                if recent_distance > self.max_linearization_distance * 0.8:
-                    avg_distance = np.mean([
-                        h['euclidean_distance'] if isinstance(h, dict) else h 
-                        for h in self.linearization_quality_history[-5:]
-                    ])
-                    print(f"  -> Trust Region: radius={self.trust_region_radius:.3f}, recent_distance={recent_distance:.3f}, avg5={avg_distance:.3f}")
-    
+        
         return u_optimal
 
     def get_trust_region_stats(self):

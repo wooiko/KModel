@@ -103,84 +103,63 @@ class ExtendedKalmanFilter:
         
 
     def update(self, z_k: np.ndarray):
-        """
-        Крок корекції (update step) EKF.
-        Обчислює a posteriori оцінку стану та коваріації на основі поточного вимірювання.
-    
-        Args:
-            z_k (np.ndarray): Вектор реальних (немасштабованих) вимірювань виходу (фактичний Fe і Mass).
-        """
-        # Розпаковуємо поточний (a priori) стан
-        x_phys_unscaled = self.x_hat[:self.n_phys].reshape(1, -1)
+        """ВИПРАВЛЕНИЙ update з правильною розмірністю"""
         
-        # <<< ЗМІНЕНО >>>
-        # Тепер ми отримуємо збурення напряму з вектора стану, оскільки вони ВЖЕ МАСШТАБОВАНІ.
-        d_scaled = self.x_hat[self.n_phys:] 
-           
-        # ---- 1. Масштабуємо фізичний стан для використання в моделі
-        x_phys_scaled = self.x_scaler.transform(x_phys_unscaled)
+        # Витягуємо ОСТАННІ 9 змінних для моделі (модель очікує саме 9)
+        x_phys_for_model = self.x_hat[self.n_phys-9:self.n_phys].reshape(1, -1)  # (1, 9)  
+        d_scaled = self.x_hat[self.n_phys:]  # (2,)
         
-        # ---- 2. Обчислюємо Якобіан H_k моделі вимірювання h з урахуванням масштабування
-        W_local_scaled, _ = self.model.linearize(x_phys_scaled)
+        # Масштабуємо правильний розмір
+        x_phys_scaled = self.x_scaler.transform(x_phys_for_model)  # (1, 9)
         
+        # Лінеаризація моделі
+        W_local_scaled, _ = self.model.linearize(x_phys_scaled)  # (9, 2)
+        
+        # ВИПРАВЛЕНИЙ Якобіан
         H_k = np.zeros((self.n_dist, self.n_aug))
-        # ланцюгове правило: scaled-output → unscaled-input
-        H_k[:, :self.n_phys] = (
-            np.diag(1.0 / self.y_scaler.scale_)   # з scaled-output у фізичні одиниці
-            @ W_local_scaled.T                   # ∂scaled-out/∂scaled-in
-            @ np.diag(1.0 / self.x_scaler.scale_[:self.n_phys])  # з фізичних-in у scaled-in
-        )
-        # Цей Якобіан залишається коректним, оскільки він визначає похідну ∂(y_hat_scaled)/∂(d_scaled), що дорівнює I
-        H_k[:, self.n_phys:] = np.eye(self.n_dist)
-    
-        # ---- 3. Робимо прогноз вимірювання y_hat = h(x_hat_k|k-1)
-        y_pred_scaled = self.model.predict(x_phys_scaled)[0]
-        # Цей рядок тепер працює абсолютно коректно
-        y_hat_scaled  = y_pred_scaled + d_scaled 
         
-        # ---- 4. Обчислюємо інновацію (нев'язку)
+        # Тільки для останніх 9 змінних стану
+        start_idx = self.n_phys - 9  # = 12 - 9 = 3
+        H_k[:, start_idx:self.n_phys] = (
+            np.diag(1.0 / self.y_scaler.scale_)    # (2, 2)
+            @ W_local_scaled.T                     # (2, 9)  
+            @ np.diag(1.0 / self.x_scaler.scale_)  # (9, 9) - БЕЗ [:self.n_phys]!
+        )
+        
+        # Збурення напряму
+        H_k[:, self.n_phys:] = np.eye(self.n_dist)
+        
+        # Прогноз
+        y_pred_scaled = self.model.predict(x_phys_scaled)[0]  # (2,)
+        y_hat_scaled = y_pred_scaled + d_scaled
+        
+        # Інновація
         z_k_scaled = self.y_scaler.transform(z_k.reshape(1, -1))[0]
-        y_tilde    = z_k_scaled - y_hat_scaled
-    
-        # ---- 5. Коваріація інновації
+        y_tilde = z_k_scaled - y_hat_scaled
+        
+        # Решта без змін...
         self.R = self._R_initial + self.beta_R * np.diag(y_tilde**2 + 1e-6)
-        S_k   = H_k @ self.P @ H_k.T + self.R
-    
-        # Адаптація Q на основі NIS
+        S_k = H_k @ self.P @ H_k.T + self.R
+        
+        K_k = self.P @ H_k.T @ np.linalg.inv(S_k)
+        self.x_hat = self.x_hat + K_k @ y_tilde
+        I = np.eye(self.n_aug)
+        self.P = (I - K_k @ H_k) @ self.P
+        
+        # Адаптація Q (твоя логіка залишається)
         if self.q_adaptive_enabled:
             try:
                 S_k_inv = np.linalg.inv(S_k)
                 nis = y_tilde.T @ S_k_inv @ y_tilde
                 target = self.n_dist
-
-                # <<< НОВА, ДВОСТОРОННЯ ЛОГІКА АДАПТАЦІЇ >>>
-                # Визначаємо верхню та нижню межі для "зони нечутливості"
-                upper_bound = target * self.q_nis_threshold # Наприклад, 2.0 * 1.8 = 3.6
-                lower_bound = target / self.q_nis_threshold # Наприклад, 2.0 / 1.8 = 1.11
-
+                upper_bound = target * self.q_nis_threshold
+                lower_bound = target / self.q_nis_threshold
+                
                 if nis > upper_bound:
-                    # NIS занадто великий: модель не встигає, потрібно збільшити Q
                     self.q_scale = min(self.q_scale * 1.02, 10.0)
                 elif nis < lower_bound:
-                    # NIS занадто малий: фільтр занадто агресивний, можна трохи зменшити Q
-                    # Зменшуємо q_scale значно повільніше, ніж збільшуємо
-                    self.q_scale = max(self.q_scale * 0.99, 0.1) # Дозволяємо Q зменшуватись
-                # Якщо nis знаходиться в межах [lower_bound, upper_bound], q_scale не змінюється,
-                # що робить систему більш стабільною.
-
+                    self.q_scale = max(self.q_scale * 0.99, 0.1)
             except np.linalg.LinAlgError:
-                # У випадку помилки нічого не робимо, залишаючи q_scale як є
                 pass
-    
-        # ---- 6. Калманове підсилення
-        K_k = self.P @ H_k.T @ np.linalg.inv(S_k)
-    
-        # ---- 7. Оновлення стану
-        self.x_hat = self.x_hat + K_k @ y_tilde
         
-        # ---- 8. Оновлення коваріації
-        I        = np.eye(self.n_aug)
-        self.P   = (I - K_k @ H_k) @ self.P
-        
-        # ---- 9. Зберігаємо інновацію
         self.last_innovation = y_tilde
