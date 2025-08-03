@@ -251,19 +251,26 @@ class _SVRModel(_BaseKernelModel):
     def fit(self, X: np.ndarray, Y: np.ndarray) -> None:
         n_targets = Y.shape[1]
         self.models.clear()
-
+        
+        # Зберігаємо тренувальні дані для майбутньої лінеаризації
+        self.X_train_ = X.copy()
+    
         for k in range(n_targets):
             y = Y[:, k]
-
+    
             if self.find_optimal_params:
                 mdl = self._run_random_search(X, y)
             else:
-                gamma_eff = (
-                    self.gamma
-                    if self.gamma is not None
-                    else (self._median_gamma(X) if self.kernel == "rbf" else "scale")
-                )
-
+                # ВИПРАВЛЕННЯ: консистентне обчислення gamma
+                if self.kernel == "rbf":
+                    if self.gamma is not None:
+                        gamma_eff = self.gamma
+                    else:
+                        # Використовуємо стандартну sklearn формулу для "scale"
+                        gamma_eff = 1.0 / (X.shape[1] * np.var(X))
+                else:
+                    gamma_eff = self.gamma
+    
                 mdl = SVR(
                     kernel=self.kernel,
                     C=self.C,
@@ -272,7 +279,14 @@ class _SVRModel(_BaseKernelModel):
                     degree=self.degree,
                 )
                 mdl.fit(X, y)
-
+                
+                # ВИПРАВЛЕННЯ: зберігаємо фактичне gamma після навчання
+                if self.kernel == "rbf":
+                    if hasattr(mdl, 'gamma_'):
+                        mdl._actual_gamma = mdl.gamma_
+                    else:
+                        mdl._actual_gamma = gamma_eff
+    
             self.models.append(mdl)
 
     # -------------------------------------------------------------- predict
@@ -286,39 +300,49 @@ class _SVRModel(_BaseKernelModel):
     def linearize(self, X0: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
         Локальна лінеаризація навколо X0 (1×d або n×d) для усіх вихідних координат.
-        Підтримка 'linear' та 'rbf'.
+        ВИПРАВЛЕНА версія з консистентним gamma.
         """
         if X0.ndim == 1:
             X0 = X0[None, :]          # (1, d)
-
+    
         W_cols, b_cols = [], []
         for mdl in self.models:
             if self.kernel == "linear":
                 W = mdl.coef_.reshape(-1, 1)                 # (d,1)
                 b = mdl.intercept_.copy()
+                
             elif self.kernel == "rbf":
-                gamma_eff = (
-                    mdl.gamma if mdl.gamma != "scale" else self._median_gamma(mdl.support_vectors_)
-                )
+                # ВИПРАВЛЕННЯ: використовуємо те саме gamma, що й при навчанні
+                if hasattr(mdl, '_actual_gamma'):
+                    gamma_eff = mdl._actual_gamma
+                elif mdl.gamma == "scale":
+                    # Використовуємо ту саму формулу, що й при fit()
+                    gamma_eff = 1.0 / (self.X_train_.shape[1] * np.var(self.X_train_))
+                elif mdl.gamma == "auto":
+                    gamma_eff = 1.0 / self.X_train_.shape[1]
+                else:
+                    gamma_eff = mdl.gamma
+                
                 sv   = mdl.support_vectors_                  # (m,d)
                 coef = mdl.dual_coef_.ravel()                # (m,)
-
+    
                 diffs = X0[:, None, :] - sv[None, :, :]      # (1,m,d)
                 sq    = np.sum(diffs**2, axis=-1)            # (1,m)
                 K_row = np.exp(-gamma_eff * sq)              # (1,m)
                 dK    = -2 * gamma_eff * diffs * K_row[..., None]  # (1,m,d)
-
+    
                 W = (dK.squeeze(0).T @ coef).reshape(-1, 1)  # (d,1)
                 y0 = mdl.predict(X0)
                 b  = (y0 - X0 @ W).flatten()                 # (1,)
+                
             else:
                 raise NotImplementedError(
                     "Лінеаризація SVR підтримується лише для 'linear' та 'rbf'."
                 )
-
+    
             W_cols.append(np.clip(W, -1e3, 1e3))
             b_cols.append(np.clip(b, -1e3, 1e3))
-
+    
         W_local = np.hstack(W_cols)      # (d, m)
         b_local = np.hstack(b_cols)      # (m,)
         return W_local, b_local

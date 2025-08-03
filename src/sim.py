@@ -1200,10 +1200,10 @@ if __name__ == '__main__':
         
         # ---- Налаштування EKF
         P0=1e-2,
-        Q_phys=1000, #1000,
+        Q_phys=300, #1000,
         Q_dist=1,
-        R=0.18, # 0.18
-        q_adaptive_enabled=True,
+        R=0.8, # 0.18
+        q_adaptive_enabled=False,
         q_alpha = 0.995,
         q_nis_threshold = 1.8,
 
@@ -1257,12 +1257,12 @@ if __name__ == '__main__':
         
         # ---- Обмеження моделі
         delta_u_max = 0.3,
-        λ_obj=5.0,
+        λ_obj=1.0,
         
         # ---- MPC горизонти
         Nc=4, #8
         Np=6, #12
-        lag=2, #2
+        lag=3, #2
         
         # ---- Цільові параметри/ваги
         w_fe=1.0,
