@@ -1,4 +1,4 @@
-# mpc.py
+# mpc.py - Модифіковані методи з покращеною лінеаризацією
 
 import warnings
 import numpy as np
@@ -24,7 +24,15 @@ class MPCController:
                  y_min: list = None,
                  rho_y: float = 1e6,
                  rho_delta_u: float = 1e4,
-                 rho_trust: float = 0.1
+                 rho_trust: float = 0.1,
+                 # === НОВІ ПАРАМЕТРИ ===
+                 adaptive_trust_region: bool = True,
+                 initial_trust_radius: float = 1.0,
+                 min_trust_radius: float = 0.1,
+                 max_trust_radius: float = 5.0,
+                 trust_decay_factor: float = 0.8,
+                 linearization_check_enabled: bool = True,
+                 max_linearization_distance: float = 2.0
                 ):
         self.Np = horizon
         self.Nc = control_horizon if control_horizon is not None else horizon
@@ -39,7 +47,7 @@ class MPCController:
         self.y_scaler = y_scaler
         self.L = lag
         self.use_disturbance_estimator = use_disturbance_estimator
-        self.n_inputs = (lag + 1) * 3 # (feed_fe, ore_flow, u) * (L+1)
+        self.n_inputs = (lag + 1) * 3
         self.n_targets = n_targets
 
         # Збереження обмежень та ваг штрафів
@@ -50,7 +58,21 @@ class MPCController:
         self.y_min = np.array(y_min) if y_min is not None else None
         self.rho_y = rho_y
         self.rho_delta_u = rho_delta_u
-        self.rho_trust = rho_trust # Зберігаємо вагу регіону довіри
+        self.rho_trust = rho_trust
+
+        # === НОВІ АТРИБУТИ ДЛЯ АДАПТИВНОГО TRUST REGION ===
+        self.adaptive_trust_region = adaptive_trust_region
+        self.trust_region_radius = initial_trust_radius
+        self.min_trust_radius = min_trust_radius
+        self.max_trust_radius = max_trust_radius
+        self.trust_decay_factor = trust_decay_factor
+        self.linearization_check_enabled = linearization_check_enabled
+        self.max_linearization_distance = max_linearization_distance
+        
+        # Історія для адаптації
+        self.previous_cost = None
+        self.predicted_cost_reduction = None
+        self.linearization_quality_history = []
 
         # Ініціалізація історії та оцінки збурень
         self.x_hist = None
@@ -72,21 +94,20 @@ class MPCController:
 
     def _setup_optimization_problem(self):
         """
-        Створює задачу оптимізації CVXPY один раз з використанням параметрів.
-        Це значно прискорює послідовні виклики методу optimize.
+        Створює задачу оптимізації CVXPY з покращеним trust region penalty.
         """
         # 1. Змінні оптимізації
         u_var = cp.Variable(self.Nc, name="u_seq")
-        # Змінено: окремі змінні для верхніх та нижніх порушень дельти u
-        eps_delta_u_upper = cp.Variable(self.Nc, nonneg=True, name="eps_delta_u_upper") #
-        eps_delta_u_lower = cp.Variable(self.Nc, nonneg=True, name="eps_delta_u_lower") #
+        eps_delta_u_upper = cp.Variable(self.Nc, nonneg=True, name="eps_delta_u_upper")
+        eps_delta_u_lower = cp.Variable(self.Nc, nonneg=True, name="eps_delta_u_lower")
         eps_y_upper = cp.Variable((self.Np, 2), nonneg=True, name="eps_y_upper") if self.y_max is not None else None
         eps_y_lower = cp.Variable((self.Np, 2), nonneg=True, name="eps_y_lower") if self.y_min is not None else None
         self.variables = {
             'u': u_var, 
-            'eps_delta_u_upper': eps_delta_u_upper, #
-            'eps_delta_u_lower': eps_delta_u_lower, #
-            'eps_y_upper': eps_y_upper, 'eps_y_lower': eps_y_lower
+            'eps_delta_u_upper': eps_delta_u_upper,
+            'eps_delta_u_lower': eps_delta_u_lower,
+            'eps_y_upper': eps_y_upper, 
+            'eps_y_lower': eps_y_lower
         }
 
         # 2. Параметри, що будуть оновлюватись на кожному кроці
@@ -96,18 +117,20 @@ class MPCController:
         u_prev_param = cp.Parameter(name="u_prev")
         d_hat_param = cp.Parameter(self.n_targets, name="d_hat")
         d_seq_param = cp.Parameter((self.Np, 2), name="d_seq")
-        x0_scaled_param = cp.Parameter(self.n_inputs, name="x0_scaled") # Для регіону довіри
+        x0_scaled_param = cp.Parameter(self.n_inputs, name="x0_scaled")
+        trust_radius_param = cp.Parameter(nonneg=True, name="trust_radius")  # НОВИЙ ПАРАМЕТР
+        
         self.parameters = {
             'W': W_param, 'b': b_param, 'x_hist': x_hist_param,
             'u_prev': u_prev_param, 'd_hat': d_hat_param, 'd_seq': d_seq_param,
-            'x0_scaled': x0_scaled_param
+            'x0_scaled': x0_scaled_param, 'trust_radius': trust_radius_param  # НОВИЙ
         }
 
         # Константи для масштабування
         mean_c = cp.Constant(self.x_scaler.mean_)
         scale_c = cp.Constant(self.x_scaler.scale_)
 
-        # 3. Побудова прогнозу на горизонті Np
+        # 3. Побудова прогнозу на горизонті Np з покращеним trust region
         pred_fe, pred_mass = [], []
         trust_region_cost = 0
         
@@ -126,12 +149,16 @@ class MPCController:
             # Прогноз за локальною лінійною моделлю
             yk = Xk_scaled @ W_param + b_param + d_hat_param
             pred_fe.append(yk[0])
-            pred_mass.append(yk[1]) # Індекс 1 для concentrate_mass_flow, оскільки n_targets = 2
+            pred_mass.append(yk[1])
 
-            # ШТРАФ РЕГІОНУ ДОВІРИ (TRUST REGION)
-            # Штрафуємо за відхилення прогнозованого стану від точки лінеаризації ТІЛЬКИ на першому кроці
-            if k == 0 and self.model.kernel != 'linear': #
-                 trust_region_cost += self.rho_trust * cp.sum_squares(Xk_scaled - x0_scaled_param) #
+            # === ПОКРАЩЕНИЙ TRUST REGION PENALTY ===
+            if self.model.kernel != 'linear':
+                # Застосовуємо штраф для всіх кроків горизонту з експоненційним зменшенням
+                weight = self.rho_trust * (self.trust_decay_factor ** k)
+                
+                # Нормована відстань від точки лінеаризації
+                state_deviation = Xk_scaled - x0_scaled_param
+                trust_region_cost += weight * cp.sum_squares(state_deviation) / trust_radius_param
 
             # Оновлюємо стан для наступного кроку
             feed_fe, ore_flow = d_seq_param[k, 0], d_seq_param[k, 1]
@@ -150,10 +177,10 @@ class MPCController:
         else:
             Du_ext = cp.hstack([du0])        
         
-        # Обмеження на Du_ext з м'якими змінними (виправлено)
+        # Обмеження на Du_ext з м'якими змінними
         cons.extend([
-            Du_ext <= self.delta_u_max + eps_delta_u_upper, #
-            Du_ext >= -self.delta_u_max - eps_delta_u_lower #
+            Du_ext <= self.delta_u_max + eps_delta_u_upper,
+            Du_ext >= -self.delta_u_max - eps_delta_u_lower
         ])
 
         y_preds_stacked = cp.vstack([conc_fe_preds, conc_mass_preds]).T
@@ -167,8 +194,9 @@ class MPCController:
             conc_fe_preds=conc_fe_preds, conc_mass_preds=conc_mass_preds,
             u_seq=u_var, u_prev=u_prev_param
         )
-        # Штраф за порушення Du (виправлено)
-        penalty_cost = self.rho_delta_u * (cp.sum_squares(eps_delta_u_upper) + cp.sum_squares(eps_delta_u_lower)) #
+        
+        # Штраф за порушення Du
+        penalty_cost = self.rho_delta_u * (cp.sum_squares(eps_delta_u_upper) + cp.sum_squares(eps_delta_u_lower))
         if eps_y_upper is not None:
             penalty_cost += self.rho_y * cp.sum_squares(eps_y_upper)
         if eps_y_lower is not None:
@@ -179,56 +207,245 @@ class MPCController:
         # 6. Створення об'єкту задачі
         self.problem = cp.Problem(cp.Minimize(total_cost), cons)
 
+    def check_linearization_validity(self, X_current_scaled, X_predicted_scaled):
+        """
+        ПОКРАЩЕНА перевірка валідності лінеаризації.
+        """
+        if not self.linearization_check_enabled:
+            return True, 0.0
+            
+        # Обчислюємо евклідову відстань
+        distance = np.linalg.norm(X_predicted_scaled - X_current_scaled)
+        
+        # Також перевіряємо максимальну покомпонентну відстань
+        max_component_distance = np.max(np.abs(X_predicted_scaled - X_current_scaled))
+        
+        # Використовуємо більш строгий критерій
+        is_valid = (distance < self.max_linearization_distance and 
+                    max_component_distance < self.max_linearization_distance * 0.8)
+        
+        # Зберігаємо детальнішу історію
+        self.linearization_quality_history.append({
+            'euclidean_distance': distance,
+            'max_component_distance': max_component_distance,
+            'is_valid': is_valid
+        })
+        
+        if len(self.linearization_quality_history) > 100:  # Обмежуємо розмір
+            self.linearization_quality_history.pop(0)
+            
+        return is_valid, distance
+
+    def update_trust_region(self, predicted_cost_reduction, actual_cost_reduction):
+        """
+        ВИПРАВЛЕНИЙ метод адаптивного оновлення регіону довіри.
+        """
+        if not self.adaptive_trust_region:
+            return
+            
+        # Уникаємо ділення на нуль та дуже малі значення
+        if abs(predicted_cost_reduction) < 1e-6:
+            return
+            
+        # Коефіцієнт якості прогнозу
+        ratio = actual_cost_reduction / predicted_cost_reduction
+        
+        print(f"  -> Trust region update: ratio={ratio:.3f}, pred={predicted_cost_reduction:.4f}, actual={actual_cost_reduction:.4f}")
+        
+        # ВИПРАВЛЕНА логіка адаптації
+        if ratio > 0.75:  # Дуже хороший прогноз
+            new_radius = min(self.trust_region_radius * 1.25, self.max_trust_radius)
+            print(f"  -> Збільшуємо trust region: {self.trust_region_radius:.3f} -> {new_radius:.3f}")
+            self.trust_region_radius = new_radius
+            
+        elif ratio > 0.25:  # Прийнятний прогноз - невелике зменшення
+            new_radius = max(self.trust_region_radius * 0.95, self.min_trust_radius)
+            if abs(new_radius - self.trust_region_radius) > 0.01:
+                print(f"  -> Легко зменшуємо trust region: {self.trust_region_radius:.3f} -> {new_radius:.3f}")
+            self.trust_region_radius = new_radius
+            
+        else:  # Поганий прогноз - суттєве зменшення
+            new_radius = max(self.trust_region_radius * 0.7, self.min_trust_radius)
+            print(f"  -> Сильно зменшуємо trust region: {self.trust_region_radius:.3f} -> {new_radius:.3f}")
+            self.trust_region_radius = new_radius
+
+    def _estimate_cost_reduction(self, u_optimal, u_prev):
+        """
+        ПОКРАЩЕНИЙ метод оцінки зниження вартості.
+        """
+        try:
+            if self.problem.value is None:
+                return 0.0
+                
+            current_cost = self.problem.value
+            
+            if self.previous_cost is not None:
+                # Фактичне зниження вартості
+                actual_reduction = self.previous_cost - current_cost
+                
+                # Простий прогноз: базується на зміні керування
+                if len(u_optimal) > 0:
+                    du = abs(u_optimal[0] - u_prev)
+                    # Лінійна оцінка: більша зміна керування -> більше потенційне покращення
+                    predicted_reduction = du * 0.1  # Масштабуючий коефіцієнт
+                else:
+                    predicted_reduction = 0.0
+                    
+                return predicted_reduction
+            else:
+                return 0.0
+                
+        except Exception as e:
+            print(f"  -> Помилка в _estimate_cost_reduction: {e}")
+            return 0.0
+
+
     def optimize(self, d_seq: np.ndarray, u_prev: float) -> np.ndarray:
         """
-        Знаходить оптимальну послідовність керування, оновлюючи параметри
-        попередньо скомпільованої задачі оптимізації.
+        ПОКРАЩЕНИЙ метод оптимізації з кращою логікою адаптації.
         """
         if self.x_hist is None:
-            raise RuntimeError("Історія стану не ініціалізована. Викличте MPCController.reset_history().")
+            raise RuntimeError("Історія стану не ініціалізована.")
         if self.problem is None:
-            raise RuntimeError("Задача оптимізації не була налаштована. Перевірте конструктор.")
-
-        # 1. Лінеаризація моделі в поточній робочій точці
+            raise RuntimeError("Задача оптимізації не була налаштована.")
+    
+        # 1. Лінеаризація в поточній точці
         X0_current_unscaled = self.x_hist.flatten().reshape(1, -1)
         X0_current_scaled = self.x_scaler.transform(X0_current_unscaled)
         W_local, b_local = self.model.linearize(X0_current_scaled)
-
-        # 2. Оновлення значень параметрів у задачі CVXPY
+    
+        # 2. Оновлення параметрів
         self.parameters['W'].value = W_local
         self.parameters['b'].value = b_local
         self.parameters['x_hist'].value = X0_current_unscaled.flatten()
         self.parameters['u_prev'].value = u_prev
         self.parameters['d_seq'].value = d_seq
         self.parameters['x0_scaled'].value = X0_current_scaled.flatten()
+        self.parameters['trust_radius'].value = self.trust_region_radius
         
         d_hat_val = self.d_hat if self.use_disturbance_estimator and self.d_hat is not None else np.zeros(self.n_targets)
         self.parameters['d_hat'].value = d_hat_val
-
-        # 3. Розв'язання задачі
+    
+        # 3. Зберігаємо попередню вартість для адаптації
+        previous_cost = self.previous_cost
+    
+        # 4. Розв'язування
         try:
-            self.problem.solve(solver=cp.OSQP, warm_start=True)
+            self.problem.solve(solver=cp.OSQP, warm_start=True, verbose=False)
         except cp.error.SolverError:
-            print("ПОПЕРЕДЖЕННЯ: Помилка солвера. Використовується попереднє керування.")
+            print("ПОПЕРЕДЖЕННЯ: Помилка солвера.")
             return np.array([u_prev] * self.Nc)
-
-        # 4. Діагностика та повернення результату
-        if self.problem.status not in ["infeasible", "unbounded"]:
-            u_optimal = self.variables['u'].value
-            # Діагностичний вивід (виправлено для двох eps змінних)
-            if (self.variables['eps_y_upper'] is not None and 
-                np.any(self.variables['eps_y_upper'].value > 1e-4)):
-                print(f"  -> УВАГА: Порушено верхнє обмеження Y! ε_y_upper = {np.round(self.variables['eps_y_upper'].value.flatten(), 3)}")
+    
+        # 5. Перевірка статусу
+        if self.problem.status in ["infeasible", "unbounded"]:
+            print(f"ПОПЕРЕДЖЕННЯ: Задача не має розв'язку (статус: {self.problem.status}).")
+            return np.array([u_prev] * self.Nc)
+    
+        u_optimal = self.variables['u'].value
+        if u_optimal is None:
+            print("ПОПЕРЕДЖЕННЯ: Оптимальне керування не знайдено.")
+            return np.array([u_prev] * self.Nc)
+    
+        # 6. ПОКРАЩЕНА перевірка лінеаризації
+        if self.linearization_check_enabled and len(u_optimal) > 0:
+            # Прогнозуємо стан на наступному кроці
+            next_state_unscaled = np.hstack([
+                self.x_hist[1:].flatten(),
+                [d_seq[0, 0], d_seq[0, 1], u_optimal[0]]
+            ]).reshape(1, -1)
+            next_state_scaled = self.x_scaler.transform(next_state_unscaled)
             
-            if (self.variables['eps_delta_u_upper'] is not None and np.any(self.variables['eps_delta_u_upper'].value > 1e-4)) or \
-               (self.variables['eps_delta_u_lower'] is not None and np.any(self.variables['eps_delta_u_lower'].value > 1e-4)):
-                print(f"  -> УВАГА: Порушено обмеження Δu! ε_Δu_upper = {np.round(self.variables['eps_delta_u_upper'].value, 3)}, ε_Δu_lower = {np.round(self.variables['eps_delta_u_lower'].value, 3)}") #
-        else:
-            print(f"ПОПЕРЕДЖЕННЯ: Задача оптимізації не має розв'язку (статус: {self.problem.status}). Використовується попереднє керування.")
-            return np.array([u_prev] * self.Nc)
-
+            is_valid, distance = self.check_linearization_validity(
+                X0_current_scaled[0], next_state_scaled[0]
+            )
+            
+            if not is_valid:
+                print(f"ПОПЕРЕДЖЕННЯ: Лінеаризація неточна! Відстань: {distance:.4f} > {self.max_linearization_distance}")
+                # ДОДАТКОВА РЕАКЦІЯ: зменшуємо trust region агресивніше
+                if self.adaptive_trust_region:
+                    self.trust_region_radius = max(
+                        self.trust_region_radius * 0.5, 
+                        self.min_trust_radius
+                    )
+                    print(f"  -> Агресивно зменшуємо trust region до {self.trust_region_radius:.3f}")
+    
+        # 7. ВИПРАВЛЕНА адаптація trust region
+        if self.adaptive_trust_region:
+            current_cost = self.problem.value
+            
+            if previous_cost is not None:
+                actual_cost_reduction = previous_cost - current_cost
+                predicted_cost_reduction = self._estimate_cost_reduction(u_optimal, u_prev)
+                
+                if abs(predicted_cost_reduction) > 1e-6:
+                    self.update_trust_region(predicted_cost_reduction, actual_cost_reduction)
+            
+            self.previous_cost = current_cost
+    
+        # 8. Діагностика (спрощена)
+        if hasattr(self, 'trust_region_radius'):
+            if len(self.linearization_quality_history) > 0:
+                if isinstance(self.linearization_quality_history[-1], dict):
+                    recent_distance = self.linearization_quality_history[-1]['euclidean_distance']
+                else:
+                    recent_distance = self.linearization_quality_history[-1]
+                
+                # Виводити тільки якщо є проблеми
+                if recent_distance > self.max_linearization_distance * 0.8:
+                    avg_distance = np.mean([
+                        h['euclidean_distance'] if isinstance(h, dict) else h 
+                        for h in self.linearization_quality_history[-5:]
+                    ])
+                    print(f"  -> Trust Region: radius={self.trust_region_radius:.3f}, recent_distance={recent_distance:.3f}, avg5={avg_distance:.3f}")
+    
         return u_optimal
 
+    def get_trust_region_stats(self):
+        """
+        Повертає статистику про роботу адаптивного trust region.
+        
+        Returns:
+            dict: Словник зі статистикою
+        """
+        stats = {
+            'current_radius': self.trust_region_radius,
+            'min_radius': self.min_trust_radius,
+            'max_radius': self.max_trust_radius,
+            'linearization_history_length': len(self.linearization_quality_history)
+        }
+        
+        if self.linearization_quality_history:
+            # ВИПРАВЛЕННЯ: правильно обробляємо історію лінеаризації
+            if isinstance(self.linearization_quality_history[0], dict):
+                # Якщо зберігаються словники з детальною інформацією
+                distances = [h['euclidean_distance'] for h in self.linearization_quality_history]
+                max_distances = [h['max_component_distance'] for h in self.linearization_quality_history]
+                
+                stats.update({
+                    'avg_linearization_distance': np.mean(distances),
+                    'max_linearization_distance': np.max(distances),
+                    'recent_avg_distance': np.mean(distances[-10:]) if len(distances) >= 10 else np.mean(distances),
+                    'avg_max_component_distance': np.mean(max_distances),
+                    'recent_avg_max_component_distance': np.mean(max_distances[-10:]) if len(max_distances) >= 10 else np.mean(max_distances)
+                })
+            else:
+                # Якщо зберігаються лише числа (зворотна сумісність)
+                stats.update({
+                    'avg_linearization_distance': np.mean(self.linearization_quality_history),
+                    'max_linearization_distance': np.max(self.linearization_quality_history),
+                    'recent_avg_distance': np.mean(self.linearization_quality_history[-10:]) if len(self.linearization_quality_history) >= 10 else np.mean(self.linearization_quality_history)
+                })
+        
+        return stats
+
+    def reset_trust_region(self):
+        """Скидає адаптивний trust region до початкових налаштувань."""
+        self.trust_region_radius = (self.min_trust_radius + self.max_trust_radius) / 2
+        self.previous_cost = None
+        self.predicted_cost_reduction = None
+        self.linearization_quality_history.clear()
+
+    # Інші методи класу залишаються без змін...
     def reset_history(self, initial_history: np.ndarray):
         """
         initial_history: numpy array форми (L+1, 3)
@@ -256,3 +473,7 @@ class MPCController:
         if self.use_disturbance_estimator:
             self.n_targets = Y_train.shape[1]
             self.d_hat = np.zeros(self.n_targets)
+            
+        # Скидаємо trust region після перенавчання
+        if hasattr(self, 'reset_trust_region'):
+            self.reset_trust_region()
