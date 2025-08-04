@@ -304,12 +304,19 @@ class _SVRModel(_BaseKernelModel):
                 sv = mdl.support_vectors_
                 coef = mdl.dual_coef_.ravel()
     
-                diffs = X0[:, None, :] - sv[None, :, :]
-                sq = np.sum(diffs**2, axis=-1)
-                K_row = np.exp(-gamma_eff * sq)
-                dK = -2 * gamma_eff * diffs * K_row[..., None]
+                # ✅ ВИПРАВЛЕНЕ обчислення градієнтів:
+                diffs = X0[:, None, :] - sv[None, :, :]  # (1, n_sv, n_features)
+                sq = np.sum(diffs**2, axis=-1)           # (1, n_sv)
+                K_row = np.exp(-gamma_eff * sq)          # (1, n_sv)
+                dK = -2 * gamma_eff * diffs * K_row[..., None]  # (1, n_sv, n_features)
     
-                W = (dK.squeeze(0).T @ coef).reshape(-1, 1)
+                # ✅ БЕЗПЕЧНЕ витягування градієнтів:
+                if dK.shape[0] == 1:
+                    dK_2d = dK[0]  # (n_sv, n_features) 
+                else:
+                    dK_2d = dK.squeeze(0)  # Backup
+                    
+                W = (dK_2d.T @ coef).reshape(-1, 1)  # (n_features, 1)
                 y0 = mdl.predict(X0)
                 b = (y0 - X0 @ W).flatten()
                 

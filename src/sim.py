@@ -293,6 +293,13 @@ def run_simulation_loop_enhanced(
     y_true_hist, x_hat_hist, P_hist, innov_hist, R_hist = [], [], [], [], []
     u_seq_hist = []
     d_hat_hist = []
+    
+    # ✅ ДОДАЄМО ЗМІННІ ДЛЯ ДІАГНОСТИКИ EKF:
+    y_true_seq = []     # Реальні вимірювання
+    y_pred_seq = []     # Передбачення моделі
+    x_est_seq = []      # Оцінки стану EKF
+    innovation_seq = [] # Інновації EKF
+    
     trust_region_stats_hist = []  # НОВИЙ
     linearization_quality_hist = []  # НОВИЙ
     u_prev = float(hist0_unscaled[-1, 2])
@@ -344,18 +351,22 @@ def run_simulation_loop_enhanced(
         mpc.reset_history(x_est_phys_unscaled)
         mpc.d_hat = ekf.x_hat[ekf.n_phys:]
 
+        # Беремо поточний стан і передбачаємо наступний вихід
+        current_state = x_est_phys_unscaled.flatten().reshape(1, -1)
+        current_state_scaled = x_scaler.transform(current_state)
+        y_pred_scaled = mpc.model.predict(current_state_scaled)[0]
+        y_pred_unscaled = y_scaler.inverse_transform(y_pred_scaled.reshape(1, -1))[0]
+
         # 6. Оптимізація MPC з покращеннями
         d_seq = np.repeat(d_filt.reshape(1, -1), params['Np'], axis=0)
         u_seq = mpc.optimize(d_seq, u_prev)
         u_cur = u_prev if u_seq is None else float(u_seq[0])
 
-        '''---'''       
         # ДОДАЙ ДІАГНОСТИКУ ТУТ:
         if t % 10 == 0:  # Кожні 10 кроків
             diagnose_mpc_behavior(mpc, t, u_seq, u_prev, d_seq)
         
         u_cur = u_prev if u_seq is None else float(u_seq[0])
-        '''---'''
 
         # 7. Крок «реального» процесу
         y_full = true_gen.step(feed_fe_raw, ore_flow_raw, u_cur)
@@ -364,6 +375,25 @@ def run_simulation_loop_enhanced(
         y_meas_unscaled = y_full[['concentrate_fe_percent',
                                   'concentrate_mass_flow']].values.flatten()
         ekf.update(y_meas_unscaled)
+
+        # ✅ ЗБИРАЄМО ДАНІ ДЛЯ ДІАГНОСТИКИ EKF:
+        y_true_seq.append(y_meas_unscaled.copy())
+        
+        # Передбачення моделі (зберігаємо перед update)
+        # if hasattr(ekf, 'y_pred') and ekf.y_pred is not None:
+        #     y_pred_seq.append(ekf.y_pred.copy())
+        # else:
+        #     y_pred_seq.append(np.zeros(2))
+        y_pred_seq.append(y_pred_unscaled.copy())
+        
+        # Оцінка стану після update
+        x_est_seq.append(ekf.x_hat.copy())
+        
+        # Інновації
+        if hasattr(ekf, 'last_innovation') and ekf.last_innovation is not None:
+            innovation_seq.append(ekf.last_innovation.copy())
+        else:
+            innovation_seq.append(np.zeros(2))
 
         # 9. Зменшуємо cooldown-таймер
         if retrain_cooldown_timer > 0:
@@ -381,6 +411,7 @@ def run_simulation_loop_enhanced(
                     linearization_quality_hist.append(mpc.linearization_quality_history[-1]['euclidean_distance'])
                 else:
                     linearization_quality_hist.append(mpc.linearization_quality_history[-1])
+
         # 10. Буферизація та можливе перенавчання
         if params['enable_retraining']:
             new_x_unscaled = mpc.x_hist.flatten().reshape(1, -1)
@@ -479,6 +510,9 @@ def run_simulation_loop_enhanced(
 
     if progress_callback:
         progress_callback(T_sim, T_sim, "Симуляція завершена")
+
+    # ✅ ДОДАЄМО ДІАГНОСТИКУ EKF:
+    diagnose_ekf_detailed(ekf, y_true_seq, y_pred_seq, x_est_seq, innovation_seq)
         
     # Розширені дані для аналізу
     analysis_data = {
@@ -489,8 +523,13 @@ def run_simulation_loop_enhanced(
         "R": np.stack(R_hist),
         "u_seq": u_seq_hist,
         "d_hat": np.vstack(d_hat_hist) if d_hat_hist else np.array([]),
-        "trust_region_stats": trust_region_stats_hist,  # НОВИЙ
-        "linearization_quality": linearization_quality_hist,  # НОВИЙ
+        "trust_region_stats": trust_region_stats_hist,
+        "linearization_quality": linearization_quality_hist,
+        # ✅ ДОДАЄМО ДАНІ ДЛЯ ПОДАЛЬШОГО АНАЛІЗУ:
+        "y_true_seq": y_true_seq,
+        "y_pred_seq": y_pred_seq,
+        "x_est_seq": x_est_seq,
+        "innovation_seq": innovation_seq,
     }
 
     return pd.DataFrame(records), analysis_data
@@ -723,11 +762,12 @@ def diagnose_svr_quality(svr_model, X_train, y_train, X_test, y_test, x_scaler, 
     print(f"y_train shape: {y_train.shape}")
     print(f"y_train range: min={np.min(y_train, axis=0)}, max={np.max(y_train, axis=0)}")
     
-    # 4. Linearization check
+    # 4. ✅ ВИПРАВЛЕНИЙ Linearization check
     print("\n--- Linearization Analysis ---")
     try:
-        X_mid = X_test[:5]  # Перші 5 тестових зразків
-        W, b = svr_model.linearize(X_mid)
+        # ✅ ВИКОРИСТОВУЄМО ТІЛЬКИ ОДИН ЗРАЗОК:
+        X_single = X_test[:1]  # (1, 9) - ПРАВИЛЬНА ФОРМА!
+        W, b = svr_model.linearize(X_single)
         print(f"Jacobian W shape: {W.shape}")
         print(f"Bias b shape: {b.shape}")
         print(f"W range: min={np.min(W):.3f}, max={np.max(W):.3f}")
@@ -738,6 +778,14 @@ def diagnose_svr_quality(svr_model, X_train, y_train, X_test, y_test, x_scaler, 
             print("  ❌ ПОПЕРЕДЖЕННЯ: Екстремальні значення в лінеаризації!")
         else:
             print("  ✅ Лінеаризація в нормальних межах")
+            
+        # ✅ ПЕРЕВІРКА НА НУЛЬОВИЙ ЯКОБІАН:
+        W_norm = np.linalg.norm(W)
+        print(f"Jacobian norm: {W_norm:.4f}")
+        if W_norm < 0.01:
+            print("  ❌ КРИТИЧНО: Якобіан майже нульовий! MPC не зможе керувати!")
+        else:
+            print("  ✅ Якобіан має достатню норму для керування")
             
     except Exception as e:
         print(f"  ❌ ПОМИЛКА лінеаризації: {e}")
@@ -782,7 +830,107 @@ def diagnose_mpc_behavior(mpc, step, u_optimal, u_prev, d_seq):
     if d_seq is not None:
         print(f"d_seq mean: {np.mean(d_seq, axis=0)}")
         print(f"d_seq std: {np.std(d_seq, axis=0)}")
+
+def diagnose_ekf_detailed(ekf, y_true_seq, y_pred_seq, x_est_seq, innovation_seq):
+    """Детальна діагностика EKF"""
+    
+    print("\n" + "="*60)
+    print("=== ДЕТАЛЬНА ДІАГНОСТИКА EKF ===")
+    print("="*60)
+    
+    print("\n--- ДІАГНОСТИКА ДАНИХ ---")
+    y_pred = np.array(y_pred_seq[1:])
+    y_true = np.array(y_true_seq[1:])
+    print(f"y_pred shape: {y_pred.shape}")
+    print(f"y_true shape: {y_true.shape}")
+    print(f"y_pred sample: {y_pred[0]}")
+    print(f"y_true sample: {y_true[0]}")
+    model_error = y_true - y_pred
+    print(f"model_error sample: {model_error[0]}")
+    print(f"model_error mean: {np.mean(model_error, axis=0)}")
+    print(f"model_error std: {np.std(model_error, axis=0)}")
+
+    # 1. Аналіз інновацій
+    innovations = np.array(innovation_seq[1:])  # Skip first step
+    print("\n--- Аналіз інновацій ---")
+    print(f"Innovation mean: {np.mean(innovations, axis=0)}")
+    print(f"Innovation std: {np.std(innovations, axis=0)}")
+    print(f"Innovation max abs: {np.max(np.abs(innovations), axis=0)}")
+    
+    # Перевірка на систематичні помилки
+    if np.any(np.abs(np.mean(innovations, axis=0)) > 0.5):
+        print("❌ СИСТЕМАТИЧНА ПОМИЛКА: Інновації мають велике зміщення!")
+    else:
+        print("✅ Інновації центровані")
+    
+    # 2. Аналіз передбачень моделі vs реальності  
+    print("\n--- Якість передбачень моделі ---")
+    model_rmse = np.sqrt(np.mean(model_error**2, axis=0))
+    print(f"Model prediction error RMSE: {model_rmse}")
+    
+    # ✅ ПРАВИЛЬНА НОРМАЛІЗАЦІЯ:
+    y_mean = np.mean(y_true, axis=0)
+    model_nrmse = model_rmse / y_mean * 100  # В відсотках
+    print(f"Model prediction NRMSE: FE={model_nrmse[0]:.2f}%, Mass={model_nrmse[1]:.2f}%")
+    
+    if np.any(model_nrmse > 10):  # 10%
+        print("❌ МОДЕЛЬ ПОГАНА: NRMSE передбачень > 10%")
+    else:
+        print("✅ Модель передбачає добре")
+    
+    # 3. Аналіз коваріанс EKF
+    print("\n--- Аналіз коваріанс EKF ---")
+    P_diag_history = []
+    if hasattr(ekf, 'P_history') and ekf.P_history:
+        for P in ekf.P_history[-10:]:  # Last 10 steps
+            P_diag_history.append(np.diag(P)[:2])  # Only output states
         
+        P_diag_mean = np.mean(P_diag_history, axis=0)
+        print(f"EKF covariance diagonal (outputs): {P_diag_mean}")
+        
+        # Перевірка чи не занадто великі коваріанси
+        if np.any(P_diag_mean > 100):
+            print("❌ EKF коваріанси ЗАНАДТО ВЕЛИКІ! Фільтр не впевнений")
+        elif np.any(P_diag_mean < 0.01):
+            print("❌ EKF коваріанси ЗАНАДТО МАЛІ! Фільтр переоцінює точність")
+        else:
+            print("✅ EKF коваріанси в розумних межах")
+    else:
+        print("⚠️ EKF covariance history недоступна")
+    
+    # 4. Порівняння різних джерел помилок
+    print("\n--- Декомпозиція помилок ---")
+    
+    # Помилка через модель
+    model_contribution = np.std(model_error, axis=0)
+    
+    # Помилка через фільтрацію (використовуємо інновації)
+    innovations_array = np.array(innovation_seq[1:])
+    innovation_contribution = np.std(innovations_array, axis=0)
+    
+    print(f"Model error contribution: {model_contribution}")
+    print(f"Innovation contribution: {innovation_contribution}")
+    
+    # Що більше впливає?
+    ratio = innovation_contribution / (model_contribution + 1e-8)
+    print(f"Innovation/Model error ratio: {ratio}")
+    
+    if np.any(ratio > 2):
+        print("❌ ФІЛЬТР ПСУЄ ОЦІНКИ! Проблема в EKF налаштуваннях")
+    elif np.any(ratio < 0.5):
+        print("❌ МОДЕЛЬ ДОМІНУЄ! Проблема в якості моделі")
+    else:
+        print("✅ Збалансовані помилки моделі та фільтра")
+
+    # ✅ ДОДАТКОВА ДІАГНОСТИКА ДЛЯ ПЕРЕВІРКИ RMSE = 34:
+    print(f"\n--- ДОДАТКОВА ДІАГНОСТИКА ---")
+    print(f"y_true mean: {np.mean(y_true, axis=0)}")
+    print(f"y_true std: {np.std(y_true, axis=0)}")
+    print(f"Model RMSE/std ratio: {model_rmse / np.std(y_true, axis=0)}")
+    print(f"Sample model errors (перші 5): {model_error[:5]}")
+       
+    print("="*60)
+
 if __name__ == '__main__':
     
     def my_progress(step, total, msg):
@@ -801,14 +949,14 @@ if __name__ == '__main__':
         progress_callback=my_progress, 
         
         # ---- Блок даних
-        N_data=5000, 
+        N_data=4000, 
         control_pts=1000,
         seed=42,
         
         plant_model_type='rf',
         
-        train_size=0.80,
-        val_size=0.18,
+        train_size=0.85,
+        val_size=0.13,
         test_size=0.02,
     
         # ---- Налаштування моделі
@@ -829,7 +977,7 @@ if __name__ == '__main__':
 
         # Адаптивний Trust Region
         adaptive_trust_region=True,           # Увімкнути адаптацію
-        initial_trust_radius=2.0,             # Початковий розмір
+        initial_trust_radius=3.0,             # Початковий розмір
         min_trust_radius=0.5,                 # Мінімальний розмір  
         max_trust_radius=2.0,                 # Максимальний розмір
         trust_decay_factor=0.9,               # Затухання по горизонту
@@ -876,12 +1024,12 @@ if __name__ == '__main__':
         },
         
         # ---- Обмеження моделі
-        delta_u_max = 0.3,
-        λ_obj=0.5,
+        delta_u_max = 0.6,
+        λ_obj=0.2,
         
         # ---- MPC горизонти
-        Nc=4, #8
-        Np=6, #12
+        Nc=6, #8
+        Np=8, #12
         lag=2, #2
         
         # ---- Цільові параметри/ваги

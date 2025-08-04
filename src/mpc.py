@@ -92,9 +92,10 @@ class MPCController:
             category=UserWarning,
             module="cvxpy.reductions.solvers.solving_chain_utils")
 
+
     def _setup_optimization_problem(self):
         """
-        Створює задачу оптимізації CVXPY з покращеним trust region penalty.
+        Створює задачу оптимізації CVXPY з правильним масштабуванням даних.
         """
         # 1. Змінні оптимізації
         u_var = cp.Variable(self.Nc, name="u_seq")
@@ -102,6 +103,7 @@ class MPCController:
         eps_delta_u_lower = cp.Variable(self.Nc, nonneg=True, name="eps_delta_u_lower")
         eps_y_upper = cp.Variable((self.Np, 2), nonneg=True, name="eps_y_upper") if self.y_max is not None else None
         eps_y_lower = cp.Variable((self.Np, 2), nonneg=True, name="eps_y_lower") if self.y_min is not None else None
+        
         self.variables = {
             'u': u_var, 
             'eps_delta_u_upper': eps_delta_u_upper,
@@ -109,66 +111,71 @@ class MPCController:
             'eps_y_upper': eps_y_upper, 
             'eps_y_lower': eps_y_lower
         }
-
+    
         # 2. Параметри, що будуть оновлюватись на кожному кроці
-        W_param = cp.Parameter((self.n_inputs, self.n_targets), name="W_local")
+        W_param = cp.Parameter((9, self.n_targets), name="W_local")  # ✅ ВИПРАВЛЕНО: точна розмірність 9x2
         b_param = cp.Parameter(self.n_targets, name="b_local")
-        x_hist_param = cp.Parameter(self.n_inputs, name="x_hist_flat")
+        x_hist_param = cp.Parameter(self.n_inputs, name="x_hist_flat")  # Повна історія (lag+1)*3
         u_prev_param = cp.Parameter(name="u_prev")
         d_hat_param = cp.Parameter(self.n_targets, name="d_hat")
         d_seq_param = cp.Parameter((self.Np, 2), name="d_seq")
-        x0_scaled_param = cp.Parameter(self.n_inputs, name="x0_scaled")
-        trust_radius_param = cp.Parameter(nonneg=True, name="trust_radius")  # НОВИЙ ПАРАМЕТР
+        x0_scaled_param = cp.Parameter(9, name="x0_scaled")  # ✅ ВИПРАВЛЕНО: тільки 9 змінних для моделі
+        trust_radius_param = cp.Parameter(nonneg=True, name="trust_radius")
         
         self.parameters = {
             'W': W_param, 'b': b_param, 'x_hist': x_hist_param,
             'u_prev': u_prev_param, 'd_hat': d_hat_param, 'd_seq': d_seq_param,
-            'x0_scaled': x0_scaled_param, 'trust_radius': trust_radius_param  # НОВИЙ
+            'x0_scaled': x0_scaled_param, 'trust_radius': trust_radius_param
         }
-
-        # Константи для масштабування
-        mean_c = cp.Constant(self.x_scaler.mean_)
-        scale_c = cp.Constant(self.x_scaler.scale_)
-
-        # 3. Побудова прогнозу на горизонті Np з покращеним trust region
+    
+        # ✅ ВИПРАВЛЕНО: Константи для масштабування ТІЛЬКИ останніх 9 змінних
+        # Витягуємо скалери для останніх 9 змінних (які подаються в модель)
+        model_input_indices = slice(-9, None)  # Останні 9 позицій
+        mean_c_model = cp.Constant(self.x_scaler.mean_[model_input_indices])  # (9,)
+        scale_c_model = cp.Constant(self.x_scaler.scale_[model_input_indices])  # (9,)
+    
+        # 3. Побудова прогнозу на горизонті Np з правильним масштабуванням
         pred_fe, pred_mass = [], []
         trust_region_cost = 0
         
-        # Початковий стан з параметра
+        # Початковий стан з параметра (повна історія)
         xk_unscaled_list = [x_hist_param[i*3:(i+1)*3] for i in range(self.L + 1)]
-
+    
         for k in range(self.Np):
             uk = u_var[k] if k < self.Nc else u_var[self.Nc - 1]
             
-            # Формуємо вектор стану Xk в ОРИГІНАЛЬНОМУ масштабі
-            Xk_unscaled = cp.hstack(xk_unscaled_list)
+            # ✅ ПРАВИЛЬНО: Формуємо повний вектор стану для збереження історії
+            Xk_unscaled_full = cp.hstack(xk_unscaled_list)  # Повна історія: (lag+1)*3
             
-            # КОРЕКТНЕ МАСШТАБУВАННЯ ВЕКТОРА СТАНУ
-            Xk_scaled = (Xk_unscaled - mean_c) / scale_c
+            # ✅ ПРАВИЛЬНО: Витягуємо тільки останні 9 змінних для передачі в модель
+            Xk_for_model = Xk_unscaled_full[-9:]  # Останні 9 змінних
             
-            # Прогноз за локальною лінійною моделлю
-            yk = Xk_scaled @ W_param + b_param + d_hat_param
+            # ✅ ПРАВИЛЬНО: Масштабуємо тільки змінні моделі правильними скалерами
+            Xk_scaled = (Xk_for_model - mean_c_model) / scale_c_model  # (9,)
+            
+            # ✅ ПРАВИЛЬНО: Прогноз за локальною лінійною моделлю з правильними розмірностями
+            yk = Xk_scaled @ W_param + b_param + d_hat_param  # (9,) @ (9,2) + (2,) + (2,) = (2,)
             pred_fe.append(yk[0])
             pred_mass.append(yk[1])
-
-            # === ПОКРАЩЕНИЙ TRUST REGION PENALTY ===
+    
+            # === ПРАВИЛЬНИЙ TRUST REGION PENALTY ===
             if self.model.kernel != 'linear':
-                # Застосовуємо штраф для всіх кроків горизонту з експоненційним зменшенням
+                # Застосовуємо штраф тільки для змінних моделі
                 weight = self.rho_trust * (self.trust_decay_factor ** k)
                 
-                # Нормована відстань від точки лінеаризації
-                state_deviation = Xk_scaled - x0_scaled_param
-                trust_region_cost += weight * cp.sum_squares(state_deviation) / trust_radius_param
-
+                # ✅ ПРАВИЛЬНО: Нормована відстань для змінних моделі
+                model_state_deviation = Xk_scaled - x0_scaled_param  # (9,) - (9,) = (9,)
+                trust_region_cost += weight * cp.sum_squares(model_state_deviation) / trust_radius_param
+    
             # Оновлюємо стан для наступного кроку
             feed_fe, ore_flow = d_seq_param[k, 0], d_seq_param[k, 1]
-            xk_unscaled_list.pop(0)
-            xk_unscaled_list.append(cp.hstack([feed_fe, ore_flow, uk]))
-
+            xk_unscaled_list.pop(0)  # Видаляємо найстарший стан
+            xk_unscaled_list.append(cp.hstack([feed_fe, ore_flow, uk]))  # Додаємо новий стан
+    
         conc_fe_preds = cp.hstack(pred_fe)
         conc_mass_preds = cp.hstack(pred_mass)
-
-        # 4. Формування обмежень
+    
+        # 4. Формування обмежень (без змін)
         cons = [u_var >= self.u_min, u_var <= self.u_max]
         du0 = u_var[0] - u_prev_param
         du_rest = u_var[1:] - u_var[:-1] if self.Nc > 1 else []
@@ -182,14 +189,14 @@ class MPCController:
             Du_ext <= self.delta_u_max + eps_delta_u_upper,
             Du_ext >= -self.delta_u_max - eps_delta_u_lower
         ])
-
+    
         y_preds_stacked = cp.vstack([conc_fe_preds, conc_mass_preds]).T
         if eps_y_upper is not None:
             cons.append(y_preds_stacked <= self.y_max + eps_y_upper)
         if eps_y_lower is not None:
             cons.append(y_preds_stacked >= self.y_min - eps_y_lower)
-
-        # 5. Формування цільової функції
+    
+        # 5. Формування цільової функції (без змін)
         base_cost = self.objective.cost_full(
             conc_fe_preds=conc_fe_preds, conc_mass_preds=conc_mass_preds,
             u_seq=u_var, u_prev=u_prev_param
@@ -201,11 +208,12 @@ class MPCController:
             penalty_cost += self.rho_y * cp.sum_squares(eps_y_upper)
         if eps_y_lower is not None:
             penalty_cost += self.rho_y * cp.sum_squares(eps_y_lower)
-
+    
         total_cost = base_cost + penalty_cost + trust_region_cost
         
         # 6. Створення об'єкту задачі
         self.problem = cp.Problem(cp.Minimize(total_cost), cons)
+
 
     def check_linearization_validity(self, X_current_scaled, X_predicted_scaled):
         """

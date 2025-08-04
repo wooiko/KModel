@@ -18,6 +18,9 @@ class ExtendedKalmanFilter:
                  q_adaptive_enabled: bool = True,
                  q_alpha: float = 0.98,
                  q_nis_threshold: float = 1.5):
+
+        self._debug_count = 0  # Для діагностики
+
         self.model = model
         self.x_scaler = x_scaler
         self.y_scaler = y_scaler
@@ -102,64 +105,142 @@ class ExtendedKalmanFilter:
         self.P = self.F @ self.P @ self.F.T + (self.Q * self.q_scale)
         
 
+
     def update(self, z_k: np.ndarray):
-        """ВИПРАВЛЕНИЙ update з правильною розмірністю"""
+        """
+        Крок корекції (update step) EKF.
+        Обчислює a posteriori оцінку стану та коваріації.
+    
+        Args:
+            z_k (np.ndarray): Вектор вимірювань [conc_fe, conc_mass] в оригінальному масштабі.
+        """
         
-        # Витягуємо ОСТАННІ 9 змінних для моделі (модель очікує саме 9)
+        # ✅ ПРАВИЛЬНО: витягуємо останні 9 змінних для моделі
         x_phys_for_model = self.x_hat[self.n_phys-9:self.n_phys].reshape(1, -1)  # (1, 9)  
-        d_scaled = self.x_hat[self.n_phys:]  # (2,)
+        d_scaled = self.x_hat[self.n_phys:]  # (2,) - збурення вже в масштабованому вигляді
         
-        # Масштабуємо правильний розмір
+        # ✅ ПРАВИЛЬНО: масштабуємо ОДИН РАЗ
         x_phys_scaled = self.x_scaler.transform(x_phys_for_model)  # (1, 9)
+    
+        # ✅ ВИПРАВЛЕНА ДІАГНОСТИКА: що передається в модель
+        if not hasattr(self, '_debug_count'):
+            self._debug_count = 0
         
-        # Лінеаризація моделі
-        W_local_scaled, _ = self.model.linearize(x_phys_scaled)  # (9, 2)
+        if self._debug_count < 5:  # Перші 5 кроків
+            print(f"\n--- EKF MODEL INPUT DEBUG (step {self._debug_count}) ---")
+            print(f"x_phys_for_model shape: {x_phys_for_model.shape}")
+            print(f"x_phys_for_model range: [{np.min(x_phys_for_model):.3f}, {np.max(x_phys_for_model):.3f}]")
+            print(f"x_phys_scaled shape: {x_phys_scaled.shape}")
+            print(f"x_phys_scaled range: [{np.min(x_phys_scaled):.3f}, {np.max(x_phys_scaled):.3f}]")
+            
+            # Порівняння з тренувальними межами
+            train_min = np.min([-1.78, -2.34, -3.83] * 3)  # З логу вище
+            train_max = np.max([10.72, 3.32, 4.67] * 3)   # З логу вище
+            print(f"Training X range approx: [{train_min:.3f}, {train_max:.3f}]")
+            print(f"Training X_scaled expected: [-2, +2] approx")
+            
+            # Чи виходимо за межі?
+            if np.any(x_phys_scaled < -3) or np.any(x_phys_scaled > 3):
+                print("❌ ЕКСТРАПОЛЯЦІЯ: x_phys_scaled виходить за межі тренувальних даних!")
+            else:
+                print("✅ x_phys_scaled в межах тренувальних даних")
+                
+            # Тестуємо модель на цих даних
+            y_pred_test = self.model.predict(x_phys_scaled)[0]
+            print(f"Model prediction: [{y_pred_test[0]:.3f}, {y_pred_test[1]:.3f}]")
+            print(f"d_scaled (disturbances): [{d_scaled[0]:.3f}, {d_scaled[1]:.3f}]")
+            
+            # КЛЮЧОВЕ: порівняння з очікуваними значеннями
+            expected_fe = 50.0  # Приблизно очікується
+            expected_mass = 100.0  # Приблизно очікується
+            print(f"Expected values approx: [{expected_fe:.1f}, {expected_mass:.1f}]")
+            
+            if abs(y_pred_test[0]) > 20 or abs(y_pred_test[1]) > 20:
+                print("❌ МОДЕЛЬ ПЕРЕДБАЧАЄ НЕРЕАЛЬНІ ЗНАЧЕННЯ!")
+            else:
+                print("✅ Модель передбачає розумні значення")
+                
+            self._debug_count += 1
         
-        # ВИПРАВЛЕНИЙ Якобіан
+        # ✅ ПРАВИЛЬНО: лінеаризація дає якобіан в правильному масштабі
+        W_local_scaled, _ = self.model.linearize(x_phys_scaled)  # (9, 2) - ВЖЕ в правильному масштабі!
+        
+        # ✅ ВИПРАВЛЕНО: правильний якобіан БЕЗ додаткового масштабування
         H_k = np.zeros((self.n_dist, self.n_aug))
+        start_idx = self.n_phys - 9  # Індекс початку останніх 9 змінних
         
-        # Тільки для останніх 9 змінних стану
-        start_idx = self.n_phys - 9  # = 12 - 9 = 3
+        # ТІЛЬКИ інверсія y_scaler, БЕЗ додаткового масштабування x:
         H_k[:, start_idx:self.n_phys] = (
-            np.diag(1.0 / self.y_scaler.scale_)    # (2, 2)
-            @ W_local_scaled.T                     # (2, 9)  
-            @ np.diag(1.0 / self.x_scaler.scale_)  # (9, 9) - БЕЗ [:self.n_phys]!
+            np.diag(1.0 / self.y_scaler.scale_) @ W_local_scaled.T  # (2, 2) @ (2, 9) = (2, 9)
         )
         
-        # Збурення напряму
+        # Збурення входять напряму (одинична матриця)
         H_k[:, self.n_phys:] = np.eye(self.n_dist)
         
-        # Прогноз
+        # ✅ ПРАВИЛЬНО: модель УЖЕ повертає в правильному масштабі
         y_pred_scaled = self.model.predict(x_phys_scaled)[0]  # (2,)
-        y_hat_scaled = y_pred_scaled + d_scaled
+    
+        # ✅ ДІАГНОСТИКА: перевіряємо чи правильні передбачення
+        if hasattr(self, '_debug_count') and self._debug_count <= 5:
+            # Конвертуємо в оригінальний масштаб для перевірки
+            y_pred_unscaled = self.y_scaler.inverse_transform(y_pred_scaled.reshape(1, -1))[0]
+            z_k_unscaled = z_k  # Реальне вимірювання
+            
+            print(f"Model prediction (scaled): [{y_pred_scaled[0]:.3f}, {y_pred_scaled[1]:.3f}]")
+            print(f"Model prediction (unscaled): [{y_pred_unscaled[0]:.1f}, {y_pred_unscaled[1]:.1f}]")
+            print(f"Real measurement (unscaled): [{z_k_unscaled[0]:.1f}, {z_k_unscaled[1]:.1f}]")
+            print(f"Disturbances (scaled): [{d_scaled[0]:.3f}, {d_scaled[1]:.3f}]")
+            
+            # Перевіряємо чи близькі передбачення до реальності
+            error_fe = abs(y_pred_unscaled[0] - z_k_unscaled[0])
+            error_mass = abs(y_pred_unscaled[1] - z_k_unscaled[1])
+            print(f"Prediction errors: FE={error_fe:.1f}, Mass={error_mass:.1f}")
+            
+            if error_fe > 10 or error_mass > 10:
+                print("❌ МОДЕЛЬ ДУЖЕ ПОГАНО ПЕРЕДБАЧАЄ!")
+            else:
+                print("✅ Модель передбачає достатньо добре")
+    
+        y_hat_scaled = y_pred_scaled + d_scaled  # (2,) - загальний прогноз з урахуванням збурень
         
-        # Інновація
-        z_k_scaled = self.y_scaler.transform(z_k.reshape(1, -1))[0]
-        y_tilde = z_k_scaled - y_hat_scaled
+        # ---- Інновація (різниця між виміром та прогнозом) ----
+        z_k_scaled = self.y_scaler.transform(z_k.reshape(1, -1))[0]  # Масштабуємо вимірювання
+        y_tilde = z_k_scaled - y_hat_scaled  # Інновація в масштабованому просторі
         
-        # Решта без змін...
+        # ---- Адаптивна коваріація шуму вимірювань ----
+        # Оновлюємо R на основі квадрату інновації
         self.R = self._R_initial + self.beta_R * np.diag(y_tilde**2 + 1e-6)
-        S_k = H_k @ self.P @ H_k.T + self.R
         
-        K_k = self.P @ H_k.T @ np.linalg.inv(S_k)
-        self.x_hat = self.x_hat + K_k @ y_tilde
+        # ---- Коваріація інновації та Калманівський коефіцієнт підсилення ----
+        S_k = H_k @ self.P @ H_k.T + self.R  # Коваріація інновації
+        K_k = self.P @ H_k.T @ np.linalg.inv(S_k)  # Калманівський коефіцієнт підсилення
+        
+        # ---- Корекція стану та коваріації ----
+        self.x_hat = self.x_hat + K_k @ y_tilde  # Оновлення стану
         I = np.eye(self.n_aug)
-        self.P = (I - K_k @ H_k) @ self.P
+        self.P = (I - K_k @ H_k) @ self.P  # Оновлення коваріації (форма Джозефа для стійкості)
         
-        # Адаптація Q (твоя логіка залишається)
+        # ---- Адаптивне налаштування Q на основі NIS ----
         if self.q_adaptive_enabled:
             try:
                 S_k_inv = np.linalg.inv(S_k)
-                nis = y_tilde.T @ S_k_inv @ y_tilde
-                target = self.n_dist
+                nis = y_tilde.T @ S_k_inv @ y_tilde  # Normalized Innovation Squared
+                
+                target = self.n_dist  # Очікуване значення NIS
                 upper_bound = target * self.q_nis_threshold
                 lower_bound = target / self.q_nis_threshold
                 
+                # Адаптація коефіцієнта масштабування Q
                 if nis > upper_bound:
+                    # Збільшуємо Q, якщо інновації занадто великі
                     self.q_scale = min(self.q_scale * 1.02, 10.0)
                 elif nis < lower_bound:
+                    # Зменшуємо Q, якщо інновації занадто малі
                     self.q_scale = max(self.q_scale * 0.99, 0.1)
+                    
             except np.linalg.LinAlgError:
+                # Ігноруємо помилки обернення матриці
                 pass
         
-        self.last_innovation = y_tilde
+        # Зберігаємо інновацію для діагностики
+        self.last_innovation = y_tilde.copy()
