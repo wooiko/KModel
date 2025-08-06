@@ -12,11 +12,8 @@ from model import KernelModel
 from objectives import MaxIronMassTrackingObjective
 from mpc import MPCController
 from utils import (
-    analize_errors, plot_control_and_disturbances, 
-    evaluate_ekf_performance, plot_fact_vs_mpc_plans,
-    plot_disturbance_estimation, control_aggressiveness_metrics,
-    plot_delta_u_histogram, plot_trust_region_evolution, plot_linearization_quality,
-    run_post_simulation_analysis_enhanced
+    run_post_simulation_analysis_enhanced, analyze_trust_region_performance, diagnose_mpc_behavior, diagnose_ekf_detailed,
+    diagnose_svr_quality
 )
 from ekf import ExtendedKalmanFilter
 from anomaly_detector import SignalAnomalyDetector
@@ -163,19 +160,6 @@ def train_and_evaluate_model(
     print("Крок 3: Навчання та оцінка моделі процесу...")
     mpc.fit(data['X_train_scaled'], data['Y_train_scaled'])
 
-    # ✅ ДОДАЙ ДІАГНОСТИКУ SVR ТУТ:
-    if hasattr(mpc.model, '_impl') and hasattr(mpc.model._impl, 'models'):  # Перевіряємо чи це SVR
-        print("\n🔍 ЗАПУСК ДІАГНОСТИКИ SVR...")
-        svr_diagnostics = diagnose_svr_quality(
-            svr_model=mpc.model._impl,  # ВАЖЛИВО: ._impl для доступу до SVR
-            X_train=data['X_train_scaled'], 
-            y_train=data['Y_train_scaled'],
-            X_test=data['X_test_scaled'],
-            y_test=data['Y_test_scaled'],
-            x_scaler=None,  # Дані вже масштабовані
-            y_scaler=y_scaler
-        )
-
     y_pred_scaled = mpc.model.predict(data['X_test_scaled'])
     y_pred_orig = y_scaler.inverse_transform(y_pred_scaled)
     
@@ -190,7 +174,6 @@ def train_and_evaluate_model(
         print(f"-> RMSE для {col}: {rmse:.3f}")
         
     return metrics
-
 
 def initialize_mpc_controller_enhanced(
     params: Dict[str, Any],
@@ -550,16 +533,24 @@ def initialize_ekf(
     x_scaler, y_scaler = scalers
     n_phys, n_dist = (lag + 1) * 3, 2
     
-    x0_aug = np.hstack([hist0_unscaled.flatten(), np.zeros(n_dist)])
+    # x0_aug = np.hstack([hist0_unscaled.flatten(), np.zeros(n_dist)])
+    # ✅ ВИПРАВЛЕННЯ: Розумна початкова оцінка збурень
+    # Базуючись на систематичній помилці з попередніх результатів
+    initial_disturbances = np.array([0.7, 0.0])  # Близько до Innovation mean: [0.71, 0.04]
     
-    P0 = np.eye(n_phys + n_dist) * params['P0']
-    P0[n_phys:, n_phys:] *= 1 
+    x0_aug = np.hstack([hist0_unscaled.flatten(), initial_disturbances])
+    
+    # P0 = np.eye(n_phys + n_dist) * params['P0']
+    # P0[n_phys:, n_phys:] *= 1 
+    P0 = np.eye(n_phys + n_dist) * params['P0'] * 1.5  # Було: * 1.0
+    P0[n_phys:, n_phys:] *= 10  # Залишити як є
 
     Q_phys = np.eye(n_phys) * params['Q_phys']
     Q_dist = np.eye(n_dist) * params['Q_dist'] 
     Q = np.block([[Q_phys, np.zeros((n_phys, n_dist))], [np.zeros((n_dist, n_phys)), Q_dist]])
     
-    R = np.diag(np.var(Y_train_scaled, axis=0)) * params['R']
+    # R = np.diag(np.var(Y_train_scaled, axis=0)) * params['R']
+    R = np.diag(np.var(Y_train_scaled, axis=0)) * params['R'] * 0.5
     
     return ExtendedKalmanFilter(
         mpc.model, x_scaler, y_scaler, x0_aug, P0, Q, R, lag,
@@ -700,236 +691,7 @@ def simulate_mpc(
     
     return results_df, metrics
 
-def diagnose_svr_quality(svr_model, X_train, y_train, X_test, y_test, x_scaler, y_scaler):
-    """Діагностика якості SVR моделі"""
-    
-    print("\n" + "="*50)
-    print("=== ДІАГНОСТИКА SVR МОДЕЛІ ===")
-    print("="*50)
-    
-    # 1. Перевір support vectors
-    print("\n--- Support Vectors Analysis ---")
-    for i, svr in enumerate(svr_model.models):
-        sv_count = len(svr.support_vectors_)
-        sv_ratio = sv_count / len(X_train)
-        print(f"Вихід {i}: Support Vectors = {sv_count}/{len(X_train)} ({sv_ratio:.1%})")
-        print(f"  C = {svr.C:.3f}, gamma = {getattr(svr, 'gamma', 'N/A')}, epsilon = {svr.epsilon:.3f}")
-        
-        if sv_ratio > 0.8:
-            print(f"  ❌ ПЕРЕНАВЧАННЯ! {sv_ratio:.1%} > 80% зразків є support vectors")
-        elif sv_ratio < 0.1:
-            print(f"  ❌ НЕДОНАВЧАННЯ! {sv_ratio:.1%} < 10% support vectors")
-        else:
-            print(f"  ✅ Нормальна кількість support vectors")
-    
-    # 2. Прямий тест SVR (без EKF)
-    print("\n--- Direct SVR Performance ---")
-    y_pred_train = svr_model.predict(X_train)
-    y_pred_test = svr_model.predict(X_test)
-    
-    # Train error
-    rmse_train = np.sqrt(np.mean((y_train - y_pred_train)**2, axis=0))
-    nrmse_train = rmse_train / (np.max(y_train, axis=0) - np.min(y_train, axis=0))
-    
-    # Test error  
-    rmse_test = np.sqrt(np.mean((y_test - y_pred_test)**2, axis=0))
-    nrmse_test = rmse_test / (np.max(y_test, axis=0) - np.min(y_test, axis=0))
-    
-    print(f"SVR Train RMSE: {rmse_train}")
-    print(f"SVR Train NRMSE: {nrmse_train}")
-    print(f"SVR Test RMSE: {rmse_test}")
-    print(f"SVR Test NRMSE: {nrmse_test}")
-    
-    # Overfitting check
-    overfitting = nrmse_test / nrmse_train
-    print(f"Overfitting ratio (test/train NRMSE): {overfitting}")
-    
-    for i in range(len(nrmse_test)):
-        if nrmse_test[i] > 5.0:
-            print(f"  ❌ Вихід {i}: SVR МОДЕЛЬ ПОГАНА! NRMSE = {nrmse_test[i]:.2f} > 5.0")
-        elif nrmse_test[i] > 2.0:
-            print(f"  ⚠️  Вихід {i}: SVR якість низька. NRMSE = {nrmse_test[i]:.2f}")
-        else:
-            print(f"  ✅ Вихід {i}: SVR якість прийнятна. NRMSE = {nrmse_test[i]:.2f}")
-            
-        if overfitting[i] > 2.0:
-            print(f"  ❌ Вихід {i}: Сильне перенавчання! Test/Train = {overfitting[i]:.2f}")
-    
-    # 3. Перевір діапазони даних
-    print("\n--- Data Range Analysis ---")
-    print(f"X_train shape: {X_train.shape}")
-    print(f"X_train range: min={np.min(X_train, axis=0)}, max={np.max(X_train, axis=0)}")
-    print(f"y_train shape: {y_train.shape}")
-    print(f"y_train range: min={np.min(y_train, axis=0)}, max={np.max(y_train, axis=0)}")
-    
-    # 4. ✅ ВИПРАВЛЕНИЙ Linearization check
-    print("\n--- Linearization Analysis ---")
-    try:
-        # ✅ ВИКОРИСТОВУЄМО ТІЛЬКИ ОДИН ЗРАЗОК:
-        X_single = X_test[:1]  # (1, 9) - ПРАВИЛЬНА ФОРМА!
-        W, b = svr_model.linearize(X_single)
-        print(f"Jacobian W shape: {W.shape}")
-        print(f"Bias b shape: {b.shape}")
-        print(f"W range: min={np.min(W):.3f}, max={np.max(W):.3f}")
-        print(f"b range: min={np.min(b):.3f}, max={np.max(b):.3f}")
-        
-        # Check for extreme values
-        if np.any(np.abs(W) > 100) or np.any(np.abs(b) > 100):
-            print("  ❌ ПОПЕРЕДЖЕННЯ: Екстремальні значення в лінеаризації!")
-        else:
-            print("  ✅ Лінеаризація в нормальних межах")
-            
-        # ✅ ПЕРЕВІРКА НА НУЛЬОВИЙ ЯКОБІАН:
-        W_norm = np.linalg.norm(W)
-        print(f"Jacobian norm: {W_norm:.4f}")
-        if W_norm < 0.01:
-            print("  ❌ КРИТИЧНО: Якобіан майже нульовий! MPC не зможе керувати!")
-        else:
-            print("  ✅ Якобіан має достатню норму для керування")
-            
-    except Exception as e:
-        print(f"  ❌ ПОМИЛКА лінеаризації: {e}")
-    
-    print("="*50)
-    
-    return {
-        'train_nrmse': nrmse_train,
-        'test_nrmse': nrmse_test,
-        'overfitting_ratio': overfitting,
-        'support_vector_ratios': [len(m.support_vectors_)/len(X_train) for m in svr_model.models]
-    }
 
-def diagnose_mpc_behavior(mpc, step, u_optimal, u_prev, d_seq):
-    """Діагностика поведінки MPC"""
-    
-    print(f"\n--- MPC ДІАГНОСТИКА (крок {step}) ---")
-    print(f"u_prev: {u_prev:.4f}")
-    
-    if u_optimal is not None and len(u_optimal) > 0:
-        print(f"u_optimal: {u_optimal[0]:.4f}")
-        print(f"delta_u: {u_optimal[0] - u_prev:.4f}")
-    else:
-        print("u_optimal: None")
-        
-    print(f"trust_radius: {mpc.trust_region_radius:.4f}")
-    print(f"problem_status: {mpc.problem.status}")
-    print(f"problem_value: {mpc.problem.value}")
-    
-    # Перевіряємо лінеаризацію
-    if 'W' in mpc.parameters and mpc.parameters['W'].value is not None:
-        W = mpc.parameters['W'].value
-        print(f"Якобіан W: min={np.min(W):.4f}, max={np.max(W):.4f}")
-        print(f"Якобіан W norm: {np.linalg.norm(W):.4f}")
-        
-        if np.all(np.abs(W) < 0.01):
-            print("❌ ПРОБЛЕМА: Якобіан майже нульовий! MPC не бачить впливу u на y")
-        else:
-            print("✅ Якобіан має нормальні значення")
-    
-    # Перевіряємо збурення
-    if d_seq is not None:
-        print(f"d_seq mean: {np.mean(d_seq, axis=0)}")
-        print(f"d_seq std: {np.std(d_seq, axis=0)}")
-
-def diagnose_ekf_detailed(ekf, y_true_seq, y_pred_seq, x_est_seq, innovation_seq):
-    """Детальна діагностика EKF"""
-    
-    print("\n" + "="*60)
-    print("=== ДЕТАЛЬНА ДІАГНОСТИКА EKF ===")
-    print("="*60)
-    
-    print("\n--- ДІАГНОСТИКА ДАНИХ ---")
-    y_pred = np.array(y_pred_seq[1:])
-    y_true = np.array(y_true_seq[1:])
-    print(f"y_pred shape: {y_pred.shape}")
-    print(f"y_true shape: {y_true.shape}")
-    print(f"y_pred sample: {y_pred[0]}")
-    print(f"y_true sample: {y_true[0]}")
-    model_error = y_true - y_pred
-    print(f"model_error sample: {model_error[0]}")
-    print(f"model_error mean: {np.mean(model_error, axis=0)}")
-    print(f"model_error std: {np.std(model_error, axis=0)}")
-
-    # 1. Аналіз інновацій
-    innovations = np.array(innovation_seq[1:])  # Skip first step
-    print("\n--- Аналіз інновацій ---")
-    print(f"Innovation mean: {np.mean(innovations, axis=0)}")
-    print(f"Innovation std: {np.std(innovations, axis=0)}")
-    print(f"Innovation max abs: {np.max(np.abs(innovations), axis=0)}")
-    
-    # Перевірка на систематичні помилки
-    if np.any(np.abs(np.mean(innovations, axis=0)) > 0.5):
-        print("❌ СИСТЕМАТИЧНА ПОМИЛКА: Інновації мають велике зміщення!")
-    else:
-        print("✅ Інновації центровані")
-    
-    # 2. Аналіз передбачень моделі vs реальності  
-    print("\n--- Якість передбачень моделі ---")
-    model_rmse = np.sqrt(np.mean(model_error**2, axis=0))
-    print(f"Model prediction error RMSE: {model_rmse}")
-    
-    # ✅ ПРАВИЛЬНА НОРМАЛІЗАЦІЯ:
-    y_mean = np.mean(y_true, axis=0)
-    model_nrmse = model_rmse / y_mean * 100  # В відсотках
-    print(f"Model prediction NRMSE: FE={model_nrmse[0]:.2f}%, Mass={model_nrmse[1]:.2f}%")
-    
-    if np.any(model_nrmse > 10):  # 10%
-        print("❌ МОДЕЛЬ ПОГАНА: NRMSE передбачень > 10%")
-    else:
-        print("✅ Модель передбачає добре")
-    
-    # 3. Аналіз коваріанс EKF
-    print("\n--- Аналіз коваріанс EKF ---")
-    P_diag_history = []
-    if hasattr(ekf, 'P_history') and ekf.P_history:
-        for P in ekf.P_history[-10:]:  # Last 10 steps
-            P_diag_history.append(np.diag(P)[:2])  # Only output states
-        
-        P_diag_mean = np.mean(P_diag_history, axis=0)
-        print(f"EKF covariance diagonal (outputs): {P_diag_mean}")
-        
-        # Перевірка чи не занадто великі коваріанси
-        if np.any(P_diag_mean > 100):
-            print("❌ EKF коваріанси ЗАНАДТО ВЕЛИКІ! Фільтр не впевнений")
-        elif np.any(P_diag_mean < 0.01):
-            print("❌ EKF коваріанси ЗАНАДТО МАЛІ! Фільтр переоцінює точність")
-        else:
-            print("✅ EKF коваріанси в розумних межах")
-    else:
-        print("⚠️ EKF covariance history недоступна")
-    
-    # 4. Порівняння різних джерел помилок
-    print("\n--- Декомпозиція помилок ---")
-    
-    # Помилка через модель
-    model_contribution = np.std(model_error, axis=0)
-    
-    # Помилка через фільтрацію (використовуємо інновації)
-    innovations_array = np.array(innovation_seq[1:])
-    innovation_contribution = np.std(innovations_array, axis=0)
-    
-    print(f"Model error contribution: {model_contribution}")
-    print(f"Innovation contribution: {innovation_contribution}")
-    
-    # Що більше впливає?
-    ratio = innovation_contribution / (model_contribution + 1e-8)
-    print(f"Innovation/Model error ratio: {ratio}")
-    
-    if np.any(ratio > 2):
-        print("❌ ФІЛЬТР ПСУЄ ОЦІНКИ! Проблема в EKF налаштуваннях")
-    elif np.any(ratio < 0.5):
-        print("❌ МОДЕЛЬ ДОМІНУЄ! Проблема в якості моделі")
-    else:
-        print("✅ Збалансовані помилки моделі та фільтра")
-
-    # ✅ ДОДАТКОВА ДІАГНОСТИКА ДЛЯ ПЕРЕВІРКИ RMSE = 34:
-    print(f"\n--- ДОДАТКОВА ДІАГНОСТИКА ---")
-    print(f"y_true mean: {np.mean(y_true, axis=0)}")
-    print(f"y_true std: {np.std(y_true, axis=0)}")
-    print(f"Model RMSE/std ratio: {model_rmse / np.std(y_true, axis=0)}")
-    print(f"Sample model errors (перші 5): {model_error[:5]}")
-       
-    print("="*60)
 
 if __name__ == '__main__':
     
@@ -950,19 +712,21 @@ if __name__ == '__main__':
         
         # ---- Блок даних
         N_data=4000, 
-        control_pts=1000,
+        control_pts=400,
+        # N_data=2000, 
+        # control_pts=200,
         seed=42,
         
         plant_model_type='rf',
         
-        train_size=0.85,
-        val_size=0.13,
-        test_size=0.02,
+        train_size=0.75,
+        val_size=0.2,
+        test_size=0.05,
     
         # ---- Налаштування моделі
         noise_level='low',
         model_type='svr',
-        kernel='rbf', 
+        kernel='linear', 
         find_optimal_params=True,
         use_soft_constraints=True,
         
@@ -970,10 +734,10 @@ if __name__ == '__main__':
         P0=1e-2,
         Q_phys=600, #1000,
         Q_dist=1,
-        R=2.0, # 0.18
-        q_adaptive_enabled=False,
-        q_alpha = 0.999,
-        q_nis_threshold = 1.8,
+        R=1.0, # 0.18
+        q_adaptive_enabled=True,
+        q_alpha = 0.90,
+        q_nis_threshold = 3.0,
 
         # Адаптивний Trust Region
         adaptive_trust_region=True,           # Увімкнути адаптацію

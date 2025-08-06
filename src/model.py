@@ -333,36 +333,82 @@ class _SVRModel(_BaseKernelModel):
         return W_local, b_local
 
     def _run_random_search(self, X, y) -> SVR:
-        # ✅ ПОКРАЩЕНІ діапазони параметрів
-        param_dist = {
-            "C": loguniform(10, 1000),      # Фокус на високих C
-            "epsilon": loguniform(1e-3, 0.1)  # Менші epsilon
-        }
+        """Оптимізована версія з швидшою обробкою linear kernel"""
         
-        if self.kernel == "rbf":
-            # ✅ РОЗУМНІШИЙ діапазон gamma
-            param_dist["gamma"] = loguniform(1e-4, 1e-1)
+        # 🚀 ШВИДКА ЛОГІКА ДЛЯ LINEAR KERNEL
+        if self.kernel == "linear":
+            # Linear kernel не потребує складної оптимізації
+            param_dist = {
+                "C": [1.0, 10.0, 100.0],           # Дискретні значення
+                "epsilon": [0.001, 0.01, 0.1]      # Типові значення
+            }
+            n_iter = 9  # 3x3 = всі комбінації
+            cv_folds = 2  # Менше фолдів
+            
+            print(f"🚀 SVR Linear: швидка оптимізація {n_iter} комбінацій...")
+            
+        elif self.kernel == "rbf":
+            # Повна оптимізація для RBF
+            param_dist = {
+                "C": loguniform(10, 1000),      
+                "epsilon": loguniform(1e-3, 0.1),
+                "gamma": loguniform(1e-4, 1e-1)
+            }
+            n_iter = self.n_iter_random_search
+            cv_folds = min(3, len(y) // 50)
+            
+            print(f"🔧 SVR RBF: повна оптимізація {n_iter} ітерацій...")
+            
         elif self.kernel == "poly":
-            param_dist["gamma"] = loguniform(1e-4, 1e-1)
-            param_dist["degree"] = [2, 3, 4]
-
+            # Обмежена оптимізація для poly
+            param_dist = {
+                "C": loguniform(10, 500),        # Менший діапазон
+                "epsilon": loguniform(1e-3, 0.05),
+                "gamma": loguniform(1e-4, 1e-2), # Менший діапазон
+                "degree": [2, 3]                 # Тільки 2-3 степені
+            }
+            n_iter = min(20, self.n_iter_random_search)
+            cv_folds = min(3, len(y) // 50)
+            
+            print(f"⚙️ SVR Poly: обмежена оптимізація {n_iter} ітерацій...")
+        
+        else:
+            raise ValueError(f"Непідтримуваний kernel: {self.kernel}")
+    
         base = SVR(kernel=self.kernel, degree=self.degree)
-        rs = RandomizedSearchCV(
-            base,
-            param_dist,
-            n_iter=self.n_iter_random_search,
-            cv=min(3, len(y) // 50),  # ✅ Адаптивна кількість фолдів
-            scoring="neg_mean_squared_error",
-            random_state=42,
-            n_jobs=-1,
-            verbose=0,
-        )
+        
+        # 🚀 ВИКОРИСТОВУЄМО GridSearchCV для linear (швидше)
+        if self.kernel == "linear":
+            from sklearn.model_selection import GridSearchCV
+            rs = GridSearchCV(
+                base,
+                param_dist,  # Тут це буде dict з lists
+                cv=cv_folds,
+                scoring="neg_mean_squared_error",
+                n_jobs=-1,
+                verbose=1  # Показуємо прогрес
+            )
+        else:
+            # RandomizedSearchCV для інших kernels
+            rs = RandomizedSearchCV(
+                base,
+                param_dist,
+                n_iter=n_iter,
+                cv=cv_folds,
+                scoring="neg_mean_squared_error",
+                random_state=42,
+                n_jobs=-1,
+                verbose=1  # Показуємо прогрес
+            )
+        
         rs.fit(X, y)
         
         # ✅ Зберігаємо оптимальне gamma
         best_model = rs.best_estimator_
         if hasattr(best_model, 'gamma'):
             best_model._actual_gamma = best_model.gamma
+        
+        print(f"✅ Оптимальні параметри: {rs.best_params_}")
         
         return best_model
 
