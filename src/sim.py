@@ -12,12 +12,12 @@ from model import KernelModel
 from objectives import MaxIronMassTrackingObjective
 from mpc import MPCController
 from utils import (
-    run_post_simulation_analysis_enhanced, analyze_trust_region_performance, diagnose_mpc_behavior, diagnose_ekf_detailed,
-    diagnose_svr_quality
+    run_post_simulation_analysis_enhanced,  diagnose_mpc_behavior, diagnose_ekf_detailed
 )
 from ekf import ExtendedKalmanFilter
 from anomaly_detector import SignalAnomalyDetector
 from maf import MovingAverageFilter
+from benchmark import benchmark_model_training, benchmark_mpc_solve_time
 
 # =============================================================================
 # === БЛОК 1: ПІДГОТОВКА ДАНИХ ТА СКАЛЕРІВ ===
@@ -560,16 +560,42 @@ def initialize_ekf(
         q_nis_threshold=params.get('q_nis_threshold', 1.8)        
     )
 
-# =============================================================================
-# === БЛОК 3: ОСНОВНИЙ ЦИКЛ СИМУЛЯЦІЇ ===
-# =============================================================================
-
-
+def collect_performance_metrics(
+    mpc: MPCController,
+    data: Dict[str, np.ndarray],
+    model_config: Dict
+) -> Dict[str, float]:
+    """Збирає метрики продуктивності для статті"""
+    
+    print("📊 Збираю метрики продуктивності...")
+    
+    # 1. Бенчмарк навчання та прогнозу
+    model_configs = [model_config]  # Поточна конфігурація
+    training_metrics = benchmark_model_training(
+        data['X_train_scaled'], 
+        data['Y_train_scaled'], 
+        model_configs
+    )
+    
+    # 2. Бенчмарк MPC
+    mpc_metrics = benchmark_mpc_solve_time(mpc, n_iterations=50)
+    
+    # 3. Загальний час циклу (приблизно)
+    total_cycle_time = (
+        training_metrics[f"{model_config['model_type']}-{model_config.get('kernel', 'default')}_predict_time"] +
+        training_metrics[f"{model_config['model_type']}-{model_config.get('kernel', 'default')}_linearize_time"] +
+        mpc_metrics["mpc_solve_mean"]
+    )
+    
+    # 4. Об'єднуємо все
+    all_metrics = {**training_metrics, **mpc_metrics}
+    all_metrics["total_cycle_time"] = total_cycle_time
+    
+    return all_metrics
     
 # =============================================================================
 # === ГОЛОВНА ФУНКЦІЯ-ОРКЕСТРАТОР ===
 # =============================================================================
-
 
 def simulate_mpc(
     reference_df: pd.DataFrame,             # DataFrame, що містить референсні дані для генерації даних симуляції.
@@ -596,8 +622,11 @@ def simulate_mpc(
     n_neighbors: int = 5,                   # Кількість сусідів для KNN регресора, якщо використовується (наразі не використовується в `KernelModel`).
     seed: int = 0,                          # Зерно для генератора випадкових чисел, для відтворюваності симуляції.
     noise_level: str = 'none',              # Рівень шуму, який додається до вимірювань 'none', 'low', 'medium', 'high'. Визначає відсоток похибки.
-    model_type: str = 'krr',                # Тип моделі, що використовується в MPC: 'krr' (Kernel Ridge Regression), 'gpr' (Gaussian Process Regressor), 'svr' (Support-Vector Regression).
+    model_type: str = 'krr',                # Тип моделі, що використовується в MPC: 'krr' (Kernel Ridge Regression), 'gpr' (Gaussian Process Regressor), 'svr' (Support-Vector Regression), 'linear' - L-MPC
     kernel: str = 'rbf',                    # Тип ядра для KernelModel ('linear', 'poly', 'rbf').
+    linear_type='ridge',                    # ols, ridge, lasso
+    poly_degree=2,                          # 1=лінійна, 2=квадратична, 3=кубічна
+    alpha=1.0,                              # Регуляризація для ridge/lasso
     find_optimal_params: bool = True,       # Чи потрібно шукати оптимальні гіперпараметри моделі за допомогою RandomizedSearchCV.
     λ_obj: float = 0.1,                     # Коефіцієнт ваги для терму згладжування керування (lambda) в цільовій функції MPC.
     K_I: float = 0.01,                      # Інтегральний коефіцієнт для інтегрального контролера (якщо використовується). Наразі не застосовується явно в MPC.
@@ -665,6 +694,18 @@ def simulate_mpc(
     # 2. Ініціалізація покращеного MPC
     mpc = initialize_mpc_controller_enhanced(params, x_scaler, y_scaler)
     metrics = train_and_evaluate_model(mpc, data, y_scaler)
+
+    # 🚀 ═══ ТУТ ДОДАТИ БЕНЧМАРК! ═══
+    perf_metrics = collect_performance_metrics(mpc, data, {
+        'model_type': params['model_type'],
+        'kernel': params.get('kernel', 'default'),
+        'linear_type': params.get('linear_type', 'default'),
+        'poly_degree': params.get('poly_degree', 1),
+        'find_optimal_params': params.get('find_optimal_params', False)
+    })
+    
+    # Додаємо до основних метрик
+    metrics.update(perf_metrics)
     
     # 3. Ініціалізація EKF (без змін)
     n_train_pts = len(data['X_train'])
@@ -690,8 +731,6 @@ def simulate_mpc(
         run_post_simulation_analysis_enhanced(results_df, analysis_data, params)
     
     return results_df, metrics
-
-
 
 if __name__ == '__main__':
     
@@ -725,9 +764,16 @@ if __name__ == '__main__':
     
         # ---- Налаштування моделі
         noise_level='low',
-        model_type='svr',
-        kernel='linear', 
-        find_optimal_params=True,
+        
+        # model_type='svr',            # 🆕 K-MPC
+        # kernel='rbf', 
+    
+        model_type='linear',          # 🆕 L-MPC
+        linear_type='ridge',          # ols, ridge, lasso
+        poly_degree=2,                # 1=лінійна, 2=квадратична, 3=кубічна
+        alpha=1.0,                    # Регуляризація для ridge/lasso
+        
+        find_optimal_params=True,      # Автопошук параметрів
         use_soft_constraints=True,
         
         # ---- Налаштування EKF
@@ -735,7 +781,7 @@ if __name__ == '__main__':
         Q_phys=600, #1000,
         Q_dist=1,
         R=1.0, # 0.18
-        q_adaptive_enabled=True,
+        q_adaptive_enabled=False,
         q_alpha = 0.90,
         q_nis_threshold = 3.0,
 
@@ -810,7 +856,7 @@ if __name__ == '__main__':
         retrain_window_size=1000,          # Розмір буфера даних для перенавчання (останні 1000 точок)
         retrain_innov_threshold=0.25,     # Поріг для середньої нормованої інновації EKF
         
-        run_analysis=True
+        run_analysis=False
     )
     
     print("\nФінальні метрики:")
