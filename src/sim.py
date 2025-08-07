@@ -2,6 +2,9 @@
 
 import numpy as np
 import pandas as pd
+import inspect
+import traceback  
+
 from typing import Callable, Dict, Any, Tuple
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error
@@ -11,6 +14,7 @@ from data_gen import StatefulDataGenerator
 from model import KernelModel
 from objectives import MaxIronMassTrackingObjective
 from mpc import MPCController
+# from conf_manager import MPCConfigManager
 from utils import (
     run_post_simulation_analysis_enhanced,  diagnose_mpc_behavior, diagnose_ekf_detailed
 )
@@ -18,6 +22,8 @@ from ekf import ExtendedKalmanFilter
 from anomaly_detector import SignalAnomalyDetector
 from maf import MovingAverageFilter
 from benchmark import benchmark_model_training, benchmark_mpc_solve_time
+from conf_manager import config_manager
+from typing import Optional
 
 # =============================================================================
 # === БЛОК 1: ПІДГОТОВКА ДАНИХ ТА СКАЛЕРІВ ===
@@ -593,275 +599,461 @@ def collect_performance_metrics(
     
     return all_metrics
     
-# =============================================================================
-# === ГОЛОВНА ФУНКЦІЯ-ОРКЕСТРАТОР ===
-# =============================================================================
+# ========================================  
+# ОСНОВНА ФУНКЦІЯ СИМУЛЯЦІЇ (БЕЗ ЦИКЛІЧНОГО ВИКЛИКУ)  
+# ========================================  
 
-def simulate_mpc(
-    reference_df: pd.DataFrame,             # DataFrame, що містить референсні дані для генерації даних симуляції.
-    N_data: int = 5000,                     # Загальна кількість точок даних, що генеруються для симуляції.
-    control_pts : int = 1000,               # Кількість точок (кроків) симуляції, на яких відбувається керування MPC.
-    time_step_s : int = 5,                  # Часовий крок виконання
-    dead_times_s : dict = 
-    {
-        'concentrate_fe_percent': 20.0,
-        'tailings_fe_percent': 25.0,
-        'concentrate_mass_flow': 20.0,
-        'tailings_mass_flow': 25.0
-    },                                      # Транспортна затримка вихідних параметрів
-    time_constants_s : dict = 
-    {
-        'concentrate_fe_percent': 8.0,
-        'tailings_fe_percent': 10.0,
-        'concentrate_mass_flow': 5.0,
-        'tailings_mass_flow': 7.0
-    },                                      # Інерційність вихідних параметрів
-    lag: int = 2,                           # Кількість кроків затримки (lag) для моделі, впливає на розмір вектора стану.
-    Np: int = 6,                            # Горизонт прогнозування (Prediction Horizon) MPC. Кількість майбутніх кроків, які модель прогнозує.
-    Nc: int = 4,                            # Горизонт керування (Control Horizon) MPC. Кількість майбутніх змін керування, які MPC розраховує.
-    n_neighbors: int = 5,                   # Кількість сусідів для KNN регресора, якщо використовується (наразі не використовується в `KernelModel`).
-    seed: int = 0,                          # Зерно для генератора випадкових чисел, для відтворюваності симуляції.
-    noise_level: str = 'none',              # Рівень шуму, який додається до вимірювань 'none', 'low', 'medium', 'high'. Визначає відсоток похибки.
-    model_type: str = 'krr',                # Тип моделі, що використовується в MPC: 'krr' (Kernel Ridge Regression), 'gpr' (Gaussian Process Regressor), 'svr' (Support-Vector Regression), 'linear' - L-MPC
-    kernel: str = 'rbf',                    # Тип ядра для KernelModel ('linear', 'poly', 'rbf').
-    linear_type='ridge',                    # ols, ridge, lasso
-    poly_degree=2,                          # 1=лінійна, 2=квадратична, 3=кубічна
-    alpha=1.0,                              # Регуляризація для ridge/lasso
-    find_optimal_params: bool = True,       # Чи потрібно шукати оптимальні гіперпараметри моделі за допомогою RandomizedSearchCV.
-    λ_obj: float = 0.1,                     # Коефіцієнт ваги для терму згладжування керування (lambda) в цільовій функції MPC.
-    K_I: float = 0.01,                      # Інтегральний коефіцієнт для інтегрального контролера (якщо використовується). Наразі не застосовується явно в MPC.
-    w_fe: float = 7.0,                      # Вага для помилки прогнозування концентрації заліза (Fe) в цільовій функції MPC.
-    w_mass: float = 1.0,                    # Вага для помилки прогнозування масової витрати концентрату в цільовій функції MPC.
-    ref_fe: float = 53.5,                   # Бажане (референсне) значення концентрації заліза (Fe) в концентраті.
-    ref_mass: float = 57.0,                 # Бажане (референсне) значення масової витрати концентрату.
-    train_size: float = 0.7,                # Частка даних, що використовуються для навчання моделі MPC.
-    val_size: float = 0.15,                 # Частка даних, що використовуються для валідації моделі (якщо `find_optimal_params=True`).
-    test_size: float = 0.15,                # Частка даних, що використовуються для тестування моделі (зазвичай не використовується безпосередньо в циклі MPC).
-    u_min: float = 20.0,                    # Мінімальне допустиме значення для керуючої змінної `u` (ore_flow_rate_target).
-    u_max: float = 40.0,                    # Максимальне допустиме значення для керуючої змінної `u` (ore_flow_rate_target).
-    delta_u_max: float = 1.0,               # Максимальне допустиме абсолютне значення зміни керуючої змінної `u` між послідовними кроками.
-    use_disturbance_estimator: bool = True, # Чи використовувати оцінювач збурень (Extended Kalman Filter) в циклі MPC.
-    y_max_fe: float = 54.5,                 # Верхня межа для концентрації заліза (Fe) в концентраті (жорстке або м'яке обмеження).
-    y_max_mass: float = 58.0,               # Верхня межа для масової витрати концентрату (жорстке або м'яке обмеження).
-    rho_trust: float = 0.1,                 # Коефіцієнт штрафу (rho) для терму довіри в цільовій функції MPC, що використовується для регуляризації.
-    max_trust_radius: float = 5.0,
-    adaptive_trust_region: bool = True,
-    initial_trust_radius: float =  1.0,
-    min_trust_radius: float =  0.5,
-    trust_decay_factor: float =  0.8,
-    linearization_check_enabled: bool = True,
-    max_linearization_distance: float =  2.0,
-    retrain_linearization_threshold: float =  1.5,
-    use_soft_constraints: bool = True,      # Чи використовувати м'які обмеження для виходів (y) та зміни керування (delta_u).
-    plant_model_type: str = 'rf',           # Тип моделі, що імітує "реальний об'єкт" (plant) для генерації даних: 'rf' (Random Forest) або 'nn' (Neural Network).
-    enable_retraining: bool = True,         # Ввімкнути/вимкнути функціонал перенавчання моделі MPC під час симуляції.
-    retrain_period: int = 50,               # Як часто перевіряти необхідність перенавчання (кожні N кроків).
-    retrain_window_size: int = 1000,        # Розмір буфера даних для перенавчання (використовуються останні `retrain_window_size` точок).
-    retrain_innov_threshold: float = 0.3,   # Поріг для середньої нормованої інновації EKF. Якщо NIS перевищує цей поріг, ініціюється перенавчання.
-    anomaly_params: dict = {
-        'window': 25,
-        'spike_z': 4.0,
-        'drop_rel': 0.30,
-        'freeze_len': 5,
-        'enabled': True
-    },                                      # Параметри детектора аномалій
-    nonlinear_config: dict = {
-        'concentrate_fe_percent': ('pow', 2),
-        'concentrate_mass_flow': ('pow', 1.5)
-    },                                      # Нелінійна конфігунація
-    enable_nonlinear: bool =  False,        # Використовувати нелінійну конфігурацію
-    run_analysis: bool = True,              # Показати візуалізацію результатів роботи симулятора
-    P0: float = 1e-2,
-    Q_phys: float = 1500,
-    Q_dist: float = 1,
-    R: float = 0.01,
-    q_adaptive_enabled: bool = True,
-    q_alpha:float = 0.99,
-    q_nis_threshold:float = 1.5,
-    progress_callback: Callable[[int, int, str], None] = None # Функція зворотного виклику для відстеження прогресу симуляції. Приймає поточний крок, загальну кількість кроків та повідомлення.
-):
+def simulate_mpc_core(  
+    reference_df: pd.DataFrame,             # DataFrame з референсними даними  
+    N_data: int = 5000,                     # Загальна кількість точок даних  
+    control_pts: int = 1000,                # Кількість кроків MPC  
+    time_step_s: int = 5,                   # Часовий крок  
+    dead_times_s: dict = {  
+        'concentrate_fe_percent': 20.0,  
+        'tailings_fe_percent': 25.0,  
+        'concentrate_mass_flow': 20.0,  
+        'tailings_mass_flow': 25.0  
+    },                                      # Транспортна затримка  
+    time_constants_s: dict = {  
+        'concentrate_fe_percent': 8.0,  
+        'tailings_fe_percent': 10.0,  
+        'concentrate_mass_flow': 5.0,  
+        'tailings_mass_flow': 7.0  
+    },                                      # Інерційність параметрів  
+    lag: int = 2,                           # Кроки затримки моделі  
+    Np: int = 6,                            # Горизонт прогнозування MPC  
+    Nc: int = 4,                            # Горизонт керування MPC  
+    n_neighbors: int = 5,                   # Кількість сусідів для KNN  
+    seed: int = 0,                          # Зерно для RNG  
+    noise_level: str = 'none',              # Рівень шуму  
+    model_type: str = 'krr',                # Тип моделі MPC  
+    kernel: str = 'rbf',                    # Тип ядра  
+    linear_type: str = 'ridge',             # ols, ridge, lasso  
+    poly_degree: int = 2,                   # Степінь поліному  
+    alpha: float = 1.0,                     # Регуляризація  
+    find_optimal_params: bool = True,       # Пошук оптимальних параметрів  
+    λ_obj: float = 0.1,                     # Коефіцієнт згладжування  
+    K_I: float = 0.01,                      # Інтегральний коефіцієнт  
+    w_fe: float = 7.0,                      # Вага для Fe  
+    w_mass: float = 1.0,                    # Вага для масової витрати  
+    ref_fe: float = 53.5,                   # Референсне значення Fe  
+    ref_mass: float = 57.0,                 # Референсне значення маси  
+    train_size: float = 0.7,                # Розмір навчальної вибірки  
+    val_size: float = 0.15,                 # Розмір валідаційної вибірки  
+    test_size: float = 0.15,                # Розмір тестової вибірки  
+    u_min: float = 20.0,                    # Мінімальне керування  
+    u_max: float = 40.0,                    # Максимальне керування  
+    delta_u_max: float = 1.0,               # Максимальна зміна керування  
+    use_disturbance_estimator: bool = True, # Використання EKF  
+    y_max_fe: float = 54.5,                 # Верхня межа Fe  
+    y_max_mass: float = 58.0,               # Верхня межа маси  
+    rho_trust: float = 0.1,                 # Коефіцієнт довіри  
+    max_trust_radius: float = 5.0,          # Максимальний радіус довіри  
+    adaptive_trust_region: bool = True,     # Адаптивна область довіри  
+    initial_trust_radius: float = 1.0,      # Початковий радіус довіри  
+    min_trust_radius: float = 0.5,          # Мінімальний радіус довіри  
+    trust_decay_factor: float = 0.8,        # Фактор зменшення довіри  
+    linearization_check_enabled: bool = True,           # Перевірка лінеаризації  
+    max_linearization_distance: float = 2.0,            # Максимальна відстань лінеаризації  
+    retrain_linearization_threshold: float = 1.5,       # Поріг перенавчання  
+    use_soft_constraints: bool = True,      # М'які обмеження  
+    plant_model_type: str = 'rf',           # Тип моделі об'єкта  
+    enable_retraining: bool = True,         # Перенавчання моделі  
+    retrain_period: int = 50,               # Періодичність перенавчання  
+    retrain_window_size: int = 1000,        # Розмір вікна перенавчання  
+    retrain_innov_threshold: float = 0.3,   # Поріг інновації EKF  
+    anomaly_params: dict = {  
+        'window': 25,  
+        'spike_z': 4.0,  
+        'drop_rel': 0.30,  
+        'freeze_len': 5,  
+        'enabled': True  
+    },                                      # Параметри детектора аномалій  
+    nonlinear_config: dict = {  
+        'concentrate_fe_percent': ('pow', 2),  
+        'concentrate_mass_flow': ('pow', 1.5)  
+    },                                      # Нелінійна конфігурація  
+    enable_nonlinear: bool = False,         # Нелінійний режим  
+    run_analysis: bool = True,              # Аналіз результатів  
+    P0: float = 1e-2,                      # Початкова коваріація EKF  
+    Q_phys: float = 1500,                  # Коваріація процесу  
+    Q_dist: float = 1,                     # Коваріація збурень  
+    R: float = 0.01,                       # Коваріація вимірювань  
+    q_adaptive_enabled: bool = True,        # Адаптивна Q матриця  
+    q_alpha: float = 0.99,                 # Фактор згладжування Q  
+    q_nis_threshold: float = 1.5,          # Поріг NIS  
+    progress_callback: Callable[[int, int, str], None] = None  # Callback прогресу  
+) -> Tuple[pd.DataFrame, Dict]:  
+    """  
+    Основна функція симуляції MPC для магнітної сепарації  
+    
+    Returns:  
+        Tuple[pd.DataFrame, Dict]: (results_df, metrics)  
+    """  
+    
+    # Збираємо всі параметри в словник (замість locals() щоб уникнути проблем)  
+    params = {  
+        'N_data': N_data, 'control_pts': control_pts, 'time_step_s': time_step_s,  
+        'dead_times_s': dead_times_s, 'time_constants_s': time_constants_s,  
+        'lag': lag, 'Np': Np, 'Nc': Nc, 'n_neighbors': n_neighbors,  
+        'seed': seed, 'noise_level': noise_level, 'model_type': model_type,  
+        'kernel': kernel, 'linear_type': linear_type, 'poly_degree': poly_degree,  
+        'alpha': alpha, 'find_optimal_params': find_optimal_params,  
+        'λ_obj': λ_obj, 'K_I': K_I, 'w_fe': w_fe, 'w_mass': w_mass,  
+        'ref_fe': ref_fe, 'ref_mass': ref_mass, 'train_size': train_size,  
+        'val_size': val_size, 'test_size': test_size, 'u_min': u_min,  
+        'u_max': u_max, 'delta_u_max': delta_u_max,  
+        'use_disturbance_estimator': use_disturbance_estimator,  
+        'y_max_fe': y_max_fe, 'y_max_mass': y_max_mass,  
+        'rho_trust': rho_trust, 'max_trust_radius': max_trust_radius,  
+        'adaptive_trust_region': adaptive_trust_region,  
+        'initial_trust_radius': initial_trust_radius,  
+        'min_trust_radius': min_trust_radius,  
+        'trust_decay_factor': trust_decay_factor,  
+        'linearization_check_enabled': linearization_check_enabled,  
+        'max_linearization_distance': max_linearization_distance,  
+        'retrain_linearization_threshold': retrain_linearization_threshold,  
+        'use_soft_constraints': use_soft_constraints,  
+        'plant_model_type': plant_model_type,   
+        'enable_retraining': enable_retraining,  
+        'retrain_period': retrain_period,   
+        'retrain_window_size': retrain_window_size,  
+        'retrain_innov_threshold': retrain_innov_threshold,  
+        'anomaly_params': anomaly_params,   
+        'nonlinear_config': nonlinear_config,  
+        'enable_nonlinear': enable_nonlinear,   
+        'run_analysis': run_analysis,  
+        'P0': P0, 'Q_phys': Q_phys, 'Q_dist': Q_dist, 'R': R,  
+        'q_adaptive_enabled': q_adaptive_enabled,   
+        'q_alpha': q_alpha,  
+        'q_nis_threshold': q_nis_threshold,   
+        'progress_callback': progress_callback  
+    }  
+    
+    try:  
+        # 1. Підготовка даних  
+        true_gen, df_true, X, Y = prepare_simulation_data(reference_df, params)  
+        data, x_scaler, y_scaler = split_and_scale_data(X, Y, params)  
+
+        # 2. Ініціалізація MPC  
+        mpc = initialize_mpc_controller_enhanced(params, x_scaler, y_scaler)  
+        metrics = train_and_evaluate_model(mpc, data, y_scaler)  
+
+        # 3. Бенчмарк метрики  
+        perf_metrics = collect_performance_metrics(mpc, data, {  
+            'model_type': params['model_type'],  
+            'kernel': params.get('kernel', 'default'),  
+            'linear_type': params.get('linear_type', 'default'),  
+            'poly_degree': params.get('poly_degree', 1),  
+            'find_optimal_params': params.get('find_optimal_params', False)  
+        })  
+        
+        metrics.update(perf_metrics)  
+        
+        # 4. Ініціалізація EKF  
+        n_train_pts = len(data['X_train'])  
+        n_val_pts = len(data['X_val'])  
+        test_idx_start = params['lag'] + 1 + n_train_pts + n_val_pts  
+        hist0_unscaled = df_true[['feed_fe_percent', 'ore_mass_flow', 'solid_feed_percent']].iloc[  
+            test_idx_start - (params['lag'] + 1): test_idx_start  
+        ].values  
+        
+        ekf = initialize_ekf(mpc, (x_scaler, y_scaler), hist0_unscaled, data['Y_train_scaled'], params['lag'], params)  
+
+        # 5. Запуск симуляції  
+        results_df, analysis_data = run_simulation_loop_enhanced(  
+            true_gen, mpc, ekf, df_true, data, (x_scaler, y_scaler), params,   
+            params.get('progress_callback')  
+        )  
+        
+        # 6. Аналіз результатів  
+        test_idx_start = params['lag'] + 1 + len(data['X_train']) + len(data['X_val'])  
+        analysis_data['d_all_test'] = df_true.iloc[test_idx_start:][['feed_fe_percent','ore_mass_flow']].values  
+        
+        if params.get('run_analysis', True):  
+            run_post_simulation_analysis_enhanced(results_df, analysis_data, params)  
+        
+        return results_df, metrics  
+        
+    except Exception as e:  
+        print(f"❌ Помилка в simulate_mpc_core: {e}")  
+        traceback.print_exc()  
+        raise  
+
+
+# ========================================
+# WRAPPER ФУНКЦІЯ З КОНФІГУРАЦІЯМИ
+# ========================================
+
+def simulate_mpc_with_config(
+    hist_df: pd.DataFrame, 
+    config: Optional[str] = None,
+    config_overrides: Optional[Dict[str, Any]] = None,
+    progress_callback: Optional[Callable] = None,
+    **kwargs
+) -> Tuple[pd.DataFrame, Dict]:
     """
-    Покращена версія головної функції-оркестратора.
+    Wrapper функція з підтримкою конфігурацій + збереження конфігурації в результати
     """
-    # Збираємо всі параметри в один словник
-    params = locals()
-    # params.update(kwargs)  # Додаємо будь-які додаткові параметри
     
-    # 1. Підготовка даних (без змін)
-    true_gen, df_true, X, Y = prepare_simulation_data(reference_df, params)
-    data, x_scaler, y_scaler = split_and_scale_data(X, Y, params)
+    # 1. Збираємо повну конфігурацію (як і раніше)
+    if config:
+        print(f"📋 Завантажуємо профіль конфігурації: '{config}'")
+        try:
+            params = config_manager.load_config(config)
+            print(f"   ✅ Профіль '{config}' завантажено успішно")
+        except Exception as e:
+            print(f"   ❌ Помилка завантаження: {e}")
+            params = {}
+    else:
+        params = {}
+    
+    if config_overrides:
+        print(f"🔧 Застосовуємо {len(config_overrides)} override параметрів")
+        params.update(config_overrides)
+    
+    if kwargs:
+        print(f"⚙️ Застосовуємо {len(kwargs)} додаткових параметрів")
+        params.update(kwargs)
+    
+    # 🆕 ЗБЕРІГАЄМО ПОВНУ КОНФІГУРАЦІЮ ДЛЯ РЕЗУЛЬТАТІВ
+    full_config_info = {
+        'config_source': config if config else 'default',
+        'config_overrides': config_overrides.copy() if config_overrides else {},
+        'kwargs_applied': kwargs.copy(),
+        'final_params': params.copy(),  # 📋 Повна конфігурація що використовувалася
+        'timestamp': pd.Timestamp.now().isoformat(),
+        'total_params_count': len(params)
+    }
+    
+    # Фільтруємо для simulate_mpc_core
+    core_signature = inspect.signature(simulate_mpc_core)
+    valid_params = set(core_signature.parameters.keys())
+    sim_params = {k: v for k, v in params.items() if k in valid_params}
+    
+    if progress_callback:
+        sim_params['progress_callback'] = progress_callback
+    
+    print(f"🚀 Передаємо {len(sim_params)} параметрів в simulate_mpc_core")
+    
+    try:
+        results, metrics = simulate_mpc_core(hist_df, **sim_params)
+        
+        # 🆕 ДОДАЄМО КОНФІГУРАЦІЮ ДО РЕЗУЛЬТАТІВ DataFrame
+        print("💾 Додаємо інформацію про конфігурацію до результатів...")
+        
+        # Створюємо колонки з конфігурацією (константні для всіх рядків)
+        results['config_source'] = full_config_info['config_source']
+        results['config_timestamp'] = full_config_info['timestamp']
+        
+        # Ключові параметри як окремі колонки для легкого аналізу
+        key_params = ['model_type', 'kernel', 'linear_type', 'Np', 'Nc', 
+                     'w_fe', 'w_mass', 'ref_fe', 'ref_mass', 'λ_obj']
+        
+        for param in key_params:
+            if param in full_config_info['final_params']:
+                results[f'cfg_{param}'] = full_config_info['final_params'][param]
+        
+        # 🆕 ДОДАЄМО КОНФІГУРАЦІЮ ДО МЕТРИК
+        metrics['config_info'] = full_config_info
+        metrics['config_summary'] = {
+            'source': full_config_info['config_source'],
+            'model_type': full_config_info['final_params'].get('model_type', 'unknown'),
+            'kernel': full_config_info['final_params'].get('kernel', 'unknown'),
+            'horizons': f"Np={full_config_info['final_params'].get('Np', '?')}, Nc={full_config_info['final_params'].get('Nc', '?')}",
+            'weights': f"w_fe={full_config_info['final_params'].get('w_fe', '?')}, w_mass={full_config_info['final_params'].get('w_mass', '?')}"
+        }
+        
+        print("✅ Конфігурацію додано до результатів")
+        return results, metrics
+        
+    except Exception as e:
+        print(f"❌ Помилка симуляції: {e}")
+        traceback.print_exc()
+        raise
 
-    # 2. Ініціалізація покращеного MPC
-    mpc = initialize_mpc_controller_enhanced(params, x_scaler, y_scaler)
-    metrics = train_and_evaluate_model(mpc, data, y_scaler)
 
-    # 🚀 ═══ ТУТ ДОДАТИ БЕНЧМАРК! ═══
-    perf_metrics = collect_performance_metrics(mpc, data, {
-        'model_type': params['model_type'],
-        'kernel': params.get('kernel', 'default'),
-        'linear_type': params.get('linear_type', 'default'),
-        'poly_degree': params.get('poly_degree', 1),
-        'find_optimal_params': params.get('find_optimal_params', False)
-    })
+# 🆕 ФУНКЦІЯ ДЛЯ АНАЛІЗУ КОНФІГУРАЦІЇ З РЕЗУЛЬТАТІВ
+def analyze_results_config(results_df: pd.DataFrame, metrics: Dict = None) -> None:
+    """
+    Аналізує конфігурацію симуляції з результатів
     
-    # Додаємо до основних метрик
-    metrics.update(perf_metrics)
+    Args:
+        results_df: DataFrame з результатами симуляції
+        metrics: Словник метрик (опціонально)
+    """
     
-    # 3. Ініціалізація EKF (без змін)
-    n_train_pts = len(data['X_train'])
-    n_val_pts = len(data['X_val'])
-    test_idx_start = params['lag'] + 1 + n_train_pts + n_val_pts
-    hist0_unscaled = df_true[['feed_fe_percent', 'ore_mass_flow', 'solid_feed_percent']].iloc[
-        test_idx_start - (params['lag'] + 1): test_idx_start
-    ].values
+    print("="*60)
+    print("📋 АНАЛІЗ КОНФІГУРАЦІЇ СИМУЛЯЦІЇ")
+    print("="*60)
     
-    ekf = initialize_ekf(mpc, (x_scaler, y_scaler), hist0_unscaled, data['Y_train_scaled'], params['lag'], params)
+    # Базова інформація з DataFrame
+    if 'config_source' in results_df.columns:
+        config_source = results_df['config_source'].iloc[0]
+        print(f"🎯 Джерело конфігурації: {config_source}")
+    
+    if 'config_timestamp' in results_df.columns:
+        timestamp = results_df['config_timestamp'].iloc[0]
+        print(f"🕒 Час симуляції: {timestamp}")
+    
+    # Ключові параметри з колонок
+    config_columns = [col for col in results_df.columns if col.startswith('cfg_')]
+    if config_columns:
+        print(f"\n🔧 КЛЮЧОВІ ПАРАМЕТРИ ({len(config_columns)}):")
+        for col in sorted(config_columns):
+            param_name = col.replace('cfg_', '')
+            value = results_df[col].iloc[0]
+            print(f"   {param_name}: {value}")
+    
+    # Детальна інформація з metrics
+    if metrics and 'config_info' in metrics:
+        config_info = metrics['config_info']
+        
+        print(f"\n📊 СТАТИСТИКА КОНФІГУРАЦІЇ:")
+        print(f"   Загалом параметрів: {config_info['total_params_count']}")
+        print(f"   Override параметрів: {len(config_info['config_overrides'])}")
+        print(f"   Kwargs параметрів: {len(config_info['kwargs_applied'])}")
+        
+        if config_info['config_overrides']:
+            print(f"\n🔄 ПЕРЕВИЗНАЧЕНІ ПАРАМЕТРИ:")
+            for key, value in config_info['config_overrides'].items():
+                print(f"   {key}: {value}")
+        
+        if config_info['kwargs_applied']:
+            print(f"\n⚙️ ДОДАТКОВІ ПАРАМЕТРИ (kwargs):")
+            for key, value in config_info['kwargs_applied'].items():
+                print(f"   {key}: {value}")
+    
+    # Аналіз результатів
+    numeric_cols = results_df.select_dtypes(include=[np.number]).columns
+    non_config_cols = [col for col in numeric_cols if not col.startswith('cfg_')]
+    
+    if non_config_cols:
+        print(f"\n📈 РЕЗУЛЬТАТИ СИМУЛЯЦІЇ:")
+        print(f"   Кроків симуляції: {len(results_df)}")
+        if 'y_fe_pred' in results_df.columns and 'y_mass_pred' in results_df.columns:
+            fe_mean = results_df['y_fe_pred'].mean()
+            mass_mean = results_df['y_mass_pred'].mean()
+            print(f"   Середнє Fe: {fe_mean:.2f}")
+            print(f"   Середня маса: {mass_mean:.2f}")
+    
+    print("="*60)
 
-    # 4. Запуск покращеної симуляції
-    results_df, analysis_data = run_simulation_loop_enhanced(
-        true_gen, mpc, ekf, df_true, data, (x_scaler, y_scaler), params, 
-        params.get('progress_callback')
-    )
+
+# 🆕 ФУНКЦІЯ ПОРІВНЯННЯ КОНФІГУРАЦІЙ
+def compare_simulation_configs(*results_and_metrics_pairs) -> pd.DataFrame:
+    """
+    Порівнює конфігурації різних симуляцій
     
-    # 5. Розширений аналіз результатів
-    test_idx_start = params['lag'] + 1 + len(data['X_train']) + len(data['X_val'])
-    analysis_data['d_all_test'] = df_true.iloc[test_idx_start:][['feed_fe_percent','ore_mass_flow']].values
+    Args:
+        *results_and_metrics_pairs: Пари (results_df, metrics) для порівняння
     
-    if params.get('run_analysis', True):
-        run_post_simulation_analysis_enhanced(results_df, analysis_data, params)
+    Returns:
+        DataFrame з порівнянням конфігурацій
+    """
     
-    return results_df, metrics
+    comparison_data = []
+    
+    for i, (results_df, metrics) in enumerate(results_and_metrics_pairs):
+        row = {'simulation': f'Run_{i+1}'}
+        
+        # Базова інформація
+        if 'config_source' in results_df.columns:
+            row['config_source'] = results_df['config_source'].iloc[0]
+        
+        # Параметри з колонок
+        config_cols = [col for col in results_df.columns if col.startswith('cfg_')]
+        for col in config_cols:
+            param_name = col.replace('cfg_', '')
+            row[param_name] = results_df[col].iloc[0]
+        
+        # Метрики якості
+        if isinstance(metrics, dict):
+            for metric_key in ['rmse_fe', 'rmse_mass', 'r2_fe', 'r2_mass']:
+                if metric_key in metrics:
+                    row[metric_key] = metrics[metric_key]
+        
+        comparison_data.append(row)
+    
+    comparison_df = pd.DataFrame(comparison_data)
+    
+    print("📊 ПОРІВНЯННЯ КОНФІГУРАЦІЙ:")
+    print(comparison_df.to_string(index=False))
+    
+    return comparison_df
+
+
+# ========================================
+# АЛИАС ДЛЯ ЗВОРОТНОЇ СУМІСНОСТІ
+# ========================================
+
+# Головна функція для використання
+simulate_mpc = simulate_mpc_with_config
+
+print("✅ simulate_mpc_with_config готовий до використання!")
+print("🔧 Функція config_manager.load_config() буде викликатися при вказанні параметра 'config'")
+
+
+# ========================================
+# ПРИКЛАД ВИКОРИСТАННЯ В __main__
+# ========================================
 
 if __name__ == '__main__':
     
     def my_progress(step, total, msg):
-        # Простий callback для виводу прогресу в консоль
         print(f"[{step}/{total}] {msg}")
 
+    # Завантаження даних
     try:
         hist_df = pd.read_parquet('processed.parquet')
+        print(f"✅ Дані завантажено: {hist_df.shape}")
     except FileNotFoundError:
-        print("Помилка: файл 'processed.parquet' не знайдено.")
-        exit()
-    
-    # Запускаємо симуляцію з оновленими, більш стабільними параметрами
-    res, mets = simulate_mpc(
-        hist_df, 
-        progress_callback=my_progress, 
-        
-        # ---- Блок даних
-        N_data=4000, 
-        control_pts=400,
-        # N_data=2000, 
-        # control_pts=200,
-        seed=42,
-        
-        plant_model_type='rf',
-        
-        train_size=0.75,
-        val_size=0.2,
-        test_size=0.05,
-    
-        # ---- Налаштування моделі
-        noise_level='low',
-        
-        # model_type='svr',            # 🆕 K-MPC
-        # kernel='rbf', 
-    
-        model_type='linear',          # 🆕 L-MPC
-        linear_type='ridge',          # ols, ridge, lasso
-        poly_degree=2,                # 1=лінійна, 2=квадратична, 3=кубічна
-        alpha=1.0,                    # Регуляризація для ridge/lasso
-        
-        find_optimal_params=True,      # Автопошук параметрів
-        use_soft_constraints=True,
-        
-        # ---- Налаштування EKF
-        P0=1e-2,
-        Q_phys=600, #1000,
-        Q_dist=1,
-        R=1.0, # 0.18
-        q_adaptive_enabled=False,
-        q_alpha = 0.90,
-        q_nis_threshold = 3.0,
+        try:
+            hist_df = pd.read_parquet('/content/KModel/src/processed.parquet')
+            print(f"✅ Дані завантажено з /content/: {hist_df.shape}")
+        except Exception as e:
+            print(f"❌ Помилка завантаження даних: {e}")
+            hist_df = None
 
-        # Адаптивний Trust Region
-        adaptive_trust_region=True,           # Увімкнути адаптацію
-        initial_trust_radius=3.0,             # Початковий розмір
-        min_trust_radius=0.5,                 # Мінімальний розмір  
-        max_trust_radius=2.0,                 # Максимальний розмір
-        trust_decay_factor=0.9,               # Затухання по горизонту
-        rho_trust=0.5,
+    if hist_df is not None:
+        print("\n🎯 ТЕСТУЄМО ЗАВАНТАЖЕННЯ КОНФІГУРАЦІЇ:")
         
-        # Контроль лінеаризації
-        linearization_check_enabled=True,     # Увімкнути перевірку
-        max_linearization_distance=0.8,       # Поріг відстані
-        retrain_linearization_threshold=1.0,  # Поріг для перенавчання
+        # 🔥 ТУТ ВІДБУВАЄТЬСЯ ВИКЛИК config_manager.load_config():
+        try:
+            # Спочатку перевіряємо доступні конфігурації
+            if hasattr(config_manager, 'list_configs'):
+                available_configs = config_manager.list_configs()
+                print(f"📁 Доступні конфігурації: {available_configs}")
+            
+            # Запускаємо симуляцію з конфігурацією
+            results, metrics = simulate_mpc(
+                hist_df, 
+                config='oleksandr_original',  # 🎯 ТУТ ВИКЛИКАЄТЬСЯ config_manager.load_config('oleksandr_original')
+                config_overrides={
+                    'run_analysis':False
+                },
+                progress_callback=my_progress
+            )
+            
+            print("\n📊 Результати симуляції:")
+            if isinstance(metrics, dict):
+                for key in ['rmse_fe', 'rmse_mass', 'config_used']:
+                    if key in metrics:
+                        print(f"   {key}: {metrics[key]}")
+            
+            # Зберігаємо результати
+            results.to_parquet('mpc_simulation_results.parquet')
+            print("💾 Результати збережено")
 
-        # ---- Налантування аномалій
-        anomaly_params = 
-        {
-            'window': 25,
-            'spike_z': 4.0,
-            'drop_rel': 0.30,
-            'freeze_len': 5,
-            'enabled': True
-        },
+            loaded_results = pd.read_parquet('mpc_simulation_results.parquet')
+            analyze_results_config(loaded_results, metrics)
 
-        # ---- Нелінійні параметри
-        nonlinear_config = 
-        {
-            'concentrate_fe_percent': ('pow', 2),
-            'concentrate_mass_flow': ('pow', 1.5)
-        },
-        enable_nonlinear =  True, 
+        except Exception as e:
+            print(f"❌ Помилка тестування: {e}")
+            traceback.print_exc()
+    else:
+        print("💥 Дані не завантажено")
 
-        # ---- Параметри затримки, чавові параметри
-        time_step_s = 1800,
-        dead_times_s = 
-        {
-            'concentrate_fe_percent': 20.0,
-            'tailings_fe_percent': 25.0,
-            'concentrate_mass_flow': 20.0,
-            'tailings_mass_flow': 25.0
-        },
-                time_constants_s = 
-        {
-            'concentrate_fe_percent': 8.0,
-            'tailings_fe_percent': 10.0,
-            'concentrate_mass_flow': 5.0,
-            'tailings_mass_flow': 7.0
-        },
-        
-        # ---- Обмеження моделі
-        delta_u_max = 0.6,
-        λ_obj=0.2,
-        
-        # ---- MPC горизонти
-        Nc=6, #8
-        Np=8, #12
-        lag=2, #2
-        
-        # ---- Цільові параметри/ваги
-        w_fe=1.0,
-        w_mass=1.0,
-        ref_fe=54.5,
-        ref_mass=57.0,
-        y_max_fe=55.0,
-        y_max_mass=60.0,
-        
-        # ---- Блок перенавчання
-        enable_retraining=True,          # Ввімкнути/вимкнути функціонал перенавчання
-        retrain_period=50,                 # Як часто перевіряти необхідність перенавчання (кожні 50 кроків)
-        retrain_window_size=1000,          # Розмір буфера даних для перенавчання (останні 1000 точок)
-        retrain_innov_threshold=0.25,     # Поріг для середньої нормованої інновації EKF
-        
-        run_analysis=False
-    )
-    
-    print("\nФінальні метрики:")
-    print(mets)
-    res.to_parquet('mpc_simulation_results.parquet')
-
+print("\n🎉 Модуль sim.py готовий!")
 
 
