@@ -103,3 +103,4 @@ def benchmark_mpc_solve_time(mpc_controller, n_iterations: int = 50) -> Dict[str
         "mpc_iterations": n_iterations,
         "mpc_success_rate": len([t for t in solve_times if t > 0]) / len(solve_times)
     }
+

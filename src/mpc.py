@@ -308,8 +308,15 @@ class MPCController:
             return 0.0
 
 
-    def optimize(self, d_seq: np.ndarray, u_prev: float) -> np.ndarray:
-        """СТАБІЛІЗОВАНИЙ MPC з розумним trust region"""
+    def optimize(self, d_seq: np.ndarray, u_prev: float, trust_radius: float = None) -> np.ndarray:
+        """
+        СТАБІЛІЗОВАНИЙ MPC з розумним trust region
+        
+        Args:
+            d_seq: послідовність збурень
+            u_prev: попереднє керування  
+            trust_radius: радіус довірчої області (опціонально, для бенчмарків)
+        """
         
         if self.x_hist is None:
             raise RuntimeError("Історія стану не ініціалізована.")
@@ -328,7 +335,16 @@ class MPCController:
         self.parameters['u_prev'].value = u_prev
         self.parameters['d_seq'].value = d_seq
         self.parameters['x0_scaled'].value = X0_current_scaled.flatten()
-        self.parameters['trust_radius'].value = max(self.trust_region_radius, 0.1)  # Мінімум
+        
+        # ✅ НОВИЙ КОД: підтримка зовнішнього trust_radius
+        if trust_radius is not None:
+            # Використовуємо переданий параметр (для бенчмарків)
+            effective_trust_radius = max(float(trust_radius), 0.1)
+        else:
+            # Використовуємо внутрішній атрибут (для звичайної роботи)
+            effective_trust_radius = max(self.trust_region_radius, 0.1)
+        
+        self.parameters['trust_radius'].value = effective_trust_radius
         
         d_hat_val = self.d_hat if self.use_disturbance_estimator and self.d_hat is not None else np.zeros(self.n_targets)
         self.parameters['d_hat'].value = d_hat_val
@@ -349,8 +365,8 @@ class MPCController:
             print("ПОПЕРЕДЖЕННЯ: Оптимальне керування не знайдено.")
             return np.array([u_prev] * self.Nc)
         
-        # СТАБІЛІЗОВАНИЙ trust region update
-        if self.adaptive_trust_region:
+        # ✅ ПОКРАЩЕНИЙ КОД: адаптивний trust region тільки якщо НЕ передано зовнішній параметр
+        if self.adaptive_trust_region and trust_radius is None:
             current_cost = self.problem.value
             
             if self.previous_cost is not None and current_cost is not None:
