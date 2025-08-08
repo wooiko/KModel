@@ -994,67 +994,7 @@ print("✅ simulate_mpc_with_config готовий до використання
 print("🔧 Функція config_manager.load_config() буде викликатися при вказанні параметра 'config'")
 
 
-# ========================================
-# ПРИКЛАД ВИКОРИСТАННЯ В __main__
-# ========================================
 
-# if __name__ == '__main__':
-    
-#     def my_progress(step, total, msg):
-#         print(f"[{step}/{total}] {msg}")
-
-#     # Завантаження даних
-#     try:
-#         hist_df = pd.read_parquet('processed.parquet')
-#         print(f"✅ Дані завантажено: {hist_df.shape}")
-#     except FileNotFoundError:
-#         try:
-#             hist_df = pd.read_parquet('/content/KModel/src/processed.parquet')
-#             print(f"✅ Дані завантажено з /content/: {hist_df.shape}")
-#         except Exception as e:
-#             print(f"❌ Помилка завантаження даних: {e}")
-#             hist_df = None
-
-#     if hist_df is not None:
-#         print("\n🎯 ТЕСТУЄМО ЗАВАНТАЖЕННЯ КОНФІГУРАЦІЇ:")
-        
-#         # 🔥 ТУТ ВІДБУВАЄТЬСЯ ВИКЛИК config_manager.load_config():
-#         try:
-#             # Спочатку перевіряємо доступні конфігурації
-#             if hasattr(config_manager, 'list_configs'):
-#                 available_configs = config_manager.list_configs()
-#                 print(f"📁 Доступні конфігурації: {available_configs}")
-            
-#             # Запускаємо симуляцію з конфігурацією
-#             results, metrics = simulate_mpc(
-#                 hist_df, 
-#                 config='oleksandr_original',  # 🎯 ТУТ ВИКЛИКАЄТЬСЯ config_manager.load_config('oleksandr_original')
-#                 config_overrides={
-#                     'run_analysis':False
-#                 },
-#                 progress_callback=my_progress
-#             )
-            
-#             print("\n📊 Результати симуляції:")
-#             if isinstance(metrics, dict):
-#                 for key in ['rmse_fe', 'rmse_mass', 'config_used']:
-#                     if key in metrics:
-#                         print(f"   {key}: {metrics[key]}")
-            
-#             # Зберігаємо результати
-#             results.to_parquet('mpc_simulation_results.parquet')
-#             print("💾 Результати збережено")
-
-#             loaded_results = pd.read_parquet('mpc_simulation_results.parquet')
-#             analyze_results_config(loaded_results, metrics)
-
-#         except Exception as e:
-#             print(f"❌ Помилка тестування: {e}")
-#             traceback.print_exc()
-#     else:
-#         print("💥 Дані не завантажено")
-
-# print("\n🎉 Модуль sim.py готовий!")
 
 # ---- ЕКСПЕРИМЕНТ
 ''' ==================================='''
@@ -1176,8 +1116,14 @@ def run_model_comparison_experiment(
                         json_metrics = {}  
                         for key, value in metrics.items():  
                             try:  
-                                json.dumps(value)  # Перевіряємо JSON serializable  
-                                json_metrics[key] = value  
+                                # 🔧 КОНВЕРТУЄМО NUMPY ТИПИ
+                                if hasattr(value, 'item'):  # NumPy scalar
+                                    json_metrics[key] = value.item()
+                                elif isinstance(value, np.ndarray):
+                                    json_metrics[key] = value.tolist()
+                                else:
+                                    json.dumps(value)  # Перевіряємо JSON serializable  
+                                    json_metrics[key] = value  
                             except:  
                                 json_metrics[key] = str(value)  
                         json.dump(json_metrics, f, indent=2)  
@@ -1190,19 +1136,53 @@ def run_model_comparison_experiment(
                     'run_time': run_time  
                 }  
                 
-                # Додаємо ключові метрики  
-                key_metrics = ['rmse_fe', 'rmse_mass', 'mae_fe', 'mae_mass', 'r2_fe', 'r2_mass']  
-                for metric in key_metrics:  
-                    if metric in metrics:  
-                        run_summary[metric] = metrics[metric]  
+                # 🔧 ВИПРАВЛЕНЕ МАПУВАННЯ МЕТРИК!
+                metric_mapping = {
+                    'rmse_fe': 'test_rmse_conc_fe',
+                    'rmse_mass': 'test_rmse_conc_mass', 
+                    'mae_fe': 'test_mae_conc_fe',
+                    'mae_mass': 'test_mae_conc_mass',
+                    'mse_total': 'test_mse_total',
+                    'mpc_solve_time': 'mpc_solve_mean',
+                    'mpc_success_rate': 'mpc_success_rate'
+                }
+
+                for summary_key, metrics_key in metric_mapping.items():
+                    if metrics_key in metrics:
+                        value = metrics[metrics_key]
+                        # Конвертуємо NumPy типи в Python типи
+                        if hasattr(value, 'item'):  # NumPy scalar
+                            value = value.item()
+                        elif isinstance(value, np.ndarray):
+                            value = float(value)
+                        run_summary[summary_key] = value
+                
+                # 🔧 ОБЧИСЛЮЄМО R² З ДАНИХ
+                if 'test_rmse_conc_fe' in metrics and hasattr(results_df, 'columns'):
+                    if 'y_fe_true' in results_df.columns:
+                        y_fe_true = results_df['y_fe_true'].dropna().values
+                        if len(y_fe_true) > 0:
+                            var_fe = np.var(y_fe_true)
+                            rmse_fe = float(metrics['test_rmse_conc_fe'])
+                            run_summary['r2_fe'] = max(0, 1 - (rmse_fe**2) / var_fe)
+
+                if 'test_rmse_conc_mass' in metrics and hasattr(results_df, 'columns'):
+                    if 'y_mass_true' in results_df.columns:
+                        y_mass_true = results_df['y_mass_true'].dropna().values
+                        if len(y_mass_true) > 0:
+                            var_mass = np.var(y_mass_true)
+                            rmse_mass = float(metrics['test_rmse_conc_mass'])
+                            run_summary['r2_mass'] = max(0, 1 - (rmse_mass**2) / var_mass)
                 
                 run_metrics.append(run_summary)  
                 model_results['runs'][run_id] = (results_df, metrics)  
                 experiment_summary.append(run_summary)  
                 
                 print(f"      ✅ Завершено за {run_time:.1f}с")  
-                if 'rmse_fe' in metrics:  
-                    print(f"      📊 RMSE: Fe={metrics['rmse_fe']:.4f}, Mass={metrics.get('rmse_mass', 'N/A'):.4f}")  
+                if 'rmse_fe' in run_summary:  
+                    print(f"      📊 RMSE: Fe={run_summary['rmse_fe']:.6f}, Mass={run_summary.get('rmse_mass', 'N/A'):.6f}")  
+                    if 'r2_fe' in run_summary:
+                        print(f"      📊 R²: Fe={run_summary['r2_fe']:.4f}, Mass={run_summary.get('r2_mass', 'N/A'):.4f}")
                 
             except Exception as e:  
                 print(f"      ❌ ПОМИЛКА: {e}")  
@@ -1222,17 +1202,28 @@ def run_model_comparison_experiment(
             model_stats = {}  
             for metric in ['rmse_fe', 'rmse_mass', 'r2_fe', 'r2_mass', 'run_time']:  
                 if metric in metrics_df.columns:  
-                    model_stats[f'{metric}_mean'] = metrics_df[metric].mean()  
-                    model_stats[f'{metric}_std'] = metrics_df[metric].std()  
-                    model_stats[f'{metric}_min'] = metrics_df[metric].min()  
-                    model_stats[f'{metric}_max'] = metrics_df[metric].max()  
+                    values = metrics_df[metric].dropna()
+                    if len(values) > 0:
+                        model_stats[f'{metric}_mean'] = values.mean()  
+                        model_stats[f'{metric}_std'] = values.std()  
+                        model_stats[f'{metric}_min'] = values.min()  
+                        model_stats[f'{metric}_max'] = values.max()  
             
             model_results['summary_stats'] = model_stats  
             
             print(f"   📈 СТАТИСТИКА {model_name}:")  
-            print(f"      RMSE Fe: {model_stats.get('rmse_fe_mean', 0):.4f} ± {model_stats.get('rmse_fe_std', 0):.4f}")  
-            print(f"      RMSE Mass: {model_stats.get('rmse_mass_mean', 0):.4f} ± {model_stats.get('rmse_mass_std', 0):.4f}")  
-            print(f"      R² Fe: {model_stats.get('r2_fe_mean', 0):.4f} ± {model_stats.get('r2_fe_std', 0):.4f}")  
+            rmse_fe_mean = model_stats.get('rmse_fe_mean', 0)
+            rmse_fe_std = model_stats.get('rmse_fe_std', 0)
+            print(f"      RMSE Fe: {rmse_fe_mean:.6f} ± {rmse_fe_std:.6f}")  
+            
+            rmse_mass_mean = model_stats.get('rmse_mass_mean', 0)
+            rmse_mass_std = model_stats.get('rmse_mass_std', 0)
+            print(f"      RMSE Mass: {rmse_mass_mean:.6f} ± {rmse_mass_std:.6f}")  
+            
+            r2_fe_mean = model_stats.get('r2_fe_mean', 0)
+            r2_fe_std = model_stats.get('r2_fe_std', 0)
+            print(f"      R² Fe: {r2_fe_mean:.4f} ± {r2_fe_std:.4f}")  
+            
             print(f"      Час: {model_stats.get('run_time_mean', 0):.1f}с ± {model_stats.get('run_time_std', 0):.1f}с")  
         
         all_results[model_name] = model_results  
@@ -1943,5 +1934,5 @@ def quick_metrics_check():
 
 # СПОЧАТКУ ЗАПУСКАЙ ЦЕ
 if __name__ == '__main__':
-    # quick_test_experiment()
-    quick_metrics_check()
+    quick_test_experiment()
+    # quick_metrics_check()
