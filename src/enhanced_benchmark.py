@@ -548,6 +548,7 @@ def compare_mpc_configurations(
             })
             
             # Запускаємо симуляцію
+            test_config.pop('name', None) # Виправлення багаа - видаляє ключ 'name'
             results_df, metrics = simulate_mpc_core(hist_df, **test_config)
             
             # Збираємо ключові метрики

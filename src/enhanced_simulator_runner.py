@@ -1,10 +1,11 @@
 # enhanced_simulator_runner.py - Приклади запуску розширеного симулятора
 
 import pandas as pd
+import numpy as np
 import time
 import json
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 # Імпортуємо розширені функції
 from enhanced_sim import (
@@ -15,6 +16,143 @@ from enhanced_sim import (
     simulate_mpc_with_config_enhanced
 )
 
+def pandas_safe_sort(df, column):
+    """Безпечне сортування для всіх версій pandas"""
+    if df.empty or column not in df.columns:
+        return df
+    
+    try:
+        return df.sort_values(column, na_position='last')
+    except (TypeError, ValueError):
+        try:
+            return df.sort_values(column, na_last=True)
+        except (TypeError, ValueError):
+            # Ручне сортування
+            valid_mask = df[column].notna()
+            if valid_mask.any():
+                valid_df = df[valid_mask].sort_values(column)
+                invalid_df = df[~valid_mask]
+                return pd.concat([valid_df, invalid_df], ignore_index=True)
+            return df
+        
+def compare_mpc_configurations_improved(
+    configurations: List[Dict],
+    hist_df: pd.DataFrame,
+    base_config: str = 'oleksandr_original',
+    comparison_steps: int = 100
+) -> pd.DataFrame:
+    """🔄 ПОКРАЩЕНЕ порівняння конфігурацій MPC з оптимальними розмірами даних"""
+    
+    print("🔄 ПОКРАЩЕНЕ ПОРІВНЯННЯ КОНФІГУРАЦІЙ MPC")
+    print("="*60)
+    
+    comparison_results = []
+    
+    for i, config in enumerate(configurations):
+        config_name = config.get('name', f'Config_{i+1}')
+        print(f"\n🧪 Тестуємо конфігурацію: {config_name}")
+        
+        try:
+            # Імпортуємо функцію
+            try:
+                from enhanced_sim import simulate_mpc_core_enhanced as simulate_mpc_core
+            except ImportError:
+                from sim import simulate_mpc_core
+            
+            # Готуємо конфігурацію
+            test_config = config.copy()
+            test_config.pop('name', None)  # Видаляємо проблемний параметр
+            
+            # ✅ ОПТИМАЛЬНІ РОЗМІРИ ДАНИХ ДЛЯ КОЖНОЇ МОДЕЛІ
+            model_type = test_config.get('model_type', 'linear')
+            
+            if model_type == 'krr':
+                optimal_data = 8000  # KRR потребує багато даних
+            elif model_type == 'svr':
+                optimal_data = 5000  # SVR менше
+            else:
+                optimal_data = 3000  # Linear достатньо
+            
+            # Оновлюємо конфігурацію
+            test_config.update({
+                'N_data': optimal_data,  # ← КЛЮЧОВЕ ПОКРАЩЕННЯ!
+                'control_pts': comparison_steps,
+                'run_analysis': False,
+                'find_optimal_params': True,  # ✅ Обов'язково увімкнено!
+                'train_size': 0.7,
+                'val_size': 0.15,
+                'test_size': 0.15
+            })
+            
+            print(f"   🔧 Модель: {model_type}, Дані: {optimal_data}, Оптимізація: ✅")
+            print(f"   ⚙️ Параметри: Np={config.get('Np', '?')}, λ={config.get('λ_obj', '?')}")
+            
+            # Запускаємо симуляцію
+            start_time = time.time()
+            results_df, metrics = simulate_mpc_core(hist_df, **test_config)
+            test_time = time.time() - start_time
+            
+            # Збираємо метрики
+            comparison_row = {
+                'Configuration': config_name,
+                'Model': f"{config.get('model_type', 'unknown')}-{config.get('kernel', 'default')}",
+                'Data_Size': optimal_data,
+                'Np': config.get('Np', 'unknown'),
+                'Nc': config.get('Nc', 'unknown'),
+                'Lambda': config.get('λ_obj', 'unknown'),
+                'Test_Time_Min': test_time / 60
+            }
+            
+            # Додаємо результати
+            if isinstance(metrics, dict):
+                comparison_row['RMSE_Fe'] = metrics.get('test_rmse_conc_fe', np.nan)
+                comparison_row['RMSE_Mass'] = metrics.get('test_rmse_conc_mass', np.nan)
+                comparison_row['R2_Fe'] = metrics.get('r2_fe', np.nan)
+                comparison_row['R2_Mass'] = metrics.get('r2_mass', np.nan)
+                comparison_row['Quality_Score'] = metrics.get('quality_score', np.nan)
+                comparison_row['Real_Time_Suitable'] = metrics.get('real_time_suitable', False)
+            
+            comparison_results.append(comparison_row)
+            
+            # Звіт
+            rmse_fe = comparison_row.get('RMSE_Fe', float('inf'))
+            r2_fe = comparison_row.get('R2_Fe', 0)
+            quality = comparison_row.get('Quality_Score', 1)
+            
+            print(f"   ✅ Результати:")
+            print(f"      RMSE Fe: {rmse_fe:.4f}")
+            print(f"      R² Fe: {r2_fe:.4f}")
+            print(f"      Якість: {quality:.4f}")
+            print(f"      Час: {test_time/60:.1f}хв")
+            
+        except Exception as e:
+            print(f"   ❌ Помилка: {e}")
+            comparison_results.append({
+                'Configuration': config_name,
+                'Error': str(e)
+            })
+    
+    # Створюємо DataFrame
+    comparison_df = pd.DataFrame(comparison_results)
+    
+    # Безпечне сортування (використовуємо ту саму функцію що в enhanced_benchmark.py)
+    if not comparison_df.empty and 'RMSE_Fe' in comparison_df.columns:
+        # Відфільтровуємо NaN перед сортуванням
+        valid_mask = comparison_df['RMSE_Fe'].notna()
+        if valid_mask.any():
+            valid_df = comparison_df[valid_mask].sort_values('RMSE_Fe')
+            invalid_df = comparison_df[~valid_mask]
+            comparison_df = pd.concat([valid_df, invalid_df], ignore_index=True)
+    
+    print(f"\n📊 ПІДСУМОК ПОКРАЩЕНОГО ПОРІВНЯННЯ:")
+    if not comparison_df.empty:
+        display_cols = ['Configuration', 'Model', 'Data_Size', 'RMSE_Fe', 'R2_Fe', 'Quality_Score']
+        available_cols = [col for col in display_cols if col in comparison_df.columns]
+        if available_cols:
+            print(comparison_df[available_cols].round(4))
+    
+    return comparison_df
+        
 def load_historical_data() -> pd.DataFrame:
     """Завантажує історичні дані для симуляції"""
     
@@ -353,10 +491,10 @@ def example_4_model_comparison():
             
             # Сортуємо за якістю або RMSE
             if 'Quality_Score' in comparison_df.columns:
-                comparison_df = comparison_df.sort_values('Quality_Score', na_position=True)
+                comparison_df = pandas_safe_sort(comparison_df, 'Quality_Score')
                 sort_metric = 'Quality_Score'
             elif 'RMSE_Fe' in comparison_df.columns:
-                comparison_df = comparison_df.sort_values('RMSE_Fe', na_position=True)
+                comparison_df = pandas_safe_sort(comparison_df, 'RMSE_Fe')
                 sort_metric = 'RMSE_Fe'
             else:
                 sort_metric = 'Configuration'
@@ -517,5 +655,310 @@ def main():
         import traceback
         traceback.print_exc()
 
+def quick_diagnosis_example():
+    """🔍 Швидка діагностика для розуміння проблем"""
+    
+    print("🔍 ШВИДКА ДІАГНОСТИКА")
+    print("="*40)
+    
+    try:
+        hist_df = load_historical_data()
+        
+        # Тест 1: Базова SVR як у попередніх успішних тестах
+        print("1️⃣ Тест базової SVR...")
+        
+        from enhanced_sim import simulate_mpc_with_config_enhanced
+        
+        results_df, metrics = simulate_mpc_with_config_enhanced(
+            hist_df,
+            config='oleksandr_original',
+            config_overrides={
+                'model_type': 'svr',
+                'kernel': 'rbf',
+                'N_data': 5000,  # Як у успішних тестах
+                'control_pts': 100,
+                'find_optimal_params': True,
+                'run_analysis': False
+            }
+        )
+        
+        rmse_fe = metrics.get('test_rmse_conc_fe', 999)
+        r2_fe = metrics.get('r2_fe', 0)
+        
+        print(f"   ✅ SVR: RMSE={rmse_fe:.4f}, R²={r2_fe:.4f}")
+        
+        if rmse_fe < 0.1:
+            print(f"   ✅ SVR працює нормально - проблема в compare_mpc_configurations")
+        else:
+            print(f"   ❌ SVR працює погано - проблема глибша")
+            
+    except Exception as e:
+        print(f"   ❌ Помилка діагностики: {e}")
+
+# НЕГАЙНА ДІАГНОСТИКА КРИТИЧНОЇ ПРОБЛЕМИ
+
+def emergency_deep_diagnosis():
+    """🚨 Глибока діагностика системної проблеми"""
+    
+    print("🚨 АВАРІЙНА ДІАГНОСТИКА")
+    print("="*50)
+    
+    try:
+        hist_df = load_historical_data()
+        
+        # ========================================
+        # ТЕСТ 1: Перевірка базової генерації даних
+        # ========================================
+        print("1️⃣ Тест генерації даних...")
+        
+        from enhanced_sim import prepare_simulation_data, split_and_scale_data
+        
+        # Простий тест з мінімальними параметрами
+        test_params = {
+            'N_data': 1000,
+            'control_pts': 50,
+            'lag': 2,
+            'train_size': 0.7,
+            'val_size': 0.15,
+            'test_size': 0.15,
+            'time_step_s': 5,
+            'time_constants_s': {'default': 8.0},
+            'dead_times_s': {'default': 20.0},
+            'plant_model_type': 'rf',
+            'seed': 42,
+            'noise_level': 'none',
+            'anomaly_params': {'enabled': False}
+        }
+        
+        true_gen, df_true, X, Y = prepare_simulation_data(hist_df, test_params)
+        data, x_scaler, y_scaler = split_and_scale_data(X, Y, test_params)
+        
+        print(f"   ✅ Дані згенеровано:")
+        print(f"      X shape: {X.shape}")
+        print(f"      Y shape: {Y.shape}")
+        print(f"      Y mean: {np.mean(Y, axis=0)}")
+        print(f"      Y std: {np.std(Y, axis=0)}")
+        print(f"      Y range: {np.min(Y, axis=0)} - {np.max(Y, axis=0)}")
+        
+        # ========================================
+        # ТЕСТ 2: Перевірка моделі напряму
+        # ========================================
+        print(f"\n2️⃣ Тест моделі напряму...")
+        
+        from model import KernelModel
+        
+        # Тестуємо модель без MPC обгортки
+        model = KernelModel(
+            model_type='svr',
+            kernel='rbf',
+            find_optimal_params=True
+        )
+        
+        print(f"   🔧 Навчаємо модель...")
+        model.fit(data['X_train_scaled'], data['Y_train_scaled'])
+        
+        print(f"   🔧 Робимо прогноз...")
+        y_pred_scaled = model.predict(data['X_test_scaled'])
+        y_pred_orig = y_scaler.inverse_transform(y_pred_scaled)
+        y_true_orig = data['Y_test']
+        
+        # Детальна діагностика
+        print(f"   📊 Результати:")
+        print(f"      y_true shape: {y_true_orig.shape}")
+        print(f"      y_pred shape: {y_pred_orig.shape}")
+        print(f"      y_true mean: {np.mean(y_true_orig, axis=0)}")
+        print(f"      y_pred mean: {np.mean(y_pred_orig, axis=0)}")
+        print(f"      y_true std: {np.std(y_true_orig, axis=0)}")
+        print(f"      y_pred std: {np.std(y_pred_orig, axis=0)}")
+        
+        # Обчислюємо метрики вручну
+        for i, col_name in enumerate(['concentrate_fe', 'concentrate_mass']):
+            y_true_col = y_true_orig[:, i]
+            y_pred_col = y_pred_orig[:, i]
+            
+            # RMSE
+            mse = np.mean((y_true_col - y_pred_col)**2)
+            rmse = np.sqrt(mse)
+            
+            # R² - правильне обчислення
+            y_true_var = np.var(y_true_col)
+            if y_true_var > 1e-12:
+                r2 = 1 - mse / y_true_var
+            else:
+                r2 = 0.0
+                print(f"      ⚠️ УВАГА: {col_name} має нульову дисперсію!")
+            
+            # Кореляція
+            correlation = np.corrcoef(y_true_col, y_pred_col)[0, 1]
+            
+            print(f"      {col_name}:")
+            print(f"        RMSE: {rmse:.6f}")
+            print(f"        R²: {r2:.6f}")
+            print(f"        Корел.: {correlation:.6f}")
+            print(f"        y_true var: {y_true_var:.6f}")
+            
+            # Перевірка чи модель повертає константи
+            pred_var = np.var(y_pred_col)
+            if pred_var < 1e-12:
+                print(f"        🚨 ПРОБЛЕМА: Модель повертає константи!")
+                print(f"        🚨 Всі прогнози: {y_pred_col[0]:.6f}")
+        
+        # ========================================
+        # ТЕСТ 3: Порівняння з робочою версією
+        # ========================================
+        print(f"\n3️⃣ Порівняння з попередньою робочою версією...")
+        
+        # Спробуємо з точно тими ж параметрами що працювали
+        working_config = {
+            'model_type': 'svr',
+            'kernel': 'rbf',
+            'N_data': 5000,  # Як у робочій версії
+            'control_pts': 100,
+            'find_optimal_params': True,
+            'run_analysis': False
+        }
+        
+        print(f"   🔧 Тестуємо з робочими параметрами...")
+        
+        try:
+            from enhanced_sim import simulate_mpc_with_config_enhanced
+            
+            results_df, metrics = simulate_mpc_with_config_enhanced(
+                hist_df,
+                config='oleksandr_original',
+                config_overrides=working_config
+            )
+            
+            rmse_fe = metrics.get('test_rmse_conc_fe', 999)
+            r2_fe = metrics.get('r2_fe', 0)
+            
+            print(f"   📊 Результат з робочими параметрами:")
+            print(f"      RMSE Fe: {rmse_fe:.6f}")
+            print(f"      R² Fe: {r2_fe:.6f}")
+            
+            if rmse_fe < 0.1:
+                print(f"   ✅ З правильними параметрами працює!")
+                print(f"   🔍 Проблема в новій функції compare_mpc_configurations_improved")
+            else:
+                print(f"   ❌ Навіть з правильними параметрами не працює!")
+                print(f"   🔍 Проблема в базовій функції simulate_mpc_core_enhanced")
+                
+        except Exception as e:
+            print(f"   ❌ Помилка тесту: {e}")
+        
+        # ========================================
+        # ТЕСТ 4: Перевірка оптимізації гіперпараметрів
+        # ========================================
+        print(f"\n4️⃣ Тест оптимізації гіперпараметрів...")
+        
+        # Тест без оптимізації
+        model_no_opt = KernelModel(
+            model_type='svr',
+            kernel='rbf',
+            find_optimal_params=False  # Без оптимізації
+        )
+        
+        model_no_opt.fit(data['X_train_scaled'], data['Y_train_scaled'])
+        y_pred_no_opt = model_no_opt.predict(data['X_test_scaled'])
+        y_pred_no_opt_orig = y_scaler.inverse_transform(y_pred_no_opt)
+        
+        rmse_no_opt = np.sqrt(np.mean((y_true_orig[:, 0] - y_pred_no_opt_orig[:, 0])**2))
+        
+        print(f"   📊 Без оптимізації: RMSE Fe = {rmse_no_opt:.6f}")
+        print(f"   📊 З оптимізацією: RMSE Fe = {rmse:.6f}")
+        
+        if rmse_no_opt < rmse:
+            print(f"   🚨 ПРОБЛЕМА: Оптимізація робить результат гіршим!")
+        
+        # ========================================
+        # ТЕСТ 5: Перевірка версій бібліотек
+        # ========================================
+        print(f"\n5️⃣ Перевірка версій бібліотек...")
+        
+        import sklearn
+        import pandas as pd
+        import numpy as np
+        
+        print(f"   📦 sklearn: {sklearn.__version__}")
+        print(f"   📦 pandas: {pd.__version__}")
+        print(f"   📦 numpy: {np.__version__}")
+        
+    except Exception as e:
+        print(f"❌ Критична помилка діагностики: {e}")
+        import traceback
+        traceback.print_exc()
+
+# ========================================
+# ФУНКЦІЯ ДЛЯ ШВИДКОГО ПОРІВНЯННЯ
+# ========================================
+
+def compare_old_vs_new_approach():
+    """Порівнює старий підхід (що працював) з новим"""
+    
+    print("🔄 ПОРІВНЯННЯ СТАРОГО VS НОВОГО ПІДХОДУ")
+    print("="*50)
+    
+    try:
+        hist_df = load_historical_data()
+        
+        # Конфігурація з попередніх успішних тестів
+        success_config = {
+            'model_type': 'svr',
+            'kernel': 'rbf',
+            'N_data': 5000,
+            'control_pts': 100,
+            'find_optimal_params': True,
+            'run_analysis': False
+        }
+        
+        print("1️⃣ Тест через simulate_mpc_with_config_enhanced (старий підхід)...")
+        
+        from enhanced_sim import simulate_mpc_with_config_enhanced
+        
+        start_time = time.time()
+        results_df, metrics = simulate_mpc_with_config_enhanced(
+            hist_df,
+            config='oleksandr_original',
+            config_overrides=success_config
+        )
+        old_time = time.time() - start_time
+        
+        old_rmse = metrics.get('test_rmse_conc_fe', 999)
+        old_r2 = metrics.get('r2_fe', 0)
+        
+        print(f"   ✅ Старий підхід: RMSE={old_rmse:.6f}, R²={old_r2:.6f}, Час={old_time:.1f}с")
+        
+        print("\n2️⃣ Тест через simulate_mpc_core_enhanced (новий підхід)...")
+        
+        from enhanced_sim import simulate_mpc_core_enhanced
+        
+        start_time = time.time()
+        results_df2, metrics2 = simulate_mpc_core_enhanced(hist_df, **success_config)
+        new_time = time.time() - start_time
+        
+        new_rmse = metrics2.get('test_rmse_conc_fe', 999)
+        new_r2 = metrics2.get('r2_fe', 0)
+        
+        print(f"   ✅ Новий підхід: RMSE={new_rmse:.6f}, R²={new_r2:.6f}, Час={new_time:.1f}с")
+        
+        print(f"\n📊 ПОРІВНЯННЯ:")
+        print(f"   RMSE: {old_rmse:.6f} → {new_rmse:.6f} (зміна: {((new_rmse/old_rmse-1)*100):+.1f}%)")
+        print(f"   R²: {old_r2:.6f} → {new_r2:.6f} (зміна: {((new_r2-old_r2)*100):+.1f}%)")
+        
+        if abs(old_rmse - new_rmse) > 0.01:
+            print(f"   🚨 РІЗНИЦЯ ЗНАЧНА - є проблема в одному з підходів!")
+        else:
+            print(f"   ✅ Результати схожі - підходи еквівалентні")
+            
+    except Exception as e:
+        print(f"❌ Помилка порівняння: {e}")
+
+print("🚨 Критична діагностика готова!")
+print("🔧 Запустіть:")
+print("   emergency_deep_diagnosis()")
+print("   compare_old_vs_new_approach()")
+
 if __name__ == '__main__':
-    main()
+    # main()
+    # quick_diagnosis_example()
+    emergency_deep_diagnosis()
