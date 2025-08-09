@@ -1,0 +1,31 @@
+{
+  "timestamp": "2025-08-09T10:26:40.069756",
+  "experiments_conducted": 1,
+  "results": {
+    "configuration_comparison": {
+      "type": "dataframe",
+      "shape": [
+        4,
+        2
+      ],
+      "columns": [
+        "Configuration",
+        "Error"
+      ],
+      "data_sample": {
+        "Configuration": {
+          "0": "KRR_Conservative",
+          "1": "KRR_Aggressive",
+          "2": "SVR_Balanced",
+          "3": "Linear_Fast"
+        },
+        "Error": {
+          "0": "simulate_mpc_core_enhanced() got an unexpected keyword argument 'name'",
+          "1": "simulate_mpc_core_enhanced() got an unexpected keyword argument 'name'",
+          "2": "simulate_mpc_core_enhanced() got an unexpected keyword argument 'name'",
+          "3": "simulate_mpc_core_enhanced() got an unexpected keyword argument 'name'"
+        }
+      }
+    }
+  }
+}

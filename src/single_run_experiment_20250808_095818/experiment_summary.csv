@@ -1,5 +1,0 @@
-run_id,model,run_number,error
-KRR_RBF_run_1,KRR_RBF,1,'str' object has no attribute 'copy'
-SVR_RBF_run_1,SVR_RBF,1,'str' object has no attribute 'copy'
-GPR_RBF_run_1,GPR_RBF,1,'str' object has no attribute 'copy'
-LINEAR_RIDGE_run_1,LINEAR_RIDGE,1,'str' object has no attribute 'copy'
