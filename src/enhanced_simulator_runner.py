@@ -502,15 +502,13 @@ def compare_mpc_configurations_correct(
 ) -> pd.DataFrame:
     """
     🔄 ПРАВИЛЬНЕ порівняння конфігурацій MPC БЕЗ втручання в налаштування експериментатора
-    
-    ПРИНЦИП: Функція є "прозорою" - передає конфігурацію експериментатора 
-    БЕЗ ЖОДНИХ ЗМІН до simulate_mpc_core_enhanced, яка сама застосовує 
-    параметри за замовчуванням.
+    🔧 ВИПРАВЛЕНО: Використовує комбіновану логіку ранжування
     """
     
     print("🔄 КОРЕКТНЕ ПОРІВНЯННЯ КОНФІГУРАЦІЙ MPC")
     print("="*60)
     print("🎯 Принцип: Повна повага до конфігурації експериментатора")
+    print("📊 Ранжування: 70% MPC якість + 30% точність моделі")
     
     comparison_results = []
     detailed_reports = []
@@ -532,27 +530,24 @@ def compare_mpc_configurations_correct(
             test_config = config.copy()
             test_config.pop('name', None)  # Видаляємо тільки службовий параметр
             
-            # 🔇 ЄДИНЕ що можемо зробити - контролювати вивід для зручності порівняння
-            # Але ТІЛЬКИ якщо експериментатор САМ не задав ці параметри!
+            # 🔇 КОНТРОЛЬ ВИВОДУ для зручності порівняння
             output_control_params = ['silent_mode', 'verbose_reports']
             original_output_settings = {}
             
             for param in output_control_params:
                 if param in test_config:
-                    # Експериментатор задав - ЗБЕРІГАЄМО!
                     original_output_settings[param] = test_config[param]
                     if show_progress:
                         print(f"   🎯 Експериментатор задав {param}={test_config[param]}")
                 else:
-                    # Експериментатор не задав - можемо встановити для зручності порівняння
                     if param == 'silent_mode':
-                        test_config[param] = True  # Для зручності порівняння
+                        test_config[param] = True
                         original_output_settings[param] = None
                     elif param == 'verbose_reports':
-                        test_config[param] = False  # Для зручності порівняння
+                        test_config[param] = False
                         original_output_settings[param] = None
             
-            # 📋 ПОКАЗУЄМО ЩО ПЕРЕДАЄМО (БЕЗ ВНУТРІШНІХ ПАРАМЕТРІВ ВИВОДУ)
+            # 📋 ПОКАЗУЄМО КОНФІГУРАЦІЮ
             if show_progress:
                 print(f"   📋 Конфігурація експериментатора:")
                 experimental_params = {k: v for k, v in test_config.items() 
@@ -563,48 +558,33 @@ def compare_mpc_configurations_correct(
                         print(f"      🎯 {key}: {value}")
                 else:
                     print(f"      🎯 Використовуються всі параметри за замовчуванням")
-                
-                # Показуємо параметри виводу окремо
-                output_info = []
-                for param in output_control_params:
-                    if original_output_settings[param] is not None:
-                        output_info.append(f"{param}={original_output_settings[param]} (експериментатор)")
-                    else:
-                        output_info.append(f"{param}={test_config[param]} (для зручності)")
-                
-                if output_info:
-                    print(f"   🔇 Контроль виводу: {', '.join(output_info)}")
             
-            # 🚀 ЗАПУСКАЄМО СИМУЛЯЦІЮ З КОНФІГУРАЦІЄЮ ЕКСПЕРИМЕНТАТОРА
+            # 🚀 ЗАПУСКАЄМО СИМУЛЯЦІЮ
             start_time = time.time()
             
-            # Передаємо base_config окремо, щоб не змішувати з експериментальною конфігурацією
             if base_config and base_config != 'default':
-                # Завантажуємо базову конфігурацію
                 try:
                     from enhanced_sim import simulate_mpc_with_config_enhanced
                     results_df, metrics = simulate_mpc_with_config_enhanced(
                         hist_df, 
                         config=base_config,
-                        config_overrides=test_config  # Експериментальна конфігурація перезаписує базову
+                        config_overrides=test_config
                     )
                 except ImportError:
-                    # Fallback: використовуємо пряме виконання
                     results_df, metrics = simulate_mpc_core(hist_df, **test_config)
             else:
-                # Пряме виконання з конфігурацією експериментатора
                 results_df, metrics = simulate_mpc_core(hist_df, **test_config)
             
             test_time = time.time() - start_time
             
-            # 📊 ЗБИРАЄМО МЕТРИКИ (БЕЗ ДОДАТКОВИХ ОБЧИСЛЕНЬ)
+            # 📊 ЗБИРАЄМО МЕТРИКИ
             comparison_row = {
                 'Configuration': config_name,
                 'Model': f"{config.get('model_type', 'default')}-{config.get('kernel', 'default')}",
                 'Test_Time_Min': test_time / 60
             }
             
-            # Додаємо параметри експериментатора в результати
+            # Додаємо параметри експериментатора
             experimental_params = ['N_data', 'Np', 'Nc', 'λ_obj', 'w_fe', 'w_mass', 
                                  'find_optimal_params', 'model_type', 'kernel']
             
@@ -628,10 +608,25 @@ def compare_mpc_configurations_correct(
                 }
                 comparison_row.update(result_metrics)
                 
+                # 🔧 ДОДАЄМО КОМБІНОВАНУ ОЦІНКУ ТУТ!
+                rmse_fe = result_metrics['RMSE_Fe']
+                mpc_quality = result_metrics['MPC_Quality_Score']
+                
+                if pd.notna(rmse_fe) and pd.notna(mpc_quality):
+                    # Нормалізуємо метрики
+                    mpc_norm = mpc_quality / 100  # MPC якість 0-1
+                    rmse_norm = 1 / (1 + rmse_fe)  # Інвертуємо RMSE (менше = краще)
+                    
+                    # Комбінована оцінка: 70% MPC + 30% точність
+                    combined_score = 0.7 * mpc_norm + 0.3 * rmse_norm
+                    comparison_row['Combined_Score'] = combined_score
+                else:
+                    comparison_row['Combined_Score'] = np.nan
+                
                 # Зберігаємо детальні дані
                 detailed_report = {
                     'config_name': config_name,
-                    'original_config': config.copy(),  # Оригінальна конфігурація експериментатора
+                    'original_config': config.copy(),
                     'base_config_used': base_config,
                     'results_df': results_df,
                     'full_metrics': metrics,
@@ -647,12 +642,15 @@ def compare_mpc_configurations_correct(
                 rmse_fe = comparison_row.get('RMSE_Fe', float('inf'))
                 quality = comparison_row.get('Quality_Score', 1)
                 mpc_quality = comparison_row.get('MPC_Quality_Score', 0)
+                combined = comparison_row.get('Combined_Score', 0)
                 
                 print(f"   ✅ Результати:")
                 print(f"      RMSE Fe: {rmse_fe:.4f}")
                 print(f"      Якість керування: {quality:.4f}")
                 if not np.isnan(mpc_quality):
                     print(f"      MPC оцінка: {mpc_quality:.1f}/100")
+                if not np.isnan(combined):
+                    print(f"      Комбінована оцінка: {combined:.4f}")
                 print(f"      Час: {test_time/60:.1f}хв")
             
         except Exception as e:
@@ -660,21 +658,40 @@ def compare_mpc_configurations_correct(
             comparison_results.append({
                 'Configuration': config_name,
                 'Error': str(e),
-                'Test_Time_Min': 0
+                'Test_Time_Min': 0,
+                'Combined_Score': np.nan
             })
     
     # Створюємо DataFrame
     comparison_df = pd.DataFrame(comparison_results)
     
-    # Безпечне сортування за RMSE_Fe
-    if not comparison_df.empty and 'RMSE_Fe' in comparison_df.columns:
-        valid_mask = comparison_df['RMSE_Fe'].notna()
+    # 🔧 КРИТИЧНЕ ВИПРАВЛЕННЯ: Сортуємо за комбінованою оцінкою!
+    if not comparison_df.empty and 'Combined_Score' in comparison_df.columns:
+        # Фільтруємо валідні значення
+        valid_mask = comparison_df['Combined_Score'].notna()
         if valid_mask.any():
-            valid_df = comparison_df[valid_mask].sort_values('RMSE_Fe')
+            print(f"\n🔧 Застосовуємо комбіноване сортування для {valid_mask.sum()} конфігурацій...")
+            
+            # Сортуємо: вищі комбіновані оцінки спочатку
+            valid_df = comparison_df[valid_mask].sort_values('Combined_Score', ascending=False)
             invalid_df = comparison_df[~valid_mask]
             comparison_df = pd.concat([valid_df, invalid_df], ignore_index=True)
+            
+            print(f"🏆 Топ-3 за комбінованою оцінкою:")
+            for idx in range(min(3, len(valid_df))):
+                row = valid_df.iloc[idx]
+                print(f"   {idx+1}. {row['Configuration']}: {row['Combined_Score']:.4f} "
+                      f"(MPC: {row.get('MPC_Quality_Score', 0):.1f}, RMSE: {row.get('RMSE_Fe', 0):.4f})")
+        else:
+            print(f"⚠️ Не вдалося обчислити комбіновані оцінки - сортуємо за RMSE")
+            if 'RMSE_Fe' in comparison_df.columns:
+                valid_mask = comparison_df['RMSE_Fe'].notna()
+                if valid_mask.any():
+                    valid_df = comparison_df[valid_mask].sort_values('RMSE_Fe')
+                    invalid_df = comparison_df[~valid_mask]
+                    comparison_df = pd.concat([valid_df, invalid_df], ignore_index=True)
     
-    # 📊 ДЕТАЛЬНІ ЗВІТИ (тільки якщо експериментатор дозволив вивід)
+    # 📊 ДЕТАЛЬНІ ЗВІТИ (тільки якщо дозволено)
     show_detailed_reports = any(
         report['output_settings'].get('verbose_reports', False) or 
         not report['output_settings'].get('silent_mode', True)
@@ -687,23 +704,20 @@ def compare_mpc_configurations_correct(
         print("="*80)
         
         for i, report in enumerate(detailed_reports):
-            # Показуємо детальний звіт тільки якщо експериментатор дозволив
             if (report['output_settings'].get('verbose_reports', False) or 
                 not report['output_settings'].get('silent_mode', True)):
                 
                 config_name = report['config_name']
                 metrics = report['full_metrics']
-                results_df = report['results_df']
                 original_config = report['original_config']
                 
                 print(f"\n{'='*60}")
                 print(f"📋 КОНФІГУРАЦІЯ: {config_name}")
                 print(f"{'='*60}")
                 
-                # Показуємо оригінальну конфігурацію експериментатора
+                # Показуємо оригінальну конфігурацію
                 print(f"🎯 КОНФІГУРАЦІЯ ЕКСПЕРИМЕНТАТОРА:")
-                experimental_params = {k: v for k, v in original_config.items() 
-                                     if k != 'name'}
+                experimental_params = {k: v for k, v in original_config.items() if k != 'name'}
                 if experimental_params:
                     for key, value in experimental_params.items():
                         print(f"   • {key}: {value}")
@@ -722,14 +736,13 @@ def compare_mpc_configurations_correct(
                             value = value.item()
                         print(f"   📊 {metric}: {value:.6f}")
                 
-                # Додаткові метрики
                 if 'total_cycle_time' in metrics:
                     print(f"   ⚡ Час циклу: {metrics['total_cycle_time']*1000:.1f}ms")
                 
                 if 'quality_score' in metrics:
                     print(f"   🎯 Оцінка якості: {metrics['quality_score']:.4f}")
                 
-                # MPC метрики якості (якщо доступні)
+                # MPC метрики
                 print(f"\n🎯 МЕТРИКИ ЯКОСТІ MPC:")
                 print("-" * 40)
                 
@@ -750,49 +763,53 @@ def compare_mpc_configurations_correct(
                         elif key == 'mpc_quality_class':
                             print(f"   📊 Класифікація: {value}")
                 
-                # Рекомендації
                 if 'recommendations' in metrics and metrics['recommendations']:
                     print(f"   💡 Рекомендації:")
                     for j, rec in enumerate(metrics['recommendations'][:3], 1):
                         print(f"      {j}. {rec}")
     
-    # 📊 ПІДСУМКОВА ТАБЛИЦЯ
+    # 📊 ПІДСУМКОВА ТАБЛИЦЯ З ПРАВИЛЬНИМ РАНЖУВАННЯМ
     print(f"\n" + "="*80)
     print(f"📊 ПІДСУМКОВА ТАБЛИЦЯ ПОРІВНЯННЯ")
     print("="*80)
     
     if not comparison_df.empty:
         # Вибираємо колонки для відображення
-        display_cols = ['Configuration', 'Model', 'RMSE_Fe', 'MPC_Quality_Score', 'Test_Time_Min']
+        display_cols = ['Configuration', 'Model', 'RMSE_Fe', 'MPC_Quality_Score', 'Combined_Score', 'Test_Time_Min']
         
-        # Додаємо конфігураційні параметри якщо вони є
-        config_cols = [col for col in comparison_df.columns if col.startswith('Config_')]
-        important_config_cols = [col for col in config_cols 
-                               if any(param in col for param in ['N_data', 'Np', 'Nc', 'λ_obj'])]
-        
-        display_cols.extend(important_config_cols)
         available_cols = [col for col in display_cols if col in comparison_df.columns]
         
         if available_cols:
             print(comparison_df[available_cols].round(4))
         
-        # Визначаємо переможця
-        print(f"\n🏆 РЕЗУЛЬТАТИ:")
-        if not comparison_df.empty and 'RMSE_Fe' in comparison_df.columns:
-            best_config = comparison_df.iloc[0]
+        # 🔧 ПРАВИЛЬНЕ ВИЗНАЧЕННЯ ПЕРЕМОЖЦЯ
+        print(f"\n🏆 РЕЗУЛЬТАТИ (за комбінованою оцінкою):")
+        if not comparison_df.empty:
+            best_config = comparison_df.iloc[0]  # Перший після сортування
             print(f"   🥇 Найкраща конфігурація: {best_config['Configuration']}")
             
+            if 'Combined_Score' in best_config and pd.notna(best_config['Combined_Score']):
+                print(f"   🎯 Комбінована оцінка: {best_config['Combined_Score']:.4f}")
+                print(f"   📊 Логіка: 70% MPC якість + 30% точність моделі")
+            
             if 'RMSE_Fe' in best_config and pd.notna(best_config['RMSE_Fe']):
-                print(f"   📊 RMSE Fe: {best_config['RMSE_Fe']:.4f}")
+                print(f"   📈 RMSE Fe: {best_config['RMSE_Fe']:.4f}")
             
             if 'MPC_Quality_Score' in best_config and pd.notna(best_config['MPC_Quality_Score']):
                 print(f"   🎯 MPC Якість: {best_config['MPC_Quality_Score']:.1f}/100")
+                
+                # Інтерпретація результату
+                mpc_quality = best_config['MPC_Quality_Score']
+                if mpc_quality >= 65:
+                    print(f"   ✅ Висока якість MPC - готово для промислового використання")
+                elif mpc_quality >= 50:
+                    print(f"   ⚠️ Середня якість MPC - розгляньте додаткове налаштування")
+                else:
+                    print(f"   🔧 Низька якість MPC - потрібне серйозне налаштування")
     
-    print(f"\n✅ Порівняння завершено з повною повагою до конфігурацій експериментатора!")
+    print(f"\n✅ Порівняння завершено з правильним ранжуванням!")
     
     return comparison_df
-
-# enhanced_simulator_runner.py - ПОКРАЩЕНА функція save_experiment_summary
 
 import os
 import json
@@ -1437,226 +1454,6 @@ print("   • Детальні звіти та порівняльні табли
 print("   • Автоматичне архівування результатів")
 print("   • Метадані про систему та конфігурацію")
 
-def main():
-    """🚀 Головна функція запуску всіх прикладів з покращеним збереженням"""
-    
-    print("🔬 РОЗШИРЕНИЙ СИМУЛЯТОР MPC З БЕНЧМАРКОМ")
-    print("="*70)
-    print("🎯 Доступні приклади:")
-    print("   1. 🚀 Швидкий бенчмарк моделей")
-    print("   2. 🔬 Детальний аналіз MPC")
-    print("   3. 🎯 Користувацька симуляція")
-    print("   4. 🔄 Порівняння конфігурацій")
-    print("   5. 🏃 Запустити всі приклади")
-    print("="*70)
-    
-    try:
-        # Запитуємо у користувача вибір та назву експерименту
-        choice = input("Оберіть приклад (1-5) або Enter для всіх: ").strip()
-        
-        if not choice:
-            choice = "5"  # Запускаємо всі за замовчуванням
-        
-        # 🆕 ЗАПИТУЄМО НАЗВУ ЕКСПЕРИМЕНТУ
-        experiment_name = input("Введіть назву експерименту (або Enter для автогенерації): ").strip()
-        if not experiment_name:
-            experiment_name = None  # Буде згенеровано автоматично
-        
-        # 🆕 НАЛАШТУВАННЯ ЗБЕРЕЖЕННЯ
-        print("\n📁 Налаштування збереження результатів:")
-        save_detailed = input("Зберігати детальні дані? (y/N): ").strip().lower() in ['y', 'yes', 'так', 'т']
-        compress_results = input("Архівувати результати? (y/N): ").strip().lower() in ['y', 'yes', 'так', 'т']
-        
-        results = {}
-        total_start_time = time.time()
-        
-        print(f"\n🚀 ПОЧАТОК ЕКСПЕРИМЕНТУ: {experiment_name or 'Автогенерований'}")
-        print("="*70)
-        
-        # Запускаємо обрані експерименти
-        if choice in ["1", "5"]:
-            print(f"\n{'🚀 ЗАПУСК ПРИКЛАДУ 1' if choice == '1' else '🚀 ПРИКЛАД 1/4'}")
-            try:
-                results['quick_benchmark'] = example_1_quick_benchmark()
-                print("   ✅ Приклад 1 завершено успішно")
-            except Exception as e:
-                print(f"   ❌ Помилка в прикладі 1: {e}")
-                results['quick_benchmark'] = None
-        
-        if choice in ["2", "5"]:
-            print(f"\n{'🔬 ЗАПУСК ПРИКЛАДУ 2' if choice == '2' else '🔬 ПРИКЛАД 2/4'}")
-            try:
-                results['detailed_analysis'] = example_2_detailed_analysis()
-                print("   ✅ Приклад 2 завершено успішно")
-            except Exception as e:
-                print(f"   ❌ Помилка в прикладі 2: {e}")
-                results['detailed_analysis'] = None
-        
-        if choice in ["3", "5"]:
-            print(f"\n{'🎯 ЗАПУСК ПРИКЛАДУ 3' if choice == '3' else '🎯 ПРИКЛАД 3/4'}")
-            try:
-                results['custom_simulation'] = example_3_custom_simulation()
-                print("   ✅ Приклад 3 завершено успішно")
-            except Exception as e:
-                print(f"   ❌ Помилка в прикладі 3: {e}")
-                results['custom_simulation'] = None
-        
-        if choice in ["4", "5"]:
-            print(f"\n{'🔄 ЗАПУСК ПРИКЛАДУ 4' if choice == '4' else '🔄 ПРИКЛАД 4/4'}")
-            try:
-                # 🔧 ВИКОРИСТОВУЄМО ПРАВИЛЬНУ ФУНКЦІЮ БЕЗ ВТРУЧАННЯ
-                results['configuration_comparison'] = example_4_model_comparison_truly_correct()
-                print("   ✅ Приклад 4 завершено успішно")
-            except Exception as e:
-                print(f"   ❌ Помилка в прикладі 4: {e}")
-                results['configuration_comparison'] = None
-        
-        total_time = time.time() - total_start_time
-        
-        # Підсумок експерименту
-        print(f"\n" + "="*70)
-        print(f"🎉 ЕКСПЕРИМЕНТ ЗАВЕРШЕНО")
-        print(f"="*70)
-        print(f"⏱️ Загальний час: {total_time/60:.1f} хвилин")
-        print(f"📊 Проведено експериментів: {len([r for r in results.values() if r is not None])}")
-        
-        success_count = len([r for r in results.values() if r is not None])
-        total_count = len(results)
-        print(f"✅ Успішних: {success_count}/{total_count}")
-        
-        # 🆕 ЗБЕРЕЖЕННЯ РЕЗУЛЬТАТІВ З НОВОЮ СИСТЕМОЮ
-        if results:
-            print(f"\n💾 ЗБЕРЕЖЕННЯ РЕЗУЛЬТАТІВ ЕКСПЕРИМЕНТУ...")
-            
-            try:
-                experiment_path = save_experiment_summary(
-                    results=results,
-                    experiment_name=experiment_name,
-                    base_results_dir="experiment_results",
-                    save_detailed_data=save_detailed,
-                    save_plots=False,  # Поки що не реалізовано
-                    compress_results=compress_results
-                )
-                
-                print(f"🎯 ЕКСПЕРИМЕНТ УСПІШНО ЗБЕРЕЖЕНО!")
-                print(f"📂 Локація: {experiment_path}")
-                
-                # Показуємо що було збережено
-                if success_count > 0:
-                    print(f"\n📁 ЗБЕРЕЖЕНІ РЕЗУЛЬТАТИ:")
-                    for exp_name, exp_result in results.items():
-                        if exp_result is not None:
-                            if isinstance(exp_result, pd.DataFrame):
-                                print(f"   📊 {exp_name}: Таблиця порівняння ({exp_result.shape[0]} рядків)")
-                            elif isinstance(exp_result, tuple):
-                                print(f"   📈 {exp_name}: Результати симуляції + метрики")
-                            elif isinstance(exp_result, dict):
-                                print(f"   📋 {exp_name}: Детальний аналіз")
-                            else:
-                                print(f"   📄 {exp_name}: {type(exp_result).__name__}")
-                
-                # Рекомендації щодо подальших дій
-                print(f"\n💡 РЕКОМЕНДАЦІЇ ДЛЯ ПОДАЛЬШОЇ РОБОТИ:")
-                
-                if 'configuration_comparison' in results and results['configuration_comparison'] is not None:
-                    comparison_df = results['configuration_comparison']
-                    if not comparison_df.empty and 'Configuration' in comparison_df.columns:
-                        best_config = comparison_df.iloc[0]['Configuration']
-                        print(f"   🏆 Використовуйте конфігурацію '{best_config}' для продакшн")
-                
-                if 'quick_benchmark' in results and results['quick_benchmark'] is not None:
-                    benchmark_df = results['quick_benchmark']
-                    if not benchmark_df.empty and 'Model' in benchmark_df.columns:
-                        best_model = benchmark_df.iloc[0]['Model']
-                        print(f"   🚀 Найшвидша модель: {best_model}")
-                
-                print(f"   📊 Регулярно запускайте бенчмарк для моніторингу продуктивності")
-                print(f"   🔧 Налаштовуйте параметри MPC на основі збережених рекомендацій")
-                print(f"   📈 Використовуйте збережені метрики для порівняння з майбутніми експериментами")
-                
-                # Інструкції щодо доступу до результатів
-                print(f"\n📖 ЯК ВИКОРИСТОВУВАТИ ЗБЕРЕЖЕНІ РЕЗУЛЬТАТИ:")
-                print(f"   1. Основне резюме: {experiment_path}/summary/experiment_summary.json")
-                print(f"   2. Порівняльна таблиця: {experiment_path}/summary/comparison_table.csv")
-                print(f"   3. Детальні дані: {experiment_path}/detailed_data/")
-                print(f"   4. Конфігурації: {experiment_path}/configurations/")
-                print(f"   5. Текстовий звіт: {experiment_path}/summary/experiment_report.txt")
-                
-            except Exception as save_error:
-                print(f"❌ Помилка збереження результатів: {save_error}")
-                print(f"⚠️ Результати залишаються в пам'яті для цієї сесії")
-                
-                # Fallback: зберігаємо базове резюме
-                try:
-                    fallback_summary = {
-                        'timestamp': pd.Timestamp.now().isoformat(),
-                        'experiments_conducted': len(results),
-                        'successful_experiments': success_count,
-                        'total_time_minutes': total_time / 60,
-                        'results_summary': {k: str(type(v)) for k, v in results.items()}
-                    }
-                    
-                    fallback_file = f"experiment_fallback_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.json"
-                    with open(fallback_file, 'w', encoding='utf-8') as f:
-                        json.dump(fallback_summary, f, indent=2, default=str)
-                    
-                    print(f"💾 Базове резюме збережено: {fallback_file}")
-                except:
-                    print(f"❌ Не вдалося зберегти навіть базове резюме")
-        
-        else:
-            print(f"⚠️ Немає результатів для збереження")
-        
-        # Фінальні поради
-        print(f"\n🚀 НАСТУПНІ КРОКИ:")
-        print(f"   • Проаналізуйте збережені результати")
-        print(f"   • Виберіть оптимальну конфігурацію для вашого процесу")
-        print(f"   • Запустіть додаткові експерименти при необхідності")
-        print(f"   • Використовуйте результати для налаштування промислової системи")
-        
-    except KeyboardInterrupt:
-        print(f"\n⚠️ Експеримент перервано користувачем")
-        
-        # Спробуємо зберегти часткові результати
-        if 'results' in locals() and results:
-            try:
-                print(f"💾 Спроба збереження часткових результатів...")
-                experiment_path = save_experiment_summary(
-                    results=results,
-                    experiment_name=f"{experiment_name or 'interrupted'}_partial",
-                    base_results_dir="experiment_results",
-                    save_detailed_data=False,  # Швидке збереження
-                    compress_results=False
-                )
-                print(f"✅ Часткові результати збережено: {experiment_path}")
-            except:
-                print(f"❌ Не вдалося зберегти часткові результати")
-    
-    except Exception as e:
-        print(f"\n❌ Критична помилка: {e}")
-        import traceback
-        traceback.print_exc()
-        
-        # Спробуємо зберегти інформацію про помилку
-        try:
-            error_info = {
-                'timestamp': pd.Timestamp.now().isoformat(),
-                'error_type': type(e).__name__,
-                'error_message': str(e),
-                'traceback': traceback.format_exc()
-            }
-            
-            error_file = f"experiment_error_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.json"
-            with open(error_file, 'w', encoding='utf-8') as f:
-                json.dump(error_info, f, indent=2)
-            
-            print(f"📝 Інформація про помилку збережена: {error_file}")
-        except:
-            print(f"❌ Не вдалося зберегти інформацію про помилку")
-
-
-# 🆕 ДОДАТКОВІ УТИЛІТАРНІ ФУНКЦІЇ ДЛЯ РОБОТИ З РЕЗУЛЬТАТАМИ
-
 def load_experiment_results(experiment_path: str) -> Dict[str, Any]:
     """
     📂 Завантажує збережені результати експерименту
@@ -1815,15 +1612,351 @@ def clean_old_experiments(base_results_dir: str = "experiment_results", keep_las
     print(f"✅ Очищення завершено")
 
 
+# enhanced_simulator_runner.py - ПОВНИЙ КОД відкоригованої функції main
+
+def main():
+    """🚀 Головна функція запуску всіх прикладів з покращеним збереженням та правильними рекомендаціями"""
+    
+    print("🔬 РОЗШИРЕНИЙ СИМУЛЯТОР MPC З БЕНЧМАРКОМ")
+    print("="*70)
+    print("🎯 Доступні приклади:")
+    print("   1. 🚀 Швидкий бенчмарк моделей")
+    print("   2. 🔬 Детальний аналіз MPC")
+    print("   3. 🎯 Користувацька симуляція")
+    print("   4. 🔄 Порівняння конфігурацій")
+    print("   5. 🏃 Запустити всі приклади")
+    print("="*70)
+    
+    try:
+        # Запитуємо у користувача вибір та назву експерименту
+        choice = input("Оберіть приклад (1-5) або Enter для всіх: ").strip()
+        
+        if not choice:
+            choice = "5"  # Запускаємо всі за замовчуванням
+        
+        # 🆕 ЗАПИТУЄМО НАЗВУ ЕКСПЕРИМЕНТУ
+        experiment_name = input("Введіть назву експерименту (або Enter для автогенерації): ").strip()
+        if not experiment_name:
+            experiment_name = None  # Буде згенеровано автоматично
+        
+        # 🆕 НАЛАШТУВАННЯ ЗБЕРЕЖЕННЯ
+        print("\n📁 Налаштування збереження результатів:")
+        save_detailed = input("Зберігати детальні дані? (y/N): ").strip().lower() in ['y', 'yes', 'так', 'т']
+        compress_results = input("Архівувати результати? (y/N): ").strip().lower() in ['y', 'yes', 'так', 'т']
+        
+        results = {}
+        total_start_time = time.time()
+        
+        print(f"\n🚀 ПОЧАТОК ЕКСПЕРИМЕНТУ: {experiment_name or 'Автогенерований'}")
+        print("="*70)
+        
+        # Запускаємо обрані експерименти
+        if choice in ["1", "5"]:
+            print(f"\n{'🚀 ЗАПУСК ПРИКЛАДУ 1' if choice == '1' else '🚀 ПРИКЛАД 1/4'}")
+            try:
+                results['quick_benchmark'] = example_1_quick_benchmark()
+                print("   ✅ Приклад 1 завершено успішно")
+            except Exception as e:
+                print(f"   ❌ Помилка в прикладі 1: {e}")
+                results['quick_benchmark'] = None
+        
+        if choice in ["2", "5"]:
+            print(f"\n{'🔬 ЗАПУСК ПРИКЛАДУ 2' if choice == '2' else '🔬 ПРИКЛАД 2/4'}")
+            try:
+                results['detailed_analysis'] = example_2_detailed_analysis()
+                print("   ✅ Приклад 2 завершено успішно")
+            except Exception as e:
+                print(f"   ❌ Помилка в прикладі 2: {e}")
+                results['detailed_analysis'] = None
+        
+        if choice in ["3", "5"]:
+            print(f"\n{'🎯 ЗАПУСК ПРИКЛАДУ 3' if choice == '3' else '🎯 ПРИКЛАД 3/4'}")
+            try:
+                results['custom_simulation'] = example_3_custom_simulation()
+                print("   ✅ Приклад 3 завершено успішно")
+            except Exception as e:
+                print(f"   ❌ Помилка в прикладі 3: {e}")
+                results['custom_simulation'] = None
+        
+        if choice in ["4", "5"]:
+            print(f"\n{'🔄 ЗАПУСК ПРИКЛАДУ 4' if choice == '4' else '🔄 ПРИКЛАД 4/4'}")
+            try:
+                # 🔧 ВИКОРИСТОВУЄМО ВИПРАВЛЕНУ ФУНКЦІЮ БЕЗ ВТРУЧАННЯ
+                results['configuration_comparison'] = compare_mpc_configurations_correct(
+                    configurations=[
+                        {
+                            'name': 'KRR_Conservative',
+                            'model_type': 'krr',
+                            'kernel': 'rbf', 
+                            'Np': 6,
+                            'Nc': 4,
+                            'λ_obj': 0.2,
+                            'w_fe': 5.0,
+                            'w_mass': 1.0
+                        },
+                        {
+                            'name': 'KRR_Aggressive', 
+                            'model_type': 'krr',
+                            'kernel': 'rbf',
+                            'Np': 8,
+                            'Nc': 6,
+                            'λ_obj': 0.05,
+                            'w_fe': 10.0,
+                            'w_mass': 1.5,
+                            'N_data': 12000,
+                            'find_optimal_params': False
+                        },
+                        {
+                            'name': 'SVR_Balanced',
+                            'model_type': 'svr',
+                            'kernel': 'rbf',
+                            'Np': 7,
+                            'Nc': 5,
+                            'λ_obj': 0.1,
+                            'w_fe': 7.0,
+                            'w_mass': 1.2
+                        },
+                        {
+                            'name': 'Linear_Fast',
+                            'model_type': 'linear',
+                            'linear_type': 'ridge',
+                            'Np': 10,
+                            'Nc': 8,
+                            'λ_obj': 0.15,
+                            'w_fe': 6.0,
+                            'w_mass': 1.0,
+                            'verbose_reports': True,
+                            'silent_mode': False
+                        }
+                    ],
+                    hist_df=load_historical_data(),
+                    base_config='oleksandr_original',
+                    comparison_steps=100,
+                    show_progress=True
+                )
+                print("   ✅ Приклад 4 завершено успішно")
+            except Exception as e:
+                print(f"   ❌ Помилка в прикладі 4: {e}")
+                results['configuration_comparison'] = None
+        
+        total_time = time.time() - total_start_time
+        
+        # Підсумок експерименту
+        print(f"\n" + "="*70)
+        print(f"🎉 ЕКСПЕРИМЕНТ ЗАВЕРШЕНО")
+        print(f"="*70)
+        print(f"⏱️ Загальний час: {total_time/60:.1f} хвилин")
+        print(f"📊 Проведено експериментів: {len([r for r in results.values() if r is not None])}")
+        
+        success_count = len([r for r in results.values() if r is not None])
+        total_count = len(results)
+        print(f"✅ Успішних: {success_count}/{total_count}")
+        
+        # 🆕 ЗБЕРЕЖЕННЯ РЕЗУЛЬТАТІВ З НОВОЮ СИСТЕМОЮ
+        if results:
+            print(f"\n💾 ЗБЕРЕЖЕННЯ РЕЗУЛЬТАТІВ ЕКСПЕРИМЕНТУ...")
+            
+            try:
+                experiment_path = save_experiment_summary(
+                    results=results,
+                    experiment_name=experiment_name,
+                    base_results_dir="experiment_results",
+                    save_detailed_data=save_detailed,
+                    save_plots=False,  # Поки що не реалізовано
+                    compress_results=compress_results
+                )
+                
+                print(f"🎯 ЕКСПЕРИМЕНТ УСПІШНО ЗБЕРЕЖЕНО!")
+                print(f"📂 Локація: {experiment_path}")
+                
+                # Показуємо що було збережено
+                if success_count > 0:
+                    print(f"\n📁 ЗБЕРЕЖЕНІ РЕЗУЛЬТАТИ:")
+                    for exp_name, exp_result in results.items():
+                        if exp_result is not None:
+                            if isinstance(exp_result, pd.DataFrame):
+                                print(f"   📊 {exp_name}: Таблиця порівняння ({exp_result.shape[0]} рядків)")
+                            elif isinstance(exp_result, tuple):
+                                print(f"   📈 {exp_name}: Результати симуляції + метрики")
+                            elif isinstance(exp_result, dict):
+                                print(f"   📋 {exp_name}: Детальний аналіз")
+                            else:
+                                print(f"   📄 {exp_name}: {type(exp_result).__name__}")
+                
+                # 🔧 ВИПРАВЛЕНІ РЕКОМЕНДАЦІЇ на основі комбінованої оцінки
+                print(f"\n💡 РЕКОМЕНДАЦІЇ ДЛЯ ПОДАЛЬШОЇ РОБОТИ:")
+                
+                if 'configuration_comparison' in results and results['configuration_comparison'] is not None:
+                    comparison_df = results['configuration_comparison']
+                    if not comparison_df.empty and 'Configuration' in comparison_df.columns:
+                        
+                        # 🔧 ПРАВИЛЬНА ЛОГІКА: Знаходимо найкращу конфігурацію за комбінованою оцінкою
+                        if 'Combined_Score' in comparison_df.columns:
+                            valid_mask = comparison_df['Combined_Score'].notna()
+                            if valid_mask.any():
+                                # Сортуємо за комбінованою оцінкою (вища = краща)
+                                sorted_df = comparison_df[valid_mask].sort_values('Combined_Score', ascending=False)
+                                best_config = sorted_df.iloc[0]['Configuration']
+                                best_score = sorted_df.iloc[0]['Combined_Score']
+                                best_mpc_quality = sorted_df.iloc[0].get('MPC_Quality_Score', 0)
+                                best_rmse = sorted_df.iloc[0].get('RMSE_Fe', 0)
+                                
+                                print(f"   🏆 Використовуйте конфігурацію '{best_config}' для продакшн")
+                                print(f"   📊 Комбінована оцінка: {best_score:.4f} (70% MPC якість + 30% точність)")
+                                print(f"   📈 RMSE Fe: {best_rmse:.4f}, MPC якість: {best_mpc_quality:.1f}/100")
+                                
+                                # Інтерпретація якості
+                                if best_mpc_quality >= 65:
+                                    print(f"   ✅ Висока якість MPC - готово для промислового використання")
+                                elif best_mpc_quality >= 50:
+                                    print(f"   ⚠️ Середня якість MPC - розгляньте додаткове налаштування")
+                                else:
+                                    print(f"   🔧 Низька якість MPC - потрібне серйозне налаштування")
+                                
+                                # Показуємо топ-3
+                                print(f"\n   📊 Топ-3 конфігурації за комбінованою оцінкою:")
+                                for idx in range(min(3, len(sorted_df))):
+                                    row = sorted_df.iloc[idx]
+                                    rank_emoji = "🥇" if idx == 0 else "🥈" if idx == 1 else "🥉"
+                                    print(f"      {rank_emoji} {row['Configuration']}: {row['Combined_Score']:.4f} "
+                                          f"(MPC: {row.get('MPC_Quality_Score', 0):.1f}, RMSE: {row.get('RMSE_Fe', 0):.4f})")
+                            else:
+                                # Fallback до простого RMSE
+                                best_config = comparison_df.iloc[0]['Configuration']
+                                print(f"   🏆 Використовуйте конфігурацію '{best_config}' для продакшн (за RMSE)")
+                        else:
+                            # Немає комбінованої оцінки
+                            best_config = comparison_df.iloc[0]['Configuration']
+                            print(f"   🏆 Використовуйте конфігурацію '{best_config}' для продакшн")
+                
+                # Інші рекомендації
+                if 'quick_benchmark' in results and results['quick_benchmark'] is not None:
+                    benchmark_df = results['quick_benchmark']
+                    if not benchmark_df.empty and 'Model' in benchmark_df.columns:
+                        best_model = benchmark_df.iloc[0]['Model']
+                        print(f"   🚀 Найшвидша модель: {best_model}")
+                
+                print(f"   📊 Регулярно запускайте бенчмарк для моніторингу продуктивності")
+                print(f"   🔧 Налаштовуйте параметри MPC на основі збережених рекомендацій")
+                print(f"   📈 Використовуйте збережені метрики для порівняння з майбутніми експериментами")
+                
+                # Інструкції щодо доступу до результатів
+                print(f"\n📖 ЯК ВИКОРИСТОВУВАТИ ЗБЕРЕЖЕНІ РЕЗУЛЬТАТИ:")
+                print(f"   1. Основне резюме: {experiment_path}/summary/experiment_summary.json")
+                print(f"   2. Порівняльна таблиця: {experiment_path}/summary/comparison_table.csv")
+                print(f"   3. Детальні дані: {experiment_path}/detailed_data/")
+                print(f"   4. Конфігурації: {experiment_path}/configurations/")
+                print(f"   5. Текстовий звіт: {experiment_path}/summary/experiment_report.txt")
+                
+            except Exception as save_error:
+                print(f"❌ Помилка збереження результатів: {save_error}")
+                print(f"⚠️ Результати залишаються в пам'яті для цієї сесії")
+                
+                # Fallback: зберігаємо базове резюме
+                try:
+                    import json
+                    fallback_summary = {
+                        'timestamp': pd.Timestamp.now().isoformat(),
+                        'experiments_conducted': len(results),
+                        'successful_experiments': success_count,
+                        'total_time_minutes': total_time / 60,
+                        'results_summary': {k: str(type(v)) for k, v in results.items()},
+                        'error': str(save_error)
+                    }
+                    
+                    fallback_file = f"experiment_fallback_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.json"
+                    with open(fallback_file, 'w', encoding='utf-8') as f:
+                        json.dump(fallback_summary, f, indent=2, default=str)
+                    
+                    print(f"💾 Базове резюме збережено: {fallback_file}")
+                    
+                    # 🔧 FALLBACK рекомендації
+                    if 'configuration_comparison' in results and results['configuration_comparison'] is not None:
+                        comparison_df = results['configuration_comparison']
+                        if not comparison_df.empty:
+                            best_config = comparison_df.iloc[0]['Configuration']
+                            print(f"\n💡 БАЗОВА РЕКОМЕНДАЦІЯ:")
+                            print(f"   🏆 Найкраща конфігурація: {best_config}")
+                            
+                except Exception as fallback_error:
+                    print(f"❌ Не вдалося зберегти навіть базове резюме: {fallback_error}")
+        
+        else:
+            print(f"⚠️ Немає результатів для збереження")
+        
+        # Фінальні поради
+        print(f"\n🚀 НАСТУПНІ КРОКИ:")
+        print(f"   • Проаналізуйте збережені результати")
+        print(f"   • Виберіть оптимальну конфігурацію для вашого процесу")
+        print(f"   • Запустіть додаткові експерименти при необхідності")
+        print(f"   • Використовуйте результати для налаштування промислової системи")
+        
+    except KeyboardInterrupt:
+        print(f"\n⚠️ Експеримент перервано користувачем")
+        
+        # Спробуємо зберегти часткові результати
+        if 'results' in locals() and results:
+            try:
+                print(f"💾 Спроба збереження часткових результатів...")
+                experiment_path = save_experiment_summary(
+                    results=results,
+                    experiment_name=f"{experiment_name or 'interrupted'}_partial",
+                    base_results_dir="experiment_results",
+                    save_detailed_data=False,  # Швидке збереження
+                    compress_results=False
+                )
+                print(f"✅ Часткові результати збережено: {experiment_path}")
+                
+                # 🔧 Часткові рекомендації
+                if 'configuration_comparison' in results and results['configuration_comparison'] is not None:
+                    comparison_df = results['configuration_comparison']
+                    if not comparison_df.empty and 'Combined_Score' in comparison_df.columns:
+                        valid_mask = comparison_df['Combined_Score'].notna()
+                        if valid_mask.any():
+                            sorted_df = comparison_df[valid_mask].sort_values('Combined_Score', ascending=False)
+                            best_config = sorted_df.iloc[0]['Configuration']
+                            best_score = sorted_df.iloc[0]['Combined_Score']
+                            print(f"\n💡 ЧАСТКОВА РЕКОМЕНДАЦІЯ:")
+                            print(f"   🏆 Найкраща конфігурація: {best_config} (оцінка: {best_score:.4f})")
+                
+            except Exception as partial_save_error:
+                print(f"❌ Не вдалося зберегти часткові результати: {partial_save_error}")
+    
+    except Exception as e:
+        print(f"\n❌ Критична помилка: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        # Спробуємо зберегти інформацію про помилку
+        try:
+            import json
+            error_info = {
+                'timestamp': pd.Timestamp.now().isoformat(),
+                'error_type': type(e).__name__,
+                'error_message': str(e),
+                'traceback': traceback.format_exc(),
+                'experiment_name': experiment_name,
+                'choice': choice if 'choice' in locals() else 'unknown'
+            }
+            
+            error_file = f"experiment_error_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.json"
+            with open(error_file, 'w', encoding='utf-8') as f:
+                json.dump(error_info, f, indent=2)
+            
+            print(f"📝 Інформація про помилку збережена: {error_file}")
+        except Exception as error_save_error:
+            print(f"❌ Не вдалося зберегти інформацію про помилку: {error_save_error}")
+
+
 if __name__ == '__main__':
     main()
 
-print("✅ ОНОВЛЕНА СИСТЕМА ЗБЕРЕЖЕННЯ ГОТОВА!")
-print("📁 Нові можливості:")
-print("   • Автоматичне створення структурованих папок")
-print("   • Збереження результатів у різних форматах")
-print("   • Детальні текстові звіти")
-print("   • Функції завантаження та управління експериментами")
-print("   • Очищення старих результатів")
-if __name__ == '__main__':
-    main()
+print("✅ ПОВНИЙ КОД ВІДКОРИГОВАНОЇ ФУНКЦІЇ main ГОТОВИЙ!")
+print("🔧 Ключові покращення:")
+print("   1. ✅ Правильні рекомендації за комбінованою оцінкою (70% MPC + 30% точність)")
+print("   2. ✅ Детальне пояснення логіки вибору найкращої конфігурації")
+print("   3. ✅ Показ топ-3 конфігурацій з поясненням")
+print("   4. ✅ Інтерпретація якості MPC (висока/середня/низька)")
+print("   5. ✅ Обробка помилок з частковим збереженням результатів")
+print("   6. ✅ Fallback логіка для випадків відсутності комбінованої оцінки")
+print("   7. ✅ Інформативні інструкції користувачу")

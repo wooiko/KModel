@@ -1638,40 +1638,6 @@ def detailed_mpc_analysis(
     
     return analysis_report
 
-# ОСТАТОЧНИЙ ФІКС ДЛЯ enhanced_sim.py
-# Додайте ЦЕ В КІНЕЦЬ ФАЙЛУ enhanced_sim.py (перед print statements):
-
-def fixed_r2_calculation_simple(y_true, y_pred):
-    """Проста виправлена функція R²"""
-    
-    if len(y_true) < 2 or len(y_pred) < 2:
-        return 0.0
-    
-    # Очищуємо від NaN
-    mask = ~(np.isnan(y_true) | np.isnan(y_pred))
-    y_true = np.array(y_true)[mask]
-    y_pred = np.array(y_pred)[mask]
-    
-    if len(y_true) < 2:
-        return 0.0
-    
-    # Стандартний R²
-    ss_res = np.sum((y_true - y_pred) ** 2)
-    ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
-    
-    if ss_tot < 1e-10:
-        return 1.0 if ss_res < 1e-10 else 0.0
-    
-    r2 = 1 - (ss_res / ss_tot)
-    return max(0.0, float(r2))
-
-# correct_mpc_metrics.py - Правильні метрики для оцінки якості MPC
-
-import numpy as np
-import pandas as pd
-
-# Замініть функцію compute_correct_mpc_metrics в enhanced_sim.py на цю версію:
-
 def compute_correct_mpc_metrics(results_df, basic_metrics, reference_values=None):
     """
     🎯 Правильні метрики для оцінки якості MPC керування
