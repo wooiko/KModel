@@ -1,0 +1,44 @@
+{
+  "experiment_info": {
+    "name": "experiment_20250810_130743",
+    "timestamp": "2025-08-10T13:07:43.839887",
+    "duration_minutes": 2.5,
+    "total_experiments": 1,
+    "successful_experiments": 1,
+    "python_version": "3.11.7",
+    "system_info": {
+      "os": "Windows",
+      "os_version": "10.0.26100",
+      "architecture": "64bit",
+      "processor": "Intel64 Family 6 Model 154 Stepping 4, GenuineIntel"
+    }
+  },
+  "experiments_overview": {
+    "total_count": 1,
+    "successful_count": 1,
+    "failed_count": 0,
+    "experiment_types": {
+      "comparison": 1
+    },
+    "best_results": {}
+  },
+  "key_findings": {
+    "best_performers": {},
+    "recommendations": [],
+    "performance_summary": {}
+  },
+  "file_structure": {
+    "summary_files": [
+      "experiment_summary.json",
+      "comparison_table.csv",
+      "experiment_report.txt"
+    ],
+    "detailed_files": [],
+    "config_files": [
+      "all_configurations.json"
+    ],
+    "metric_files": [
+      "aggregated_metrics.json"
+    ]
+  }
+}

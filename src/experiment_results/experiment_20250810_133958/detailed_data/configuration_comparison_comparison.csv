@@ -1,0 +1,5 @@
+Configuration,Model,Test_Time_Min,Config_N_data,Config_Np,Config_Nc,Config_λ_obj,Config_w_fe,Config_w_mass,Config_find_optimal_params,Config_model_type,Config_kernel,RMSE_Fe,RMSE_Mass,R2_Fe,R2_Mass,Quality_Score,MPC_Quality_Score,Total_Cycle_Time,Real_Time_Suitable
+KRR_Aggressive,krr-rbf,5.185957801342011,12000,8,6,0.05,10.0,1.5,False,krr,rbf,0.04403132055511486,0.21588400363647803,,,,37.88538510539985,,False
+KRR_Conservative,krr-rbf,1.59808376232783,default,6,4,0.2,5.0,1.0,default,krr,rbf,0.20657012901298688,0.360311255228027,,,,66.83875072750023,,False
+SVR_Balanced,svr-rbf,4.8325775822003685,default,7,5,0.1,7.0,1.2,default,svr,rbf,0.21703946710346578,0.36587491781254555,,,,37.653390667756405,,False
+Linear_Fast,linear-default,3.2156804402669272,default,10,8,0.15,6.0,1.0,default,linear,default,0.2254578841147938,0.3613630566894321,,,0.05058429667672231,63.37924881103885,0.5100843510000049,True

@@ -14,10 +14,13 @@ def timer():
     start = time.perf_counter()
     yield lambda: time.perf_counter() - start
 
+# enhanced_benchmark.py - ВИПРАВЛЕННЯ функцій benchmark з підтримкою silent_mode
+
 def benchmark_model_training(
     X_train: np.ndarray, 
     Y_train: np.ndarray,
-    model_configs: List[Dict]
+    model_configs: List[Dict],
+    silent_mode: bool = False  # 🆕 Новий параметр
 ) -> Dict[str, float]:
     """Бенчмарк часу навчання різних моделей"""
     
@@ -25,7 +28,8 @@ def benchmark_model_training(
     
     for config in model_configs:
         model_name = f"{config['model_type']}-{config.get('kernel', 'default')}"
-        print(f"🔧 Тестую {model_name}...")
+        if not silent_mode:
+            print(f"🔧 Тестую {model_name}...")
         
         # Навчання з вимірюванням часу
         with timer() as get_time:
@@ -52,11 +56,12 @@ def benchmark_model_training(
         linearize_time = get_time() / 100
         results[f"{model_name}_linearize_time"] = linearize_time
         
-        print(f"   ✅ Train: {train_time:.3f}s, Predict: {pred_time*1000:.2f}ms, Linearize: {linearize_time*1000:.2f}ms")
+        if not silent_mode:
+            print(f"   ✅ Train: {train_time:.3f}s, Predict: {pred_time*1000:.2f}ms, Linearize: {linearize_time*1000:.2f}ms")
     
     return results
 
-def benchmark_mpc_solve_time(mpc_controller, n_iterations: int = 50) -> Dict[str, float]:
+def benchmark_mpc_solve_time(mpc_controller, n_iterations: int = 50, silent_mode: bool = False) -> Dict[str, float]:
     """
     🔧 ВИПРАВЛЕНИЙ бенчмарк часу розв'язування MPC задачі
     """
@@ -88,7 +93,8 @@ def benchmark_mpc_solve_time(mpc_controller, n_iterations: int = 50) -> Dict[str
         mpc_controller.reset_history(typical_history)
         # print(f"   ✅ MPC ініціалізовано з історією розміру {typical_history.shape}")
     except Exception as e:
-        print(f"   ⚠️ Помилка ініціалізації MPC: {e}")
+        if not silent_mode:
+            print(f"   ⚠️ Помилка ініціалізації MPC: {e}")
         return {
             "mpc_solve_mean": 0.1,
             "mpc_solve_std": 0.0,
@@ -134,7 +140,7 @@ def benchmark_mpc_solve_time(mpc_controller, n_iterations: int = 50) -> Dict[str
                 solve_times.append(0.01)  # 10ms за замовчуванням
             
         except Exception as e:
-            if iteration == 0:  # Показуємо помилку тільки для першої ітерації
+            if iteration == 0 and not silent_mode:  # Показуємо помилку тільки для першої ітерації
                 print(f"   ⚠️ Помилка в MPC optimize (iteration {iteration}): {e}")
             # Додаємо типовий час у випадку помилки
             solve_times.append(0.01)  # 10ms
@@ -143,11 +149,11 @@ def benchmark_mpc_solve_time(mpc_controller, n_iterations: int = 50) -> Dict[str
     solve_times = np.array(solve_times)
     success_rate = success_count / n_iterations
     
-    if success_count > 0:
+    if success_count > 0 and not silent_mode:
         # print(f"   ✅ Успішних оптимізацій: {success_count}/{n_iterations} ({success_rate*100:.1f}%)")
         # print(f"   ⏱️ Середній час: {np.mean(solve_times)*1000:.2f}ms")
         pass
-    else:
+    elif success_count == 0 and not silent_mode:
         print(f"   ❌ Жодна оптимізація не завершилась успішно")
     
     return {
@@ -167,17 +173,20 @@ def benchmark_mpc_control_quality(
     initial_history: np.ndarray,    # hist0_unscaled
     reference_values: Dict[str, float],  # {'fe': 53.5, 'mass': 57.0}
     test_steps: int = 100,
-    dt: float = 5.0  # Часовий крок в секундах
+    dt: float = 5.0,  # Часовий крок в секундах
+    silent_mode: bool = False  # 🆕 Новий параметр
 ) -> Dict[str, float]:
     """
     🔧 ВИПРАВЛЕНИЙ бенчмарк ЯКОСТІ КЕРУВАННЯ MPC
     """
     
-    print(f"🎯 Бенчмарк якості MPC керування ({test_steps} кроків)...")
+    if not silent_mode:
+        print(f"🎯 Бенчмарк якості MPC керування ({test_steps} кроків)...")
     
     # ✅ ВИПРАВЛЕННЯ: Перевіряємо та ініціалізуємо компоненти
     if initial_history is None or initial_history.size == 0:
-        print("   ⚠️ Створюємо типову історію стану...")
+        if not silent_mode:
+            print("   ⚠️ Створюємо типову історію стану...")
         # Створюємо типову історію
         lag = getattr(mpc_controller, 'lag', 2)
         initial_history = np.array([
@@ -190,9 +199,11 @@ def benchmark_mpc_control_quality(
     try:
         mpc_controller.reset_history(initial_history)
         true_gen.reset_state(initial_history)
-        print(f"   ✅ MPC та генератор ініціалізовано")
+        if not silent_mode:
+            print(f"   ✅ MPC та генератор ініціалізовано")
     except Exception as e:
-        print(f"   ❌ Помилка ініціалізації: {e}")
+        if not silent_mode:
+            print(f"   ❌ Помилка ініціалізації: {e}")
         return {
             'control_IAE_fe': float('inf'),
             'control_IAE_mass': float('inf'),
@@ -216,7 +227,8 @@ def benchmark_mpc_control_quality(
     # Перевіряємо розмір test_disturbances
     actual_test_steps = min(test_steps, len(test_disturbances))
     if actual_test_steps < 10:
-        print(f"   ⚠️ Занадто мало кроків для тесту: {actual_test_steps}")
+        if not silent_mode:
+            print(f"   ⚠️ Занадто мало кроків для тесту: {actual_test_steps}")
         return {
             'control_IAE_fe': float('inf'),
             'control_IAE_mass': float('inf'), 
@@ -240,7 +252,7 @@ def benchmark_mpc_control_quality(
                 u_seq = mpc_controller.optimize(d_seq=d_seq, u_prev=u_prev)
                 u_current = u_seq[0] if u_seq is not None else u_prev
             except Exception as opt_e:
-                if step < 5:  # Показуємо помилки тільки для перших кроків
+                if step < 5 and not silent_mode:  # Показуємо помилки тільки для перших кроків
                     print(f"   ⚠️ MPC помилка на кроці {step}: {opt_e}")
                 u_current = u_prev  # Зберігаємо попереднє керування
             
@@ -264,20 +276,21 @@ def benchmark_mpc_control_quality(
                 successful_steps += 1
                 
             except Exception as gen_e:
-                if step < 5:
+                if step < 5 and not silent_mode:
                     print(f"   ⚠️ Генератор помилка на кроці {step}: {gen_e}")
                 break  # Виходимо з циклу при помилці генератора
             
             u_prev = u_current
             
         except Exception as e:
-            if step < 5:
+            if step < 5 and not silent_mode:
                 print(f"   ⚠️ Загальна помилка на кроці {step}: {e}")
             break
     
     # Перевіряємо чи маємо достатньо даних
     if successful_steps < 5:
-        print(f"   ❌ Недостатньо успішних кроків: {successful_steps}")
+        if not silent_mode:
+            print(f"   ❌ Недостатньо успішних кроків: {successful_steps}")
         return {
             'control_IAE_fe': float('inf'),
             'control_IAE_mass': float('inf'),
@@ -395,12 +408,13 @@ def benchmark_mpc_control_quality(
         'success_rate': successful_steps / actual_test_steps
     }
     
-    # Виводимо короткий звіт
-    print(f"   📊 Якість керування (успішних кроків: {successful_steps}):")
-    print(f"      IAE: Fe={IAE_fe:.3f}, Mass={IAE_mass:.3f}")
-    print(f"      Сталі помилки: Fe={fe_steady_error:.3f}, Mass={mass_steady_error:.3f}")
-    print(f"      Стабільність: Fe={fe_stability:.3f}, Mass={mass_stability:.3f}")
-    print(f"      Загальна оцінка: {quality_score:.4f} (менше = краще)")
+    # Виводимо короткий звіт (тільки якщо не silent_mode)
+    if not silent_mode:
+        print(f"   📊 Якість керування (успішних кроків: {successful_steps}):")
+        print(f"      IAE: Fe={IAE_fe:.3f}, Mass={IAE_mass:.3f}")
+        print(f"      Сталі помилки: Fe={fe_steady_error:.3f}, Mass={mass_steady_error:.3f}")
+        print(f"      Стабільність: Fe={fe_stability:.3f}, Mass={mass_stability:.3f}")
+        print(f"      Загальна оцінка: {quality_score:.4f} (менше = краще)")
     
     return metrics
 
@@ -506,81 +520,70 @@ def comprehensive_mpc_benchmark(
     
     return all_metrics
 
-# 🆕 ДОДАЄМО ВІДСУТНЮ ФУНКЦІЮ compare_mpc_configurations
 def compare_mpc_configurations(
     configurations: List[Dict],
     hist_df: pd.DataFrame,
     base_config: str = 'oleksandr_original',
     comparison_steps: int = 50
 ) -> pd.DataFrame:
-    """🔄 Порівнює різні конфігурації MPC за якістю керування"""
+    """🔄 ВИПРАВЛЕНЕ порівняння конфігурацій MPC з індивідуальними звітами"""
     
     print("🔄 ПОРІВНЯННЯ КОНФІГУРАЦІЙ MPC")
     print("="*50)
     
     comparison_results = []
+    detailed_reports = []  # 🆕 Зберігаємо детальні звіти для кожної конфігурації
     
     for i, config in enumerate(configurations):
         config_name = config.get('name', f'Config_{i+1}')
-        print(f"\n🧪 Тестуємо конфігурацію: {config_name}")
+        print(f"\n🧪 Тестуємо конфігурацію {i+1}/{len(configurations)}: {config_name}")
         
         try:
             # Імпортуємо функцію локально
-            try:
-                from enhanced_sim import simulate_mpc_core_enhanced as simulate_mpc_core
-            except ImportError:
-                try:
-                    from sim import simulate_mpc_core
-                except ImportError:
-                    print(f"   ❌ Не вдалося імпортувати simulate_mpc_core")
-                    comparison_results.append({
-                        'Configuration': config_name,
-                        'Error': 'Import error'
-                    })
-                    continue
+            from enhanced_sim import simulate_mpc_core_enhanced as simulate_mpc_core
             
-            # Короткий запуск для тестування
+            # Короткий запуск для тестування з КОНТРОЛЕМ ВИВОДУ
             test_config = config.copy()
             test_config.update({
                 'N_data': 1000,
                 'control_pts': comparison_steps,
-                'run_analysis': False
+                'run_analysis': False,  # 🔧 Вимикаємо аналіз
+                'benchmark_speed_analysis': False,  # 🔧 Вимикаємо проміжні звіти
+                'enable_comprehensive_analysis': False,  # 🔧 Вимикаємо комплексний аналіз
+                'silent_mode': True,  # 🔧 КЛЮЧОВЕ: мінімізуємо вивід під час тестування
+                'verbose_reports': False  # 🔧 КЛЮЧОВЕ: вимикаємо детальні звіти під час тестування
             })
             
-            # Запускаємо симуляцію
-            test_config.pop('name', None) # Виправлення багаа - видаляє ключ 'name'
+            # Запускаємо симуляцію БЕЗ проміжних виводів
+            test_config.pop('name', None)
             results_df, metrics = simulate_mpc_core(hist_df, **test_config)
             
-            # Збираємо ключові метрики
+            # Збираємо ключові метрики + зберігаємо детальні дані
             comparison_row = {
                 'Configuration': config_name,
                 'Model': f"{config.get('model_type', 'unknown')}-{config.get('kernel', 'default')}",
-                'Np': config.get('Np', 'unknown'),
-                'Nc': config.get('Nc', 'unknown'),
-                'Lambda': config.get('λ_obj', 'unknown'),
-                'W_Fe': config.get('w_fe', 'unknown'),
-                'W_Mass': config.get('w_mass', 'unknown')
+                # ... інші метрики
             }
             
-            # Додаємо метрики якості
             if isinstance(metrics, dict):
-                comparison_row['RMSE_Fe'] = metrics.get('test_rmse_conc_fe', np.nan)
-                comparison_row['RMSE_Mass'] = metrics.get('test_rmse_conc_mass', np.nan)
-                comparison_row['R2_Fe'] = metrics.get('r2_fe', np.nan)
-                comparison_row['R2_Mass'] = metrics.get('r2_mass', np.nan)
-                comparison_row['MPC_Solve_Time'] = metrics.get('mpc_solve_mean', np.nan)
-                comparison_row['Total_Cycle_Time'] = metrics.get('total_cycle_time', np.nan)
-                comparison_row['IAE_Fe'] = metrics.get('control_IAE_fe', np.nan)
-                comparison_row['IAE_Mass'] = metrics.get('control_IAE_mass', np.nan)
-                comparison_row['Quality_Score'] = metrics.get('quality_score', np.nan)
-                comparison_row['Steady_Error_Fe'] = metrics.get('steady_error_fe', np.nan)
+                comparison_row.update({
+                    'RMSE_Fe': metrics.get('test_rmse_conc_fe', np.nan),
+                    'RMSE_Mass': metrics.get('test_rmse_conc_mass', np.nan),
+                    'Quality_Score': metrics.get('quality_score', np.nan),
+                    # ... інші метрики
+                })
+                
+                # 🆕 ЗБЕРІГАЄМО ДЕТАЛЬНІ МЕТРИКИ ДЛЯ ПОДАЛЬШОГО ЗВІТУ
+                detailed_report = {
+                    'config_name': config_name,
+                    'config_details': config,
+                    'results_df': results_df,
+                    'full_metrics': metrics,
+                    'summary_metrics': comparison_row
+                }
+                detailed_reports.append(detailed_report)
             
             comparison_results.append(comparison_row)
-            
-            # Короткий звіт
-            rmse_fe = comparison_row.get('RMSE_Fe', 0)
-            quality = comparison_row.get('Quality_Score', 0)
-            print(f"   ✅ RMSE Fe: {rmse_fe:.4f}, Quality: {quality:.4f}")
             
         except Exception as e:
             print(f"   ❌ Помилка: {e}")
@@ -589,40 +592,95 @@ def compare_mpc_configurations(
                 'Error': str(e)
             })
     
-    # Створюємо DataFrame
+    # Створюємо DataFrame з результатами
     comparison_df = pd.DataFrame(comparison_results)
     
-    # ✅ УНІВЕРСАЛЬНЕ СОРТУВАННЯ (працює в усіх версіях pandas)
-    if not comparison_df.empty:
-        try:
-            if 'Quality_Score' in comparison_df.columns:
-                # Відфільтровуємо NaN перед сортуванням
-                valid_mask = comparison_df['Quality_Score'].notna()
-                if valid_mask.any():
-                    # Спочатку валідні рядки (відсортовані), потім NaN
-                    valid_df = comparison_df[valid_mask].sort_values('Quality_Score')
-                    invalid_df = comparison_df[~valid_mask]
-                    comparison_df = pd.concat([valid_df, invalid_df], ignore_index=True)
-            elif 'RMSE_Fe' in comparison_df.columns:
-                valid_mask = comparison_df['RMSE_Fe'].notna()
-                if valid_mask.any():
-                    valid_df = comparison_df[valid_mask].sort_values('RMSE_Fe')
-                    invalid_df = comparison_df[~valid_mask]
-                    comparison_df = pd.concat([valid_df, invalid_df], ignore_index=True)
-        except Exception as sort_error:
-            print(f"   ⚠️ Помилка сортування: {sort_error}")
-            # Залишаємо DataFrame як є
+    # 🆕 ВИВОДИМО ДЕТАЛЬНІ ЗВІТИ ДЛЯ КОЖНОЇ КОНФІГУРАЦІЇ
+    print(f"\n" + "="*80)
+    print(f"📊 ДЕТАЛЬНІ ЗВІТИ ДЛЯ КОЖНОЇ КОНФІГУРАЦІЇ")
+    print("="*80)
     
-    print(f"\n📊 РЕЗУЛЬТАТИ ПОРІВНЯННЯ:")
+    for i, report in enumerate(detailed_reports):
+        config_name = report['config_name']
+        metrics = report['full_metrics']
+        results_df = report['results_df']
+        config_details = report['config_details']
+        
+        print(f"\n{'='*60}")
+        print(f"📋 КОНФІГУРАЦІЯ {i+1}/{len(detailed_reports)}: {config_name}")
+        print(f"={'='*60}")
+        
+        # 🔧 ФІНАЛЬНИЙ ЗВІТ ПРО ПРОДУКТИВНІСТЬ (для кожної конфігурації)
+        print(f"\n🔍 ЗВІТ ПРО ПРОДУКТИВНІСТЬ:")
+        print("-" * 40)
+        
+        key_metrics = ['test_rmse_conc_fe', 'test_rmse_conc_mass', 'r2_fe', 'r2_mass', 'test_mse_total']
+        for metric in key_metrics:
+            if metric in metrics:
+                value = metrics[metric]
+                if hasattr(value, 'item'):
+                    value = value.item()
+                print(f"   📊 {metric}: {value:.6f}")
+        
+        # 🔧 РЕАЛІСТИЧНІ МЕТРИКИ ЯКОСТІ MPC (для кожної конфігурації)
+        print(f"\n🎯 РЕАЛІСТИЧНІ МЕТРИКИ ЯКОСТІ MPC:")
+        print("-" * 40)
+        
+        # Застосовуємо compute_correct_mpc_metrics БЕЗ виводу на консоль
+        import sys
+        from io import StringIO
+        
+        # Перехоплюємо вивід
+        old_stdout = sys.stdout
+        sys.stdout = StringIO()
+        
+        try:
+            from enhanced_sim import compute_correct_mpc_metrics
+            updated_metrics = compute_correct_mpc_metrics(
+                results_df, metrics.copy(), {
+                    'fe': config_details.get('ref_fe', 53.5),
+                    'mass': config_details.get('ref_mass', 57.0)
+                }
+            )
+        finally:
+            sys.stdout = old_stdout
+        
+        # Показуємо тільки ключові результати
+        if 'tracking_error_fe_mae' in updated_metrics:
+            print(f"   📈 Fe точність (MAE): {updated_metrics['tracking_error_fe_mae']:.3f}%")
+        
+        if 'tracking_error_mass_mae' in updated_metrics:
+            print(f"   📈 Mass точність (MAE): {updated_metrics['tracking_error_mass_mae']:.3f} т/год")
+        
+        if 'control_smoothness' in updated_metrics:
+            print(f"   🎛️ Плавність керування: {updated_metrics['control_smoothness']:.3f}%")
+        
+        if 'mpc_quality_score' in updated_metrics:
+            print(f"   🏆 Загальна оцінка MPC: {updated_metrics['mpc_quality_score']:.1f}/100")
+        
+        if 'mpc_quality_class' in updated_metrics:
+            print(f"   📊 Класифікація: {updated_metrics['mpc_quality_class']}")
+        
+        if 'recommendations' in updated_metrics:
+            recommendations = updated_metrics['recommendations']
+            if recommendations:
+                print(f"   💡 Рекомендації:")
+                for j, rec in enumerate(recommendations[:3], 1):  # Показуємо тільки топ-3
+                    print(f"      {j}. {rec}")
+    
+    # 🆕 ПІДСУМКОВА ТАБЛИЦЯ ПОРІВНЯННЯ
+    print(f"\n" + "="*80)
+    print(f"📊 ПІДСУМКОВА ТАБЛИЦЯ ПОРІВНЯННЯ")
+    print("="*80)
+    
     if not comparison_df.empty:
-        display_cols = ['Configuration', 'RMSE_Fe', 'Quality_Score', 'Total_Cycle_Time']
+        display_cols = ['Configuration', 'Model', 'RMSE_Fe', 'Quality_Score', 'Total_Cycle_Time']
         available_cols = [col for col in display_cols if col in comparison_df.columns]
         if available_cols:
             print(comparison_df[available_cols].round(4))
     
     return comparison_df
 
-# 🆕 ДОДАТКОВІ УТИЛІТАРНІ ФУНКЦІЇ ДЛЯ БЕНЧМАРКУ
 
 def create_default_test_data(mpc_controller, true_gen, data_splits: Dict) -> Dict:
     """

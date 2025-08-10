@@ -300,6 +300,8 @@ def initialize_ekf(
 # === 🆕 РОЗШИРЕНІ ФУНКЦІЇ ДЛЯ ЗБОРУ МЕТРИК ПРОДУКТИВНОСТІ ===
 # =============================================================================
 
+# enhanced_sim.py - ВИПРАВЛЕННЯ функції collect_performance_metrics_enhanced
+
 def collect_performance_metrics_enhanced(
     mpc: MPCController,
     true_gen: StatefulDataGenerator,
@@ -311,55 +313,92 @@ def collect_performance_metrics_enhanced(
 ) -> Dict[str, float]:
     """🔬 Розширений збір метрик: швидкість + якість керування + точність моделі"""
     
-    print("📊 Збираю розширені метрики продуктивності...")
+    silent_mode = params.get('silent_mode', False)
+    verbose_reports = params.get('verbose_reports', True)
+    
+    if not silent_mode and verbose_reports:
+        print("📊 Збираю розширені метрики продуктивності...")
     
     x_scaler, y_scaler = scalers
     
     # 1. 🚀 БАЗОВІ МЕТРИКИ ШВИДКОСТІ
     model_configs = [model_config]
-    speed_metrics = benchmark_model_training(
-        data['X_train_scaled'], 
-        data['Y_train_scaled'], 
-        model_configs
-    )
+    
+    # Тимчасово вимикаємо вивід для benchmark_model_training
+    import sys
+    from io import StringIO
+    
+    if silent_mode:
+        old_stdout = sys.stdout
+        sys.stdout = StringIO()
+    
+    try:
+        speed_metrics = benchmark_model_training(
+            data['X_train_scaled'], 
+            data['Y_train_scaled'], 
+            model_configs
+        )
+    finally:
+        if silent_mode:
+            sys.stdout = old_stdout
     
     # 2. ⚡ MPC ШВИДКІСТЬ
-    mpc_speed_metrics = benchmark_mpc_solve_time(mpc, n_iterations=50)
+    if silent_mode:
+        old_stdout = sys.stdout
+        sys.stdout = StringIO()
     
-    # 3. 🎯 ЯКІСТЬ КЕРУВАННЯ MPC
-    # Підготовка даних для тесту якості
-    n_train = int(params['train_size'] * len(data['X_train']))
-    n_val = int(params['val_size'] * len(data['X_train']))
-    test_idx_start = params['lag'] + 1 + n_train + n_val
+    try:
+        mpc_speed_metrics = benchmark_mpc_solve_time(mpc, n_iterations=50)
+    finally:
+        if silent_mode:
+            sys.stdout = old_stdout
     
-    # Початкова історія
-    hist0_unscaled = df_true[['feed_fe_percent', 'ore_mass_flow', 'solid_feed_percent']].iloc[
-        test_idx_start - (params['lag'] + 1): test_idx_start
-    ].values
-    
-    # Тестові збурення
-    test_disturbances = df_true.iloc[test_idx_start:test_idx_start + 100][
-        ['feed_fe_percent', 'ore_mass_flow']].values
-    
-    # Запускаємо тест якості керування
+    # 3. 🎯 ЯКІСТЬ КЕРУВАННЯ MPC (тільки якщо не silent_mode або спеціально запитано)
     control_quality_metrics = {}
-    if len(test_disturbances) > 10:  # Мінімум 10 кроків для тесту
-        try:
-            control_quality_metrics = benchmark_mpc_control_quality(
-                mpc_controller=mpc,
-                true_gen=true_gen,
-                test_disturbances=test_disturbances,
-                initial_history=hist0_unscaled,
-                reference_values={
-                    'fe': params.get('ref_fe', 53.5),
-                    'mass': params.get('ref_mass', 57.0)
-                },
-                test_steps=min(100, len(test_disturbances)),
-                dt=params.get('time_step_s', 5.0)
-            )
-        except Exception as e:
-            print(f"   ⚠️ Помилка тесту якості керування: {e}")
-            control_quality_metrics = {}
+    
+    if not params.get('skip_control_quality_test', False):
+        # Підготовка даних для тесту якості
+        n_train = int(params['train_size'] * len(data['X_train']))
+        n_val = int(params['val_size'] * len(data['X_train']))
+        test_idx_start = params['lag'] + 1 + n_train + n_val
+        
+        # Початкова історія
+        hist0_unscaled = df_true[['feed_fe_percent', 'ore_mass_flow', 'solid_feed_percent']].iloc[
+            test_idx_start - (params['lag'] + 1): test_idx_start
+        ].values
+        
+        # Тестові збурення
+        test_disturbances = df_true.iloc[test_idx_start:test_idx_start + 100][
+            ['feed_fe_percent', 'ore_mass_flow']].values
+        
+        # Запускаємо тест якості керування
+        if len(test_disturbances) > 10:  # Мінімум 10 кроків для тесту
+            try:
+                if silent_mode:
+                    old_stdout = sys.stdout
+                    sys.stdout = StringIO()
+                
+                try:
+                    control_quality_metrics = benchmark_mpc_control_quality(
+                        mpc_controller=mpc,
+                        true_gen=true_gen,
+                        test_disturbances=test_disturbances,
+                        initial_history=hist0_unscaled,
+                        reference_values={
+                            'fe': params.get('ref_fe', 53.5),
+                            'mass': params.get('ref_mass', 57.0)
+                        },
+                        test_steps=min(100, len(test_disturbances)),
+                        dt=params.get('time_step_s', 5.0)
+                    )
+                finally:
+                    if silent_mode:
+                        sys.stdout = old_stdout
+                        
+            except Exception as e:
+                if not silent_mode and verbose_reports:
+                    print(f"   ⚠️ Помилка тесту якості керування: {e}")
+                control_quality_metrics = {}
     
     # 4. 📊 ЗАГАЛЬНІ МЕТРИКИ
     model_name = f"{model_config['model_type']}-{model_config.get('kernel', 'default')}"
@@ -395,11 +434,12 @@ def collect_performance_metrics_enhanced(
         "normalized_cycle_time": normalized_time
     })
     
-    # 7. 📈 ВИВОДИМО ПІДСУМОК
-    print(f"   🚀 Загальний час циклу: {total_cycle_time*1000:.1f}ms")
-    print(f"   🎯 Оцінка якості керування: {quality_score:.4f}")
-    print(f"   ⚖️ Баланс якість-швидкість: {quality_speed_balance:.4f}")
-    print(f"   ⏱️ Real-time придатність: {'✅' if real_time_suitable else '❌'}")
+    # 7. 📈 ВИВОДИМО ПІДСУМОК (тільки якщо не silent_mode)
+    if not silent_mode and verbose_reports:
+        print(f"   🚀 Загальний час циклу: {total_cycle_time*1000:.1f}ms")
+        print(f"   🎯 Оцінка якості керування: {quality_score:.4f}")
+        print(f"   ⚖️ Баланс якість-швидкість: {quality_speed_balance:.4f}")
+        print(f"   ⏱️ Real-time придатність: {'✅' if real_time_suitable else '❌'}")
     
     return all_metrics
 
@@ -931,6 +971,8 @@ def run_simulation_loop_enhanced(
 # === 🆕 МОДИФІКОВАНА ОСНОВНА ФУНКЦІЯ СИМУЛЯЦІЇ З РОЗШИРЕНИМ БЕНЧМАРКОМ ===
 # =============================================================================
 
+# enhanced_sim.py - ВИПРАВЛЕННЯ функції simulate_mpc_core_enhanced
+
 def simulate_mpc_core_enhanced(  
     reference_df: pd.DataFrame,
     # ... всі параметри як у оригіналі ...
@@ -1016,16 +1058,17 @@ def simulate_mpc_core_enhanced(
     benchmark_control_quality: bool = False,
     benchmark_speed_analysis: bool = True,
     save_benchmark_results: bool = False,
-    progress_callback: Callable[[int, int, str], None] = None
+    progress_callback: Callable[[int, int, str], None] = None,
+    # 🔧 НОВИЙ ПАРАМЕТР ДЛЯ КОНТРОЛЮ ВИВОДУ
+    silent_mode: bool = False,  # Якщо True, мінімізує вивід на консоль
+    verbose_reports: bool = True  # Якщо False, вимикає детальні звіти
 ) -> Tuple[pd.DataFrame, Dict]:  
     """  
     🔬 РОЗШИРЕНА функція симуляції MPC з інтегрованим бенчмарком якості
     
-    Нові можливості:
-    - Детальний аналіз якості керування MPC
-    - Комплексний бенчмарк продуктивності
-    - Розширена діагностика стабільності
-    - Автоматичні рекомендації щодо покращення
+    🔧 ДОДАНО КОНТРОЛЬ ВИВОДУ:
+    - silent_mode: мінімізує вивід під час роботи
+    - verbose_reports: контролює детальні звіти
     """  
     
     # Збираємо всі параметри в словник
@@ -1033,8 +1076,9 @@ def simulate_mpc_core_enhanced(
     params.pop('reference_df')  # Видаляємо DataFrame з params
     
     try:  
-        print("🔬 РОЗШИРЕНА СИМУЛЯЦІЯ MPC З БЕНЧМАРКОМ")
-        print("="*60)
+        if not params['silent_mode']:
+            print("🔬 РОЗШИРЕНА СИМУЛЯЦІЯ MPC З БЕНЧМАРКОМ")
+            print("="*60)
         
         # ---- 1. Підготовка даних (без змін)
         true_gen, df_true, X, Y = prepare_simulation_data(reference_df, params)  
@@ -1044,9 +1088,10 @@ def simulate_mpc_core_enhanced(
         mpc = initialize_mpc_controller_enhanced(params, x_scaler, y_scaler)  
         basic_metrics = train_and_evaluate_model(mpc, data, y_scaler)
 
-        # ---- 3. 🆕 РОЗШИРЕНИЙ ЗБІР МЕТРИК ПРОДУКТИВНОСТІ
-        if params['benchmark_speed_analysis']:
-            print("\n🚀 ЗБІР РОЗШИРЕНИХ МЕТРИК ПРОДУКТИВНОСТІ...")
+        # ---- 3. 🆕 РОЗШИРЕНИЙ ЗБІР МЕТРИК ПРОДУКТИВНОСТІ (тільки якщо увімкнено)
+        if params['benchmark_speed_analysis'] and not params['silent_mode']:
+            if params['verbose_reports']:
+                print("\n🚀 ЗБІР РОЗШИРЕНИХ МЕТРИК ПРОДУКТИВНОСТІ...")
             
             perf_metrics = collect_performance_metrics_enhanced(
                 mpc=mpc,
@@ -1083,8 +1128,9 @@ def simulate_mpc_core_enhanced(
         )
         
         # ---- 6. 🆕 КОМПЛЕКСНИЙ АНАЛІЗ MPC (опціонально)
-        if params['enable_comprehensive_analysis']:
-            print("\n🔬 ЗАПУСК КОМПЛЕКСНОГО АНАЛІЗУ MPC...")
+        if params['enable_comprehensive_analysis'] and not params['silent_mode']:
+            if params['verbose_reports']:
+                print("\n🔬 ЗАПУСК КОМПЛЕКСНОГО АНАЛІЗУ MPC...")
             
             comprehensive_analysis = run_comprehensive_mpc_analysis(
                 mpc=mpc,
@@ -1105,9 +1151,10 @@ def simulate_mpc_core_enhanced(
                     for key, value in summary['key_metrics'].items():
                         basic_metrics[f'comprehensive_{key}'] = value
 
-        # ---- 7. 🆕 ДОДАТКОВИЙ ТЕСТ ЯКОСТІ КЕРУВАННЯ
-        if params['benchmark_control_quality']:
-            print("\n🎯 ДОДАТКОВИЙ ТЕСТ ЯКОСТІ КЕРУВАННЯ...")
+        # ---- 7. 🆕 ДОДАТКОВИЙ ТЕСТ ЯКОСТІ КЕРУВАННЯ (опціонально)
+        if params['benchmark_control_quality'] and not params['silent_mode']:
+            if params['verbose_reports']:
+                print("\n🎯 ДОДАТКОВИЙ ТЕСТ ЯКОСТІ КЕРУВАННЯ...")
             
             # Підготовка тестових даних
             test_disturbances = df_true.iloc[test_idx_start:test_idx_start + 150][
@@ -1138,7 +1185,8 @@ def simulate_mpc_core_enhanced(
         else:
             # Альтернативна логіка з conc_fe/conc_mass
             if 'conc_fe' in results_df.columns and 'conc_mass' in results_df.columns:
-                print("🔄 Використовуємо conc_fe/conc_mass як y_true")
+                if not params['silent_mode'] and params['verbose_reports']:
+                    print("🔄 Використовуємо conc_fe/conc_mass як y_true")
                 
                 results_df['y_fe_true'] = results_df['conc_fe'].copy()
                 results_df['y_mass_true'] = results_df['conc_mass'].copy()
@@ -1193,8 +1241,8 @@ def simulate_mpc_core_enhanced(
                         r2_mass = max(0, 1 - mse_mass / y_mass_var)
                         basic_metrics['r2_mass'] = float(r2_mass)
 
-        # ---- 10. 🆕 ЗБЕРЕЖЕННЯ РЕЗУЛЬТАТІВ БЕНЧМАРКУ
-        if params['save_benchmark_results']:
+        # ---- 10. 🆕 ЗБЕРЕЖЕННЯ РЕЗУЛЬТАТІВ БЕНЧМАРКУ (тільки якщо потрібно)
+        if params['save_benchmark_results'] and not params['silent_mode']:
             timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
             benchmark_filename = f"benchmark_results_{timestamp}.json"
             
@@ -1216,52 +1264,55 @@ def simulate_mpc_core_enhanced(
                 import json
                 with open(benchmark_filename, 'w') as f:
                     json.dump(benchmark_data, f, indent=2, default=str)
-                print(f"💾 Результати бенчмарку збережено: {benchmark_filename}")
+                if params['verbose_reports']:
+                    print(f"💾 Результати бенчмарку збережено: {benchmark_filename}")
             except Exception as e:
-                print(f"⚠️ Помилка збереження бенчмарку: {e}")
+                if params['verbose_reports']:
+                    print(f"⚠️ Помилка збереження бенчмарку: {e}")
 
-        # ---- 11. Аналіз результатів (як у оригіналі)
+        # ---- 11. Аналіз результатів (тільки якщо увімкнено)
         test_idx_start = params['lag'] + 1 + len(data['X_train']) + len(data['X_val'])
         analysis_data['d_all_test'] = df_true.iloc[test_idx_start:][['feed_fe_percent','ore_mass_flow']].values
         
-        if params.get('run_analysis', True):
+        if params.get('run_analysis', True) and not params['silent_mode']:
             run_post_simulation_analysis_enhanced(results_df, analysis_data, params)
 
-        # ---- 12. 🔍 ФІНАЛЬНИЙ ЗВІТ ПРО ПРОДУКТИВНІСТЬ
-        print(f"\n🔍 ФІНАЛЬНИЙ ЗВІТ ПРО ПРОДУКТИВНІСТЬ:")
-        print("="*60)
-        
-        key_metrics = ['test_rmse_conc_fe', 'test_rmse_conc_mass', 'r2_fe', 'r2_mass', 'test_mse_total']
-        for metric in key_metrics:
-            if metric in basic_metrics:
-                value = basic_metrics[metric]
-                if hasattr(value, 'item'):
-                    basic_metrics[metric] = value.item()
-                print(f"   📊 {metric}: {basic_metrics[metric]:.6f}")
+        # ---- 12. 🔍 ФІНАЛЬНИЙ ЗВІТ ПРО ПРОДУКТИВНІСТЬ (тільки якщо не silent_mode)
+        if not params['silent_mode'] and params['verbose_reports']:
+            print(f"\n🔍 ФІНАЛЬНИЙ ЗВІТ ПРО ПРОДУКТИВНІСТЬ:")
+            print("="*60)
+            
+            key_metrics = ['test_rmse_conc_fe', 'test_rmse_conc_mass', 'r2_fe', 'r2_mass', 'test_mse_total']
+            for metric in key_metrics:
+                if metric in basic_metrics:
+                    value = basic_metrics[metric]
+                    if hasattr(value, 'item'):
+                        basic_metrics[metric] = value.item()
+                    print(f"   📊 {metric}: {basic_metrics[metric]:.6f}")
 
-        # Додаткові метрики продуктивності
-        if 'total_cycle_time' in basic_metrics:
-            print(f"   ⚡ Час циклу: {basic_metrics['total_cycle_time']*1000:.1f}ms")
-        
-        if 'quality_score' in basic_metrics:
-            print(f"   🎯 Оцінка якості: {basic_metrics['quality_score']:.4f}")
-        
-        if 'quality_speed_balance' in basic_metrics:
-            print(f"   ⚖️ Баланс якість-швидкість: {basic_metrics['quality_speed_balance']:.4f}")
+            # Додаткові метрики продуктивності
+            if 'total_cycle_time' in basic_metrics:
+                print(f"   ⚡ Час циклу: {basic_metrics['total_cycle_time']*1000:.1f}ms")
+            
+            if 'quality_score' in basic_metrics:
+                print(f"   🎯 Оцінка якості: {basic_metrics['quality_score']:.4f}")
+            
+            if 'quality_speed_balance' in basic_metrics:
+                print(f"   ⚖️ Баланс якість-швидкість: {basic_metrics['quality_speed_balance']:.4f}")
 
-        # Рекомендації
-        recommendations = []
-        if basic_metrics.get('test_rmse_conc_fe', 0) > 0.1:
-            recommendations.append("Покращити точність моделі Fe")
-        if basic_metrics.get('quality_score', 1.0) > 0.5:
-            recommendations.append("Налаштувати параметри MPC")
-        if basic_metrics.get('total_cycle_time', 0) > 5.0:
-            recommendations.append("Оптимізувати швидкодію")
-        
-        if recommendations:
-            print(f"   💡 Рекомендації: {', '.join(recommendations)}")
-        else:
-            print(f"   ✅ Система працює оптимально!")
+            # Рекомендації
+            recommendations = []
+            if basic_metrics.get('test_rmse_conc_fe', 0) > 0.1:
+                recommendations.append("Покращити точність моделі Fe")
+            if basic_metrics.get('quality_score', 1.0) > 0.5:
+                recommendations.append("Налаштувати параметри MPC")
+            if basic_metrics.get('total_cycle_time', 0) > 5.0:
+                recommendations.append("Оптимізувати швидкодію")
+            
+            if recommendations:
+                print(f"   💡 Рекомендації: {', '.join(recommendations)}")
+            else:
+                print(f"   ✅ Система працює оптимально!")
 
         # Фінальне виправлення R²
         if basic_metrics.get('r2_fe', 0) == 0.0 and 'conc_fe' in results_df.columns:
@@ -1276,16 +1327,31 @@ def simulate_mpc_core_enhanced(
             y_pred = y_true + np.random.normal(0, rmse_mass, len(y_true))
             basic_metrics['r2_mass'] = fixed_r2_calculation_simple(y_true, y_pred)
         
-        # Замість обчислення R²
-        basic_metrics = compute_correct_mpc_metrics(results_df, basic_metrics, 
-                                          {'fe': params['ref_fe'], 'mass': params['ref_mass']}) 
+        # 🔧 ЗАСТОСОВУЄМО ПРАВИЛЬНІ MPC МЕТРИКИ (тільки якщо не silent_mode)
+        if not params['silent_mode'] and params['verbose_reports']:
+            basic_metrics = compute_correct_mpc_metrics(results_df, basic_metrics, 
+                                              {'fe': params['ref_fe'], 'mass': params['ref_mass']})
+        else:
+            # У silent_mode застосовуємо метрики без виводу
+            import sys
+            from io import StringIO
+            
+            old_stdout = sys.stdout
+            sys.stdout = StringIO()  # Перехоплюємо вивід
+            
+            try:
+                basic_metrics = compute_correct_mpc_metrics(results_df, basic_metrics, 
+                                                  {'fe': params['ref_fe'], 'mass': params['ref_mass']})
+            finally:
+                sys.stdout = old_stdout  # Відновлюємо вивід
         
         return results_df, basic_metrics
         
     except Exception as e:
-        print(f"❌ Помилка в simulate_mpc_core_enhanced: {e}")
-        import traceback
-        traceback.print_exc()
+        if not params.get('silent_mode', False):
+            print(f"❌ Помилка в simulate_mpc_core_enhanced: {e}")
+            import traceback
+            traceback.print_exc()
         raise
 
 # =============================================================================
