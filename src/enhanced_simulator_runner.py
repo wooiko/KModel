@@ -493,6 +493,239 @@ def example_4_model_comparison_truly_correct():
         print(f"❌ Помилка в прикладі 4: {e}")
         return None
 
+def compute_correct_mpc_metrics_silent(results_df, basic_metrics, reference_values=None):
+    """
+    🎯 МОДИФІКОВАНА версія з обчисленням та виводом ISE/IAE метрик
+    
+    🔧 ЗМІНА: Додано обчислення та збереження ISE/IAE для звіту порівняння
+    """
+    
+    if reference_values is None:
+        reference_values = {'fe': 53.5, 'mass': 57.0}
+    
+    mpc_metrics = {}
+    
+    # 1. 📊 МЕТРИКИ ТОЧНОСТІ ВІДСЛІДКОВУВАННЯ
+    if 'conc_fe' in results_df.columns:
+        fe_values = results_df['conc_fe'].dropna().values
+        fe_setpoint = reference_values['fe']
+        
+        fe_mean_error = np.mean(fe_values) - fe_setpoint
+        fe_abs_error = np.mean(np.abs(fe_values - fe_setpoint))
+        fe_max_error = np.max(np.abs(fe_values - fe_setpoint))
+        fe_std_error = np.std(fe_values - fe_setpoint)
+        
+        fe_tolerance = 0.3
+        fe_in_tolerance = np.mean(np.abs(fe_values - fe_setpoint) <= fe_tolerance) * 100
+        
+        mpc_metrics.update({
+            'tracking_error_fe_mean': fe_mean_error,
+            'tracking_error_fe_mae': fe_abs_error,
+            'tracking_error_fe_max': fe_max_error,
+            'tracking_error_fe_std': fe_std_error,
+            'tracking_fe_in_tolerance_pct': fe_in_tolerance,
+            'tracking_fe_setpoint': fe_setpoint,
+            'tracking_fe_achieved': np.mean(fe_values)
+        })
+    
+    if 'conc_mass' in results_df.columns:
+        mass_values = results_df['conc_mass'].dropna().values
+        mass_setpoint = reference_values['mass']
+        
+        mass_mean_error = np.mean(mass_values) - mass_setpoint
+        mass_abs_error = np.mean(np.abs(mass_values - mass_setpoint))
+        
+        mass_tolerance = 2.0
+        mass_in_tolerance = np.mean(np.abs(mass_values - mass_setpoint) <= mass_tolerance) * 100
+        
+        mpc_metrics.update({
+            'tracking_error_mass_mean': mass_mean_error,
+            'tracking_error_mass_mae': mass_abs_error,
+            'tracking_mass_in_tolerance_pct': mass_in_tolerance,
+            'tracking_mass_setpoint': mass_setpoint,
+            'tracking_mass_achieved': np.mean(mass_values)
+        })
+    
+    # 2. 📈 МЕТРИКИ СТАБІЛЬНОСТІ КЕРУВАННЯ
+    if 'solid_feed_percent' in results_df.columns:
+        control_actions = results_df['solid_feed_percent'].dropna().values
+        
+        control_std = np.std(control_actions)
+        control_mean = np.mean(control_actions)
+        
+        if len(control_actions) > 1:
+            control_changes = np.diff(control_actions)
+            control_smoothness = np.std(control_changes)
+        else:
+            control_smoothness = 0
+        
+        mpc_metrics.update({
+            'control_mean': control_mean,
+            'control_std': control_std,
+            'control_smoothness': control_smoothness
+        })
+    
+    # 3. 🆕 ІНТЕГРАЛЬНІ МЕТРИКИ ЯКОСТІ (ISE/IAE)
+    mpc_metrics.update(calculate_ise_iae_metrics(results_df, reference_values))
+    
+    # 4. 📊 ЗАГАЛЬНА ОЦІНКА MPC
+    quality_factors = []
+    
+    if 'tracking_error_fe_mae' in mpc_metrics:
+        mae_fe = mpc_metrics['tracking_error_fe_mae']
+        fe_accuracy = max(0, 40 - mae_fe * 50)
+        quality_factors.append(('Fe точність', fe_accuracy, 40))
+    
+    if 'tracking_error_mass_mae' in mpc_metrics:
+        mae_mass = mpc_metrics['tracking_error_mass_mae']
+        mass_accuracy = max(0, 30 - mae_mass * 15)
+        quality_factors.append(('Mass точність', mass_accuracy, 30))
+    
+    if 'control_smoothness' in mpc_metrics:
+        smoothness = mpc_metrics['control_smoothness']
+        control_stability = max(0, 20 - smoothness * 20)
+        quality_factors.append(('Стабільність', control_stability, 20))
+    
+    if 'tracking_fe_in_tolerance_pct' in mpc_metrics:
+        consistency_pct = mpc_metrics['tracking_fe_in_tolerance_pct']
+        consistency = consistency_pct / 10
+        quality_factors.append(('Консистентність', consistency, 10))
+    
+    if quality_factors:
+        total_score = sum(factor[1] for factor in quality_factors)
+        max_possible = sum(factor[2] for factor in quality_factors)
+        mpc_quality_score = (total_score / max_possible) * 100
+        mpc_metrics['mpc_quality_score'] = mpc_quality_score
+        
+        # Класифікація
+        if mpc_quality_score >= 80:
+            quality_class = "Промислово відмінно"
+        elif mpc_quality_score >= 65:
+            quality_class = "Промислово добре"  
+        elif mpc_quality_score >= 50:
+            quality_class = "Промислово прийнятно"
+        else:
+            quality_class = "Потребує покращення"
+        
+        mpc_metrics['mpc_quality_class'] = quality_class
+    
+    # 5. 💡 РЕКОМЕНДАЦІЇ
+    recommendations = []
+    
+    if mpc_metrics.get('tracking_error_fe_mae', 0) <= 0.5:
+        recommendations.append("✅ Відмінна точність Fe - продовжуйте!")
+    
+    if mpc_metrics.get('control_smoothness', 0) <= 0.5:
+        recommendations.append("✅ Стабільне керування - добре налаштовано!")
+    
+    if not recommendations:
+        recommendations.append("MPC працює добре в промислових умовах!")
+    
+    mpc_metrics['recommendations'] = recommendations
+    
+    # Оновлюємо метрики
+    basic_metrics.update(mpc_metrics)
+    basic_metrics['mpc_evaluation_method'] = 'realistic_industrial_criteria'
+    
+    return basic_metrics
+
+
+def calculate_ise_iae_metrics(results_df, reference_values):
+    """
+    🆕 НОВИЙ МЕТОД: Обчислює ISE/IAE метрики для звіту порівняння
+    
+    Args:
+        results_df: DataFrame з результатами симуляції
+        reference_values: Словник з уставками {'fe': 53.5, 'mass': 57.0}
+        
+    Returns:
+        dict: Словник з ISE/IAE метриками
+    """
+    
+    ise_iae_metrics = {}
+    
+    # ISE/IAE для Fe концентрату
+    if 'conc_fe' in results_df.columns:
+        fe_values = results_df['conc_fe'].dropna().values
+        fe_setpoint = reference_values['fe']
+        
+        # Обчислюємо помилки
+        fe_errors = fe_values - fe_setpoint
+        
+        # ISE (Integral Square Error)
+        ise_fe = np.sum(fe_errors**2)
+        
+        # IAE (Integral Absolute Error)  
+        iae_fe = np.sum(np.abs(fe_errors))
+        
+        # ITSE (Integral Time Square Error)
+        time_weights = np.arange(1, len(fe_errors) + 1)
+        itse_fe = np.sum(time_weights * fe_errors**2)
+        
+        # ITAE (Integral Time Absolute Error)
+        itae_fe = np.sum(time_weights * np.abs(fe_errors))
+        
+        ise_iae_metrics.update({
+            'performance_ise_fe': ise_fe,
+            'performance_iae_fe': iae_fe,
+            'performance_itse_fe': itse_fe,
+            'performance_itae_fe': itae_fe,
+            # Нормалізовані метрики (на одиницю часу)
+            'performance_ise_fe_normalized': ise_fe / len(fe_errors),
+            'performance_iae_fe_normalized': iae_fe / len(fe_errors)
+        })
+    
+    # ISE/IAE для масового потоку
+    if 'conc_mass' in results_df.columns:
+        mass_values = results_df['conc_mass'].dropna().values
+        mass_setpoint = reference_values['mass']
+        
+        # Обчислюємо помилки
+        mass_errors = mass_values - mass_setpoint
+        
+        # ISE (Integral Square Error)
+        ise_mass = np.sum(mass_errors**2)
+        
+        # IAE (Integral Absolute Error)
+        iae_mass = np.sum(np.abs(mass_errors))
+        
+        # ITSE (Integral Time Square Error)
+        time_weights = np.arange(1, len(mass_errors) + 1)
+        itse_mass = np.sum(time_weights * mass_errors**2)
+        
+        # ITAE (Integral Time Absolute Error)
+        itae_mass = np.sum(time_weights * np.abs(mass_errors))
+        
+        ise_iae_metrics.update({
+            'performance_ise_mass': ise_mass,
+            'performance_iae_mass': iae_mass,
+            'performance_itse_mass': itse_mass,
+            'performance_itae_mass': itae_mass,
+            # Нормалізовані метрики (на одиницю часу)
+            'performance_ise_mass_normalized': ise_mass / len(mass_errors),
+            'performance_iae_mass_normalized': iae_mass / len(mass_errors)
+        })
+    
+    # Комбіновані метрики
+    if ('performance_ise_fe' in ise_iae_metrics and 
+        'performance_ise_mass' in ise_iae_metrics):
+        
+        # Зважена комбінована ISE (60% Fe + 40% Mass)
+        combined_ise = (0.6 * ise_iae_metrics['performance_ise_fe_normalized'] + 
+                       0.4 * ise_iae_metrics['performance_ise_mass_normalized'])
+        
+        # Зважена комбінована IAE
+        combined_iae = (0.6 * ise_iae_metrics['performance_iae_fe_normalized'] + 
+                       0.4 * ise_iae_metrics['performance_iae_mass_normalized'])
+        
+        ise_iae_metrics.update({
+            'performance_combined_ise': combined_ise,
+            'performance_combined_iae': combined_iae
+        })
+    
+    return ise_iae_metrics
+
+
 def compare_mpc_configurations_correct(
     configurations: List[Dict],
     hist_df: pd.DataFrame,
@@ -501,315 +734,21 @@ def compare_mpc_configurations_correct(
     show_progress: bool = True
 ) -> pd.DataFrame:
     """
-    🔄 ПРАВИЛЬНЕ порівняння конфігурацій MPC БЕЗ втручання в налаштування експериментатора
-    🔧 ВИПРАВЛЕНО: Використовує комбіновану логіку ранжування
+    🔄 АЛИАС для зворотної сумісності - тепер викликає функцію з enhanced_sim
+    
+    🔧 ВИПРАВЛЕНО: Тепер викликає основну реалізацію з enhanced_sim.py
     """
     
-    print("🔄 КОРЕКТНЕ ПОРІВНЯННЯ КОНФІГУРАЦІЙ MPC")
-    print("="*60)
-    print("🎯 Принцип: Повна повага до конфігурації експериментатора")
-    print("📊 Ранжування: 70% MPC якість + 30% точність моделі")
+    # Імпортуємо функцію з enhanced_sim
+    from enhanced_sim import compare_mpc_configurations
     
-    comparison_results = []
-    detailed_reports = []
-    
-    for i, config in enumerate(configurations):
-        config_name = config.get('name', f'Config_{i+1}')
-        
-        if show_progress:
-            print(f"\n🧪 Тестуємо конфігурацію {i+1}/{len(configurations)}: {config_name}")
-        
-        try:
-            # Імпортуємо функцію
-            try:
-                from enhanced_sim import simulate_mpc_core_enhanced as simulate_mpc_core
-            except ImportError:
-                from sim import simulate_mpc_core
-            
-            # 🎯 КЛЮЧОВЕ: ПЕРЕДАЄМО КОНФІГУРАЦІЮ БЕЗ ЗМІН
-            test_config = config.copy()
-            test_config.pop('name', None)  # Видаляємо тільки службовий параметр
-            
-            # 🔇 КОНТРОЛЬ ВИВОДУ для зручності порівняння
-            output_control_params = ['silent_mode', 'verbose_reports']
-            original_output_settings = {}
-            
-            for param in output_control_params:
-                if param in test_config:
-                    original_output_settings[param] = test_config[param]
-                    if show_progress:
-                        print(f"   🎯 Експериментатор задав {param}={test_config[param]}")
-                else:
-                    if param == 'silent_mode':
-                        test_config[param] = True
-                        original_output_settings[param] = None
-                    elif param == 'verbose_reports':
-                        test_config[param] = False
-                        original_output_settings[param] = None
-            
-            # 📋 ПОКАЗУЄМО КОНФІГУРАЦІЮ
-            if show_progress:
-                print(f"   📋 Конфігурація експериментатора:")
-                experimental_params = {k: v for k, v in test_config.items() 
-                                     if k not in ['silent_mode', 'verbose_reports']}
-                
-                if experimental_params:
-                    for key, value in experimental_params.items():
-                        print(f"      🎯 {key}: {value}")
-                else:
-                    print(f"      🎯 Використовуються всі параметри за замовчуванням")
-            
-            # 🚀 ЗАПУСКАЄМО СИМУЛЯЦІЮ
-            start_time = time.time()
-            
-            if base_config and base_config != 'default':
-                try:
-                    from enhanced_sim import simulate_mpc_with_config_enhanced
-                    results_df, metrics = simulate_mpc_with_config_enhanced(
-                        hist_df, 
-                        config=base_config,
-                        config_overrides=test_config
-                    )
-                except ImportError:
-                    results_df, metrics = simulate_mpc_core(hist_df, **test_config)
-            else:
-                results_df, metrics = simulate_mpc_core(hist_df, **test_config)
-            
-            test_time = time.time() - start_time
-            
-            # 📊 ЗБИРАЄМО МЕТРИКИ
-            comparison_row = {
-                'Configuration': config_name,
-                'Model': f"{config.get('model_type', 'default')}-{config.get('kernel', 'default')}",
-                'Test_Time_Min': test_time / 60
-            }
-            
-            # Додаємо параметри експериментатора
-            experimental_params = ['N_data', 'Np', 'Nc', 'λ_obj', 'w_fe', 'w_mass', 
-                                 'find_optimal_params', 'model_type', 'kernel']
-            
-            for param in experimental_params:
-                if param in config:
-                    comparison_row[f'Config_{param}'] = config[param]
-                else:
-                    comparison_row[f'Config_{param}'] = 'default'
-            
-            # Додаємо метрики результатів
-            if isinstance(metrics, dict):
-                result_metrics = {
-                    'RMSE_Fe': metrics.get('test_rmse_conc_fe', np.nan),
-                    'RMSE_Mass': metrics.get('test_rmse_conc_mass', np.nan),
-                    'R2_Fe': metrics.get('r2_fe', np.nan),
-                    'R2_Mass': metrics.get('r2_mass', np.nan),
-                    'Quality_Score': metrics.get('quality_score', np.nan),
-                    'MPC_Quality_Score': metrics.get('mpc_quality_score', np.nan),
-                    'Total_Cycle_Time': metrics.get('total_cycle_time', np.nan),
-                    'Real_Time_Suitable': metrics.get('real_time_suitable', False)
-                }
-                comparison_row.update(result_metrics)
-                
-                # 🔧 ДОДАЄМО КОМБІНОВАНУ ОЦІНКУ ТУТ!
-                rmse_fe = result_metrics['RMSE_Fe']
-                mpc_quality = result_metrics['MPC_Quality_Score']
-                
-                if pd.notna(rmse_fe) and pd.notna(mpc_quality):
-                    # Нормалізуємо метрики
-                    mpc_norm = mpc_quality / 100  # MPC якість 0-1
-                    rmse_norm = 1 / (1 + rmse_fe)  # Інвертуємо RMSE (менше = краще)
-                    
-                    # Комбінована оцінка: 70% MPC + 30% точність
-                    combined_score = 0.7 * mpc_norm + 0.3 * rmse_norm
-                    comparison_row['Combined_Score'] = combined_score
-                else:
-                    comparison_row['Combined_Score'] = np.nan
-                
-                # Зберігаємо детальні дані
-                detailed_report = {
-                    'config_name': config_name,
-                    'original_config': config.copy(),
-                    'base_config_used': base_config,
-                    'results_df': results_df,
-                    'full_metrics': metrics,
-                    'summary_metrics': comparison_row,
-                    'output_settings': original_output_settings
-                }
-                detailed_reports.append(detailed_report)
-            
-            comparison_results.append(comparison_row)
-            
-            # Звіт про результати
-            if show_progress:
-                rmse_fe = comparison_row.get('RMSE_Fe', float('inf'))
-                quality = comparison_row.get('Quality_Score', 1)
-                mpc_quality = comparison_row.get('MPC_Quality_Score', 0)
-                combined = comparison_row.get('Combined_Score', 0)
-                
-                print(f"   ✅ Результати:")
-                print(f"      RMSE Fe: {rmse_fe:.4f}")
-                print(f"      Якість керування: {quality:.4f}")
-                if not np.isnan(mpc_quality):
-                    print(f"      MPC оцінка: {mpc_quality:.1f}/100")
-                if not np.isnan(combined):
-                    print(f"      Комбінована оцінка: {combined:.4f}")
-                print(f"      Час: {test_time/60:.1f}хв")
-            
-        except Exception as e:
-            print(f"   ❌ Помилка: {e}")
-            comparison_results.append({
-                'Configuration': config_name,
-                'Error': str(e),
-                'Test_Time_Min': 0,
-                'Combined_Score': np.nan
-            })
-    
-    # Створюємо DataFrame
-    comparison_df = pd.DataFrame(comparison_results)
-    
-    # 🔧 КРИТИЧНЕ ВИПРАВЛЕННЯ: Сортуємо за комбінованою оцінкою!
-    if not comparison_df.empty and 'Combined_Score' in comparison_df.columns:
-        # Фільтруємо валідні значення
-        valid_mask = comparison_df['Combined_Score'].notna()
-        if valid_mask.any():
-            print(f"\n🔧 Застосовуємо комбіноване сортування для {valid_mask.sum()} конфігурацій...")
-            
-            # Сортуємо: вищі комбіновані оцінки спочатку
-            valid_df = comparison_df[valid_mask].sort_values('Combined_Score', ascending=False)
-            invalid_df = comparison_df[~valid_mask]
-            comparison_df = pd.concat([valid_df, invalid_df], ignore_index=True)
-            
-            print(f"🏆 Топ-3 за комбінованою оцінкою:")
-            for idx in range(min(3, len(valid_df))):
-                row = valid_df.iloc[idx]
-                print(f"   {idx+1}. {row['Configuration']}: {row['Combined_Score']:.4f} "
-                      f"(MPC: {row.get('MPC_Quality_Score', 0):.1f}, RMSE: {row.get('RMSE_Fe', 0):.4f})")
-        else:
-            print(f"⚠️ Не вдалося обчислити комбіновані оцінки - сортуємо за RMSE")
-            if 'RMSE_Fe' in comparison_df.columns:
-                valid_mask = comparison_df['RMSE_Fe'].notna()
-                if valid_mask.any():
-                    valid_df = comparison_df[valid_mask].sort_values('RMSE_Fe')
-                    invalid_df = comparison_df[~valid_mask]
-                    comparison_df = pd.concat([valid_df, invalid_df], ignore_index=True)
-    
-    # 📊 ДЕТАЛЬНІ ЗВІТИ (тільки якщо дозволено)
-    show_detailed_reports = any(
-        report['output_settings'].get('verbose_reports', False) or 
-        not report['output_settings'].get('silent_mode', True)
-        for report in detailed_reports
+    return compare_mpc_configurations(
+        configurations=configurations,
+        hist_df=hist_df,
+        base_config=base_config,
+        comparison_steps=comparison_steps,
+        show_progress=show_progress
     )
-    
-    if show_detailed_reports:
-        print(f"\n" + "="*80)
-        print(f"📊 ДЕТАЛЬНІ ЗВІТИ ДЛЯ КОНФІГУРАЦІЙ З УВІМКНЕНИМ ВИВОДОМ")
-        print("="*80)
-        
-        for i, report in enumerate(detailed_reports):
-            if (report['output_settings'].get('verbose_reports', False) or 
-                not report['output_settings'].get('silent_mode', True)):
-                
-                config_name = report['config_name']
-                metrics = report['full_metrics']
-                original_config = report['original_config']
-                
-                print(f"\n{'='*60}")
-                print(f"📋 КОНФІГУРАЦІЯ: {config_name}")
-                print(f"{'='*60}")
-                
-                # Показуємо оригінальну конфігурацію
-                print(f"🎯 КОНФІГУРАЦІЯ ЕКСПЕРИМЕНТАТОРА:")
-                experimental_params = {k: v for k, v in original_config.items() if k != 'name'}
-                if experimental_params:
-                    for key, value in experimental_params.items():
-                        print(f"   • {key}: {value}")
-                else:
-                    print(f"   • Використовуються всі параметри за замовчуванням")
-                
-                # Фінальний звіт про продуктивність
-                print(f"\n🔍 ЗВІТ ПРО ПРОДУКТИВНІСТЬ:")
-                print("-" * 40)
-                
-                key_metrics = ['test_rmse_conc_fe', 'test_rmse_conc_mass', 'r2_fe', 'r2_mass']
-                for metric in key_metrics:
-                    if metric in metrics:
-                        value = metrics[metric]
-                        if hasattr(value, 'item'):
-                            value = value.item()
-                        print(f"   📊 {metric}: {value:.6f}")
-                
-                if 'total_cycle_time' in metrics:
-                    print(f"   ⚡ Час циклу: {metrics['total_cycle_time']*1000:.1f}ms")
-                
-                if 'quality_score' in metrics:
-                    print(f"   🎯 Оцінка якості: {metrics['quality_score']:.4f}")
-                
-                # MPC метрики
-                print(f"\n🎯 МЕТРИКИ ЯКОСТІ MPC:")
-                print("-" * 40)
-                
-                mpc_metrics = ['tracking_error_fe_mae', 'tracking_error_mass_mae', 
-                             'control_smoothness', 'mpc_quality_score', 'mpc_quality_class']
-                
-                for key in mpc_metrics:
-                    if key in metrics:
-                        value = metrics[key]
-                        if key == 'tracking_error_fe_mae':
-                            print(f"   📈 Fe точність (MAE): {value:.3f}%")
-                        elif key == 'tracking_error_mass_mae':
-                            print(f"   📈 Mass точність (MAE): {value:.3f} т/год")
-                        elif key == 'control_smoothness':
-                            print(f"   🎛️ Плавність керування: {value:.3f}%")
-                        elif key == 'mpc_quality_score':
-                            print(f"   🏆 Загальна оцінка MPC: {value:.1f}/100")
-                        elif key == 'mpc_quality_class':
-                            print(f"   📊 Класифікація: {value}")
-                
-                if 'recommendations' in metrics and metrics['recommendations']:
-                    print(f"   💡 Рекомендації:")
-                    for j, rec in enumerate(metrics['recommendations'][:3], 1):
-                        print(f"      {j}. {rec}")
-    
-    # 📊 ПІДСУМКОВА ТАБЛИЦЯ З ПРАВИЛЬНИМ РАНЖУВАННЯМ
-    print(f"\n" + "="*80)
-    print(f"📊 ПІДСУМКОВА ТАБЛИЦЯ ПОРІВНЯННЯ")
-    print("="*80)
-    
-    if not comparison_df.empty:
-        # Вибираємо колонки для відображення
-        display_cols = ['Configuration', 'Model', 'RMSE_Fe', 'MPC_Quality_Score', 'Combined_Score', 'Test_Time_Min']
-        
-        available_cols = [col for col in display_cols if col in comparison_df.columns]
-        
-        if available_cols:
-            print(comparison_df[available_cols].round(4))
-        
-        # 🔧 ПРАВИЛЬНЕ ВИЗНАЧЕННЯ ПЕРЕМОЖЦЯ
-        print(f"\n🏆 РЕЗУЛЬТАТИ (за комбінованою оцінкою):")
-        if not comparison_df.empty:
-            best_config = comparison_df.iloc[0]  # Перший після сортування
-            print(f"   🥇 Найкраща конфігурація: {best_config['Configuration']}")
-            
-            if 'Combined_Score' in best_config and pd.notna(best_config['Combined_Score']):
-                print(f"   🎯 Комбінована оцінка: {best_config['Combined_Score']:.4f}")
-                print(f"   📊 Логіка: 70% MPC якість + 30% точність моделі")
-            
-            if 'RMSE_Fe' in best_config and pd.notna(best_config['RMSE_Fe']):
-                print(f"   📈 RMSE Fe: {best_config['RMSE_Fe']:.4f}")
-            
-            if 'MPC_Quality_Score' in best_config and pd.notna(best_config['MPC_Quality_Score']):
-                print(f"   🎯 MPC Якість: {best_config['MPC_Quality_Score']:.1f}/100")
-                
-                # Інтерпретація результату
-                mpc_quality = best_config['MPC_Quality_Score']
-                if mpc_quality >= 65:
-                    print(f"   ✅ Висока якість MPC - готово для промислового використання")
-                elif mpc_quality >= 50:
-                    print(f"   ⚠️ Середня якість MPC - розгляньте додаткове налаштування")
-                else:
-                    print(f"   🔧 Низька якість MPC - потрібне серйозне налаштування")
-    
-    print(f"\n✅ Порівняння завершено з правильним ранжуванням!")
-    
-    return comparison_df
 
 import os
 import json
@@ -1686,16 +1625,19 @@ def main():
                     configurations=[
                         {
                             'name': 'KRR_Conservative',
+                            'N_data':2000, # added
                             'model_type': 'krr',
                             'kernel': 'rbf', 
                             'Np': 6,
                             'Nc': 4,
                             'λ_obj': 0.2,
                             'w_fe': 5.0,
-                            'w_mass': 1.0
+                            'w_mass': 1.0,
+                            'find_optimal_params': False # added
                         },
                         {
                             'name': 'KRR_Aggressive', 
+                            'N_data':2000, # added
                             'model_type': 'krr',
                             'kernel': 'rbf',
                             'Np': 8,
@@ -1703,31 +1645,31 @@ def main():
                             'λ_obj': 0.05,
                             'w_fe': 10.0,
                             'w_mass': 1.5,
-                            'N_data': 12000,
+                            # 'N_data': 12000 # removed
                             'find_optimal_params': False
-                        },
-                        {
-                            'name': 'SVR_Balanced',
-                            'model_type': 'svr',
-                            'kernel': 'rbf',
-                            'Np': 7,
-                            'Nc': 5,
-                            'λ_obj': 0.1,
-                            'w_fe': 7.0,
-                            'w_mass': 1.2
-                        },
-                        {
-                            'name': 'Linear_Fast',
-                            'model_type': 'linear',
-                            'linear_type': 'ridge',
-                            'Np': 10,
-                            'Nc': 8,
-                            'λ_obj': 0.15,
-                            'w_fe': 6.0,
-                            'w_mass': 1.0,
-                            'verbose_reports': True,
-                            'silent_mode': False
                         }
+                        # {
+                        #     'name': 'SVR_Balanced',
+                        #     'model_type': 'svr',
+                        #     'kernel': 'rbf',
+                        #     'Np': 7,
+                        #     'Nc': 5,
+                        #     'λ_obj': 0.1,
+                        #     'w_fe': 7.0,
+                        #     'w_mass': 1.2
+                        # },
+                        # {
+                        #     'name': 'Linear_Fast',
+                        #     'model_type': 'linear',
+                        #     'linear_type': 'ridge',
+                        #     'Np': 10,
+                        #     'Nc': 8,
+                        #     'λ_obj': 0.15,
+                        #     'w_fe': 6.0,
+                        #     'w_mass': 1.0,
+                        #     'verbose_reports': True,
+                        #     'silent_mode': False
+                        # }
                     ],
                     hist_df=load_historical_data(),
                     base_config='oleksandr_original',

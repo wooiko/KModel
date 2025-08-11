@@ -1,0 +1,66 @@
+{
+  "experiment_info": {
+    "name": "experiment_20250811_213354",
+    "timestamp": "2025-08-11T21:33:54.669824",
+    "duration_minutes": 2.5,
+    "total_experiments": 1,
+    "successful_experiments": 1,
+    "python_version": "3.11.7",
+    "system_info": {
+      "os": "Windows",
+      "os_version": "10.0.26100",
+      "architecture": "64bit",
+      "processor": "Intel64 Family 6 Model 154 Stepping 4, GenuineIntel"
+    }
+  },
+  "experiments_overview": {
+    "total_count": 1,
+    "successful_count": 1,
+    "failed_count": 0,
+    "experiment_types": {
+      "comparison": 1
+    },
+    "best_results": {}
+  },
+  "key_findings": {
+    "best_performers": {
+      "best_overall": {
+        "configuration": "KRR_Aggressive",
+        "experiment": "configuration_comparison",
+        "combined_score": 0.34549892601733767,
+        "mpc_quality": 16.062511778975196,
+        "rmse_fe": 0.28721475390001816
+      },
+      "best_mpc_quality": {
+        "configuration": "KRR_Aggressive",
+        "experiment": "configuration_comparison",
+        "mpc_quality": 16.062511778975196
+      },
+      "best_accuracy": {
+        "configuration": "KRR_Conservative",
+        "experiment": "configuration_comparison",
+        "rmse_fe": 0.28700432255789726
+      }
+    },
+    "recommendations": [
+      "🏆 Рекомендована конфігурація: KRR_Aggressive (Комбінована оцінка: 0.345)",
+      "🔧 Низька якість MPC - потрібне серйозне налаштування"
+    ],
+    "performance_summary": {},
+    "ranking_logic": "Combined score: 70% MPC Quality + 30% Model Accuracy"
+  },
+  "file_structure": {
+    "summary_files": [
+      "experiment_summary.json",
+      "comparison_table.csv",
+      "experiment_report.txt"
+    ],
+    "detailed_files": [],
+    "config_files": [
+      "all_configurations.json"
+    ],
+    "metric_files": [
+      "aggregated_metrics.json"
+    ]
+  }
+}
