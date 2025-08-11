@@ -6,34 +6,38 @@ import time
 import json
 from pathlib import Path
 from typing import Dict, Any, Optional, List
+from enhanced_sim import compare_mpc_configurations
 
 # Імпортуємо розширені функції
 from enhanced_sim import (
     simulate_mpc,
     quick_mpc_benchmark, 
     detailed_mpc_analysis,
-    compare_mpc_configurations,
-    simulate_mpc_with_config_enhanced
+    simulate_mpc_with_config_enhanced,
+    load_historical_data
+)
+from enhanced_benchmark import (
+    pandas_safe_sort
 )
 
-def pandas_safe_sort(df, column):
-    """Безпечне сортування для всіх версій pandas"""
-    if df.empty or column not in df.columns:
-        return df
+# def pandas_safe_sort(df, column):
+#     """Безпечне сортування для всіх версій pandas"""
+#     if df.empty or column not in df.columns:
+#         return df
     
-    try:
-        return df.sort_values(column, na_position='last')
-    except (TypeError, ValueError):
-        try:
-            return df.sort_values(column, na_last=True)
-        except (TypeError, ValueError):
-            # Ручне сортування
-            valid_mask = df[column].notna()
-            if valid_mask.any():
-                valid_df = df[valid_mask].sort_values(column)
-                invalid_df = df[~valid_mask]
-                return pd.concat([valid_df, invalid_df], ignore_index=True)
-            return df
+#     try:
+#         return df.sort_values(column, na_position='last')
+#     except (TypeError, ValueError):
+#         try:
+#             return df.sort_values(column, na_last=True)
+#         except (TypeError, ValueError):
+#             # Ручне сортування
+#             valid_mask = df[column].notna()
+#             if valid_mask.any():
+#                 valid_df = df[valid_mask].sort_values(column)
+#                 invalid_df = df[~valid_mask]
+#                 return pd.concat([valid_df, invalid_df], ignore_index=True)
+#             return df
         
 def compare_mpc_configurations_improved(
     configurations: List[Dict],
@@ -153,30 +157,30 @@ def compare_mpc_configurations_improved(
     
     return comparison_df
         
-def load_historical_data() -> pd.DataFrame:
-    """Завантажує історичні дані для симуляції"""
+# def load_historical_data() -> pd.DataFrame:
+#     """Завантажує історичні дані для симуляції"""
     
-    # Спробуємо завантажити з різних місць
-    possible_paths = [
-        'processed.parquet',
-        'data/processed.parquet', 
-        '/content/KModel/src/processed.parquet',
-        '../data/processed.parquet'
-    ]
+#     # Спробуємо завантажити з різних місць
+#     possible_paths = [
+#         'processed.parquet',
+#         'data/processed.parquet', 
+#         '/content/KModel/src/processed.parquet',
+#         '../data/processed.parquet'
+#     ]
     
-    for path in possible_paths:
-        try:
-            hist_df = pd.read_parquet(path)
-            print(f"✅ Дані завантажено з: {path}")
-            print(f"   📊 Розмір: {hist_df.shape[0]} рядків, {hist_df.shape[1]} колонок")
-            return hist_df
-        except FileNotFoundError:
-            continue
-        except Exception as e:
-            print(f"⚠️ Помилка завантаження з {path}: {e}")
-            continue
+#     for path in possible_paths:
+#         try:
+#             hist_df = pd.read_parquet(path)
+#             print(f"✅ Дані завантажено з: {path}")
+#             print(f"   📊 Розмір: {hist_df.shape[0]} рядків, {hist_df.shape[1]} колонок")
+#             return hist_df
+#         except FileNotFoundError:
+#             continue
+#         except Exception as e:
+#             print(f"⚠️ Помилка завантаження з {path}: {e}")
+#             continue
     
-    raise FileNotFoundError("❌ Не вдалося знайти файл processed.parquet")
+#     raise FileNotFoundError("❌ Не вдалося знайти файл processed.parquet")
 
 def progress_callback(step: int, total: int, message: str):
     """Callback для відображення прогресу"""
@@ -739,9 +743,7 @@ def compare_mpc_configurations_correct(
     🔧 ВИПРАВЛЕНО: Тепер викликає основну реалізацію з enhanced_sim.py
     """
     
-    # Імпортуємо функцію з enhanced_sim
-    from enhanced_sim import compare_mpc_configurations
-    
+   
     return compare_mpc_configurations(
         configurations=configurations,
         hist_df=hist_df,
@@ -1625,7 +1627,7 @@ def main():
                     configurations=[
                         {
                             'name': 'KRR_Conservative',
-                            'N_data':2000, # added
+                            'N_data':1000, # added
                             'model_type': 'krr',
                             'kernel': 'rbf', 
                             'Np': 6,
@@ -1637,7 +1639,7 @@ def main():
                         },
                         {
                             'name': 'KRR_Aggressive', 
-                            'N_data':2000, # added
+                            'N_data':1000, # added
                             'model_type': 'krr',
                             'kernel': 'rbf',
                             'Np': 8,

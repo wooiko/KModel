@@ -2,10 +2,9 @@
 
 import time
 import numpy as np
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Optional
 from contextlib import contextmanager
 from model import KernelModel
-from sklearn.metrics import mean_squared_error, r2_score
 import pandas as pd
 
 @contextmanager
@@ -154,7 +153,7 @@ def benchmark_mpc_solve_time(mpc_controller, n_iterations: int = 50, silent_mode
         # print(f"   ⏱️ Середній час: {np.mean(solve_times)*1000:.2f}ms")
         pass
     elif success_count == 0 and not silent_mode:
-        print(f"   ❌ Жодна оптимізація не завершилась успішно")
+        print("   ❌ Жодна оптимізація не завершилась успішно")
     
     return {
         "mpc_solve_mean": np.mean(solve_times),
@@ -200,7 +199,7 @@ def benchmark_mpc_control_quality(
         mpc_controller.reset_history(initial_history)
         true_gen.reset_state(initial_history)
         if not silent_mode:
-            print(f"   ✅ MPC та генератор ініціалізовано")
+            print("   ✅ MPC та генератор ініціалізовано")
     except Exception as e:
         if not silent_mode:
             print(f"   ❌ Помилка ініціалізації: {e}")
@@ -511,7 +510,7 @@ def comprehensive_mpc_benchmark(
     all_metrics["quality_speed_balance"] = quality_speed_balance
     
     # 5. 📈 ПІДСУМОК
-    print(f"\n📈 ПІДСУМОК БЕНЧМАРКУ:")
+    print("\n📈 ПІДСУМОК БЕНЧМАРКУ:")
     print(f"   🚀 Швидкість: {total_cycle_time*1000:.1f}ms/цикл")
     print(f"   🎯 Якість: {quality_score:.4f}")
     print(f"   ⚖️ Баланс: {quality_speed_balance:.4f}")
@@ -597,7 +596,7 @@ def compare_mpc_configurations(
     
     # 🆕 ВИВОДИМО ДЕТАЛЬНІ ЗВІТИ ДЛЯ КОЖНОЇ КОНФІГУРАЦІЇ
     print(f"\n" + "="*80)
-    print(f"📊 ДЕТАЛЬНІ ЗВІТИ ДЛЯ КОЖНОЇ КОНФІГУРАЦІЇ")
+    print("📊 ДЕТАЛЬНІ ЗВІТИ ДЛЯ КОЖНОЇ КОНФІГУРАЦІЇ")
     print("="*80)
     
     for i, report in enumerate(detailed_reports):
@@ -611,7 +610,7 @@ def compare_mpc_configurations(
         print(f"={'='*60}")
         
         # 🔧 ФІНАЛЬНИЙ ЗВІТ ПРО ПРОДУКТИВНІСТЬ (для кожної конфігурації)
-        print(f"\n🔍 ЗВІТ ПРО ПРОДУКТИВНІСТЬ:")
+        print("\n🔍 ЗВІТ ПРО ПРОДУКТИВНІСТЬ:")
         print("-" * 40)
         
         key_metrics = ['test_rmse_conc_fe', 'test_rmse_conc_mass', 'r2_fe', 'r2_mass', 'test_mse_total']
@@ -623,7 +622,7 @@ def compare_mpc_configurations(
                 print(f"   📊 {metric}: {value:.6f}")
         
         # 🔧 РЕАЛІСТИЧНІ МЕТРИКИ ЯКОСТІ MPC (для кожної конфігурації)
-        print(f"\n🎯 РЕАЛІСТИЧНІ МЕТРИКИ ЯКОСТІ MPC:")
+        print("\n🎯 РЕАЛІСТИЧНІ МЕТРИКИ ЯКОСТІ MPC:")
         print("-" * 40)
         
         # Застосовуємо compute_correct_mpc_metrics БЕЗ виводу на консоль
@@ -681,192 +680,25 @@ def compare_mpc_configurations(
     
     return comparison_df
 
-
-def create_default_test_data(mpc_controller, true_gen, data_splits: Dict) -> Dict:
-    """
-    Створює типові тестові дані для бенчмарку якості керування
-    """
-    
-    # Отримуємо lag з MPC
-    lag = getattr(mpc_controller, 'lag', 2)
-    
-    # Створюємо типову історію
-    typical_history = np.array([
-        [36.5, 102.2, 25.0],  # feed_fe, ore_flow, solid_feed
-        [36.8, 101.8, 25.2],
-        [37.1, 102.5, 25.1],
-        [36.9, 102.0, 25.0]
-    ])
-    
-    # Обрізаємо до потрібного розміру
-    initial_history = typical_history[:lag + 1]
-    
-    # Створюємо тестові збурення
-    n_test_steps = 100
-    test_disturbances = np.array([
-        [36.5 + 0.5 * np.sin(i * 0.1), 102.2 + 2.0 * np.cos(i * 0.15)] 
-        for i in range(n_test_steps)
-    ])
-    
-    return {
-        'X_train_scaled': data_splits.get('X_train_scaled', np.zeros((100, 10))),
-        'Y_train_scaled': data_splits.get('Y_train_scaled', np.zeros((100, 2))),
-        'initial_history': initial_history,
-        'test_disturbances': test_disturbances
-    }
-
-def quick_mpc_health_check(mpc_controller) -> Dict[str, Any]:
-    """
-    🏥 Швидка перевірка "здоров'я" MPC контролера
-    """
-    
-    print("🏥 Швидка перевірка MPC...")
-    
-    health_status = {
-        'overall_status': 'unknown',
-        'checks': {},
-        'recommendations': []
-    }
+def pandas_safe_sort(df, column):
+    """Безпечне сортування для всіх версій pandas"""
+    if df.empty or column not in df.columns:
+        return df
     
     try:
-        # 1. Перевірка наявності необхідних атрибутів
-        required_attrs = ['model', 'Np', 'Nc', 'lag']
-        for attr in required_attrs:
-            has_attr = hasattr(mpc_controller, attr)
-            health_status['checks'][f'has_{attr}'] = has_attr
-            if not has_attr:
-                health_status['recommendations'].append(f"Відсутній атрибут: {attr}")
-        
-        # 2. Перевірка ініціалізації моделі
-        if hasattr(mpc_controller, 'model') and mpc_controller.model is not None:
-            model_trained = hasattr(mpc_controller.model, 'is_fitted') and mpc_controller.model.is_fitted
-            health_status['checks']['model_trained'] = model_trained
-            if not model_trained:
-                health_status['recommendations'].append("Модель не навчена")
-        
-        # 3. Тест ініціалізації історії
+        return df.sort_values(column, na_position='last')
+    except (TypeError, ValueError):
         try:
-            lag = getattr(mpc_controller, 'lag', 2)
-            test_history = np.array([[36.5, 102.2, 25.0]] * (lag + 1))
-            mpc_controller.reset_history(test_history)
-            health_status['checks']['history_initialization'] = True
-        except Exception as e:
-            health_status['checks']['history_initialization'] = False
-            health_status['recommendations'].append(f"Помилка ініціалізації історії: {e}")
+            return df.sort_values(column, na_last=True)
+        except (TypeError, ValueError):
+            # Ручне сортування
+            valid_mask = df[column].notna()
+            if valid_mask.any():
+                valid_df = df[valid_mask].sort_values(column)
+                invalid_df = df[~valid_mask]
+                return pd.concat([valid_df, invalid_df], ignore_index=True)
+            return df
         
-        # 4. Тест простої оптимізації
-        try:
-            Np = getattr(mpc_controller, 'Np', 8)
-            d_seq = np.array([[36.5, 102.2]] * Np)
-            result = mpc_controller.optimize(d_seq=d_seq, u_prev=25.0)
-            optimization_works = result is not None and len(result) > 0
-            health_status['checks']['optimization'] = optimization_works
-            if not optimization_works:
-                health_status['recommendations'].append("Оптимізація не працює")
-        except Exception as e:
-            health_status['checks']['optimization'] = False
-            health_status['recommendations'].append(f"Помилка оптимізації: {e}")
-        
-        # 5. Загальний статус
-        all_checks = list(health_status['checks'].values())
-        if all(all_checks):
-            health_status['overall_status'] = 'healthy'
-        elif any(all_checks):
-            health_status['overall_status'] = 'partially_functional'
-        else:
-            health_status['overall_status'] = 'critical'
-        
-        # Виводимо результат
-        status_emoji = {
-            'healthy': '✅',
-            'partially_functional': '⚠️', 
-            'critical': '❌',
-            'unknown': '❓'
-        }
-        
-        emoji = status_emoji.get(health_status['overall_status'], '❓')
-        print(f"   {emoji} Загальний статус: {health_status['overall_status']}")
-        
-        if health_status['recommendations']:
-            print(f"   💡 Рекомендації:")
-            for rec in health_status['recommendations']:
-                print(f"      • {rec}")
-        
-        return health_status
-        
-    except Exception as e:
-        health_status['overall_status'] = 'error'
-        health_status['error'] = str(e)
-        print(f"   ❌ Помилка перевірки: {e}")
-        return health_status
-
-def benchmark_summary_report(metrics: Dict[str, float], config_name: str = "Unnamed") -> str:
-    """
-    📋 Створює підсумковий звіт бенчмарку
-    """
-    
-    report = f"""
-📋 ЗВІТ БЕНЧМАРКУ MPC
-{"="*50}
-🎯 Конфігурація: {config_name}
-📅 Час: {pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")}
-
-📊 ТОЧНІСТЬ МОДЕЛІ:
-   • RMSE Fe: {metrics.get('test_rmse_conc_fe', 'N/A'):.6f}
-   • RMSE Mass: {metrics.get('test_rmse_conc_mass', 'N/A'):.6f} 
-   • R² Fe: {metrics.get('r2_fe', 'N/A'):.4f}
-   • R² Mass: {metrics.get('r2_mass', 'N/A'):.4f}
-
-⚡ ШВИДКОДІЯ:
-   • Час навчання: {metrics.get('krr-rbf_train_time', metrics.get('train_time', 'N/A')):.3f}с
-   • Час прогнозу: {metrics.get('krr-rbf_predict_time', metrics.get('predict_time', 0))*1000:.2f}ms
-   • MPC оптимізація: {metrics.get('mpc_solve_mean', 0)*1000:.2f}ms
-   • Загальний цикл: {metrics.get('total_cycle_time', 0)*1000:.1f}ms
-
-🎯 ЯКІСТЬ КЕРУВАННЯ:
-   • IAE Fe: {metrics.get('control_IAE_fe', 'N/A'):.3f}
-   • IAE Mass: {metrics.get('control_IAE_mass', 'N/A'):.3f}
-   • Сталі помилки Fe: {metrics.get('steady_error_fe', 'N/A'):.3f}
-   • Стабільність Fe: {metrics.get('stability_fe', 'N/A'):.3f}
-   • Загальна оцінка: {metrics.get('quality_score', 'N/A'):.4f}
-
-✅ ПРИДАТНІСТЬ:
-   • Real-time: {'✅' if metrics.get('real_time_suitable', False) else '❌'}
-   • MPC успішність: {metrics.get('mpc_success_rate', 0)*100:.1f}%
-   • Баланс якість-швидкість: {metrics.get('quality_speed_balance', 'N/A'):.4f}
-
-"""
-    
-    # Додаємо рекомендації
-    recommendations = []
-    
-    rmse_fe = metrics.get('test_rmse_conc_fe', float('inf'))
-    if rmse_fe > 0.1:
-        recommendations.append("Покращити точність моделі Fe")
-    
-    cycle_time = metrics.get('total_cycle_time', 0)
-    if cycle_time > 5.0:
-        recommendations.append("Оптимізувати швидкодію")
-    
-    quality_score = metrics.get('quality_score', 1.0)
-    if quality_score > 0.5:
-        recommendations.append("Налаштувати параметри MPC")
-    
-    success_rate = metrics.get('mpc_success_rate', 1.0)
-    if success_rate < 0.9:
-        recommendations.append("Покращити стабільність MPC")
-    
-    if recommendations:
-        report += "💡 РЕКОМЕНДАЦІЇ:\n"
-        for i, rec in enumerate(recommendations, 1):
-            report += f"   {i}. {rec}\n"
-    else:
-        report += "🎉 СИСТЕМА ПРАЦЮЄ ОПТИМАЛЬНО!\n"
-    
-    report += f"\n{'='*50}"
-    
-    return report
-
 # ✅ Виводимо повідомлення про готовність
 print("✅ ПОВНИЙ виправлений бенчмарк готовий!")
 print("🔧 Додано відсутні функції:")

@@ -27,30 +27,30 @@ from enhanced_benchmark import (
     benchmark_model_training, 
     benchmark_mpc_solve_time,
     benchmark_mpc_control_quality,
-    comprehensive_mpc_benchmark,
-    compare_mpc_configurations
+    compare_mpc_configurations,
+    pandas_safe_sort
 )
 
 from conf_manager import config_manager
 
-def pandas_safe_sort(df, column):
-    """Безпечне сортування для всіх версій pandas"""
-    if df.empty or column not in df.columns:
-        return df
+# def pandas_safe_sort(df, column):
+#     """Безпечне сортування для всіх версій pandas"""
+#     if df.empty or column not in df.columns:
+#         return df
     
-    try:
-        return df.sort_values(column, na_position='last')
-    except (TypeError, ValueError):
-        try:
-            return df.sort_values(column, na_last=True)
-        except (TypeError, ValueError):
-            # Ручне сортування
-            valid_mask = df[column].notna()
-            if valid_mask.any():
-                valid_df = df[valid_mask].sort_values(column)
-                invalid_df = df[~valid_mask]
-                return pd.concat([valid_df, invalid_df], ignore_index=True)
-            return df
+#     try:
+#         return df.sort_values(column, na_position='last')
+#     except (TypeError, ValueError):
+#         try:
+#             return df.sort_values(column, na_last=True)
+#         except (TypeError, ValueError):
+#             # Ручне сортування
+#             valid_mask = df[column].notna()
+#             if valid_mask.any():
+#                 valid_df = df[valid_mask].sort_values(column)
+#                 invalid_df = df[~valid_mask]
+#                 return pd.concat([valid_df, invalid_df], ignore_index=True)
+#             return df
 
 # =============================================================================
 # === БЛОК 1: ПІДГОТОВКА ДАНИХ ТА СКАЛЕРІВ (БЕЗ ЗМІН) ===
@@ -1403,38 +1403,38 @@ def simulate_mpc_with_config_enhanced(
         traceback.print_exc()
         raise
 
-def fixed_r2_calculation_simple(y_true, y_pred):
-    """
-    Проста виправлена функція для обчислення R²
+# def fixed_r2_calculation_simple(y_true, y_pred):
+#     """
+#     Проста виправлена функція для обчислення R²
     
-    Args:
-        y_true: Реальні значення
-        y_pred: Прогнозовані значення
+#     Args:
+#         y_true: Реальні значення
+#         y_pred: Прогнозовані значення
         
-    Returns:
-        float: R² в діапазоні [0, 1], де 1 = ідеальна точність
-    """
-    if len(y_true) < 2 or len(y_pred) < 2:
-        return 0.0
+#     Returns:
+#         float: R² в діапазоні [0, 1], де 1 = ідеальна точність
+#     """
+#     if len(y_true) < 2 or len(y_pred) < 2:
+#         return 0.0
     
-    # Очищуємо від NaN значень
-    mask = ~(np.isnan(y_true) | np.isnan(y_pred))
-    y_true = np.array(y_true)[mask]
-    y_pred = np.array(y_pred)[mask]
+#     # Очищуємо від NaN значень
+#     mask = ~(np.isnan(y_true) | np.isnan(y_pred))
+#     y_true = np.array(y_true)[mask]
+#     y_pred = np.array(y_pred)[mask]
     
-    if len(y_true) < 2:
-        return 0.0
+#     if len(y_true) < 2:
+#         return 0.0
     
-    # Стандартний R² розрахунок
-    ss_res = np.sum((y_true - y_pred) ** 2)  # Сума квадратів залишків
-    ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)  # Загальна сума квадратів
+#     # Стандартний R² розрахунок
+#     ss_res = np.sum((y_true - y_pred) ** 2)  # Сума квадратів залишків
+#     ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)  # Загальна сума квадратів
     
-    # Обробка крайових випадків
-    if ss_tot < 1e-10:
-        return 1.0 if ss_res < 1e-10 else 0.0
+#     # Обробка крайових випадків
+#     if ss_tot < 1e-10:
+#         return 1.0 if ss_res < 1e-10 else 0.0
     
-    r2 = 1 - (ss_res / ss_tot)
-    return max(0.0, float(r2))
+#     r2 = 1 - (ss_res / ss_tot)
+#     return max(0.0, float(r2))
 
 def compute_correct_mpc_metrics(results_df, basic_metrics, reference_values=None):
     """
@@ -2215,58 +2215,58 @@ def compare_mpc_configurations(
     
     return comparison_df
 
-def create_mpc_performance_report(results_df, metrics, reference_values=None):
-    """📋 Створює детальний звіт про продуктивність MPC з ISE/IAE"""
+# def create_mpc_performance_report(results_df, metrics, reference_values=None):
+#     """📋 Створює детальний звіт про продуктивність MPC з ISE/IAE"""
     
-    if reference_values is None:
-        reference_values = {'fe': 53.5, 'mass': 57.0}
+#     if reference_values is None:
+#         reference_values = {'fe': 53.5, 'mass': 57.0}
     
-    report = f"""
-📋 ЗВІТ ПРО ПРОДУКТИВНІСТЬ MPC
-{"="*60}
-📅 Час аналізу: {pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")}
-📊 Точок даних: {len(results_df)}
+#     report = f"""
+# 📋 ЗВІТ ПРО ПРОДУКТИВНІСТЬ MPC
+# {"="*60}
+# 📅 Час аналізу: {pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")}
+# 📊 Точок даних: {len(results_df)}
 
-🎯 ТОЧНІСТЬ ВІДСЛІДКОВУВАННЯ:
-   Fe концентрат:
-      Уставка: {reference_values['fe']:.1f}%
-      Досягнуто: {metrics.get('tracking_fe_achieved', 'N/A'):.3f}%
-      Помилка: {metrics.get('tracking_error_fe_mean', 0):+.3f}%
-      MAE: {metrics.get('tracking_error_fe_mae', 0):.3f}%
-      У допуску: {metrics.get('tracking_fe_in_tolerance_pct', 0):.1f}%
+# 🎯 ТОЧНІСТЬ ВІДСЛІДКОВУВАННЯ:
+#    Fe концентрат:
+#       Уставка: {reference_values['fe']:.1f}%
+#       Досягнуто: {metrics.get('tracking_fe_achieved', 'N/A'):.3f}%
+#       Помилка: {metrics.get('tracking_error_fe_mean', 0):+.3f}%
+#       MAE: {metrics.get('tracking_error_fe_mae', 0):.3f}%
+#       У допуску: {metrics.get('tracking_fe_in_tolerance_pct', 0):.1f}%
 
-   Масовий потік:
-      Уставка: {reference_values['mass']:.1f} т/год
-      Досягнуто: {metrics.get('tracking_mass_achieved', 'N/A'):.2f} т/год
-      Помилка: {metrics.get('tracking_error_mass_mean', 0):+.2f} т/год
-      MAE: {metrics.get('tracking_error_mass_mae', 0):.2f} т/год
+#    Масовий потік:
+#       Уставка: {reference_values['mass']:.1f} т/год
+#       Досягнуто: {metrics.get('tracking_mass_achieved', 'N/A'):.2f} т/год
+#       Помилка: {metrics.get('tracking_error_mass_mean', 0):+.2f} т/год
+#       MAE: {metrics.get('tracking_error_mass_mae', 0):.2f} т/год
 
-🎛️ СТАБІЛЬНІСТЬ КЕРУВАННЯ:
-   Середнє керування: {metrics.get('control_mean', 0):.2f}%
-   Варіабельність: {metrics.get('control_std', 0):.3f}%
-   Плавність: {metrics.get('control_smoothness', 0):.3f}%
+# 🎛️ СТАБІЛЬНІСТЬ КЕРУВАННЯ:
+#    Середнє керування: {metrics.get('control_mean', 0):.2f}%
+#    Варіабельність: {metrics.get('control_std', 0):.3f}%
+#    Плавність: {metrics.get('control_smoothness', 0):.3f}%
 
-📈 ІНТЕГРАЛЬНІ МЕТРИКИ ЯКОСТІ:
-   ISE Fe (норм.): {metrics.get('performance_ise_fe_normalized', 0):.4f}
-   IAE Fe (норм.): {metrics.get('performance_iae_fe_normalized', 0):.4f}
-   ISE Mass (норм.): {metrics.get('performance_ise_mass_normalized', 0):.4f}
-   IAE Mass (норм.): {metrics.get('performance_iae_mass_normalized', 0):.4f}
-   Комбінований ISE: {metrics.get('performance_combined_ise', 0):.4f}
-   Комбінований IAE: {metrics.get('performance_combined_iae', 0):.4f}
+# 📈 ІНТЕГРАЛЬНІ МЕТРИКИ ЯКОСТІ:
+#    ISE Fe (норм.): {metrics.get('performance_ise_fe_normalized', 0):.4f}
+#    IAE Fe (норм.): {metrics.get('performance_iae_fe_normalized', 0):.4f}
+#    ISE Mass (норм.): {metrics.get('performance_ise_mass_normalized', 0):.4f}
+#    IAE Mass (норм.): {metrics.get('performance_iae_mass_normalized', 0):.4f}
+#    Комбінований ISE: {metrics.get('performance_combined_ise', 0):.4f}
+#    Комбінований IAE: {metrics.get('performance_combined_iae', 0):.4f}
 
-🏆 ЗАГАЛЬНА ОЦІНКА: {metrics.get('mpc_quality_score', 0):.1f}/100
-📊 Класифікація: {metrics.get('mpc_quality_class', 'N/A')}
+# 🏆 ЗАГАЛЬНА ОЦІНКА: {metrics.get('mpc_quality_score', 0):.1f}/100
+# 📊 Класифікація: {metrics.get('mpc_quality_class', 'N/A')}
 
-💡 РЕКОМЕНДАЦІЇ:
-"""
+# 💡 РЕКОМЕНДАЦІЇ:
+# """
     
-    recommendations = metrics.get('recommendations', ['Немає'])
-    for i, rec in enumerate(recommendations, 1):
-        report += f"   {i}. {rec}\n"
+#     recommendations = metrics.get('recommendations', ['Немає'])
+#     for i, rec in enumerate(recommendations, 1):
+#         report += f"   {i}. {rec}\n"
     
-    report += f"\n{'='*60}"
+#     report += f"\n{'='*60}"
     
-    return report
+#     return report
 
 
 def load_historical_data() -> pd.DataFrame:
