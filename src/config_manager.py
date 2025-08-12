@@ -168,6 +168,8 @@ def create_default_configs() -> None:
         "w_mass": 1.0,
         "ref_fe": 53.5,
         "ref_mass": 57.0,
+        "tolerance_fe_percent": 1.5,    # Строга толерантність для консервативної
+        "tolerance_mass_percent": 2.0,
         
         # Trust region
         "adaptive_trust_region": True,
@@ -241,6 +243,8 @@ def create_default_configs() -> None:
         "w_mass": 2.0,
         "ref_fe": 54.0,
         "ref_mass": 58.0,
+        "tolerance_fe_percent": 2.5,    # Строга толерантність для консервативної
+        "tolerance_mass_percent": 3.0,
         
         # Trust region
         "adaptive_trust_region": True,
@@ -319,6 +323,8 @@ def create_default_configs() -> None:
         "w_mass": 1.0,
         "ref_fe": 53.5,
         "ref_mass": 57.0,
+        "tolerance_fe_percent": 5.0,    # Строга толерантність для консервативної
+        "tolerance_mass_percent": 5.0,
         
         # Trust region
         "adaptive_trust_region": False,
@@ -396,6 +402,10 @@ def prompt_manual_adjustments(base_config: Dict[str, Any]) -> Dict[str, Any]:
             ("ref_mass", "Уставка масового потоку", float),
             ("w_fe", "Вага для Fe", float),
             ("w_mass", "Вага для масового потоку", float)
+        ],
+        "🎯 Толерантності оцінки": [
+            ("tolerance_fe_percent", "Толерантність Fe (%)", float),
+            ("tolerance_mass_percent", "Толерантність Mass (%)", float)
         ]
     }
     
@@ -428,15 +438,13 @@ def prompt_manual_adjustments(base_config: Dict[str, Any]) -> Dict[str, Any]:
 # === ГОЛОВНА ФУНКЦІЯ ===
 # =============================================================================
 
-# Виправлення в config_manager.py
-
 def simulate_mpc_with_config(
     reference_df: pd.DataFrame,
     config_name: str = "conservative",
     manual_overrides: Optional[Dict[str, Any]] = None,
     progress_callback: Optional[Callable] = None,
     save_results: bool = True,
-    show_evaluation_plots: bool = False,        # ✅ ДОДАТИ ЦЕЙ РЯДОК
+    show_evaluation_plots: bool = False,  # ✅ ДОДАЄМО НОВИЙ ПАРАМЕТР
     **kwargs
 ) -> Tuple[pd.DataFrame, Dict]:
     """
@@ -448,7 +456,7 @@ def simulate_mpc_with_config(
         manual_overrides: Словник для ручного перевизначення параметрів
         progress_callback: Функція зворотного виклику для прогресу
         save_results: Чи зберігати результати автоматично (за замовчуванням True)
-        show_evaluation_plots: Чи показувати графіки оцінки (за замовчуванням False)  # ✅ ДОДАТИ ЦЕЙ РЯДОК
+        show_evaluation_plots: Чи показувати графіки оцінки (за замовчуванням False)  # ✅ ДОДАЄМО ОПИС
         **kwargs: Додаткові параметри для перевизначення
         
     Returns:
@@ -462,8 +470,6 @@ def simulate_mpc_with_config(
     try:
         # Імпортуємо функцію симуляції
         from sim import simulate_mpc
-        
-        # 1-7. [Весь існуючий код залишається без змін до пункту "Запускаємо основну симуляцію"]
         
         # 1. Завантажуємо базову конфігурацію
         try:
@@ -509,11 +515,10 @@ def simulate_mpc_with_config(
                     params[key] = value
                     print(f"   • {key}: {old_value} → {value}")
         
-        # 4. Додаємо progress_callback
+        # 4. ✅ ДОДАЄМО progress_callback та show_evaluation_plots
         if progress_callback:
             params['progress_callback'] = progress_callback
-        
-        if show_evaluation_plots:                           
+        if show_evaluation_plots:  # ✅ ДОДАЄМО ПЕРЕДАЧУ ПАРАМЕТРА
             params['show_evaluation_plots'] = show_evaluation_plots
         
         # 5. Показуємо фінальну конфігурацію
@@ -530,7 +535,7 @@ def simulate_mpc_with_config(
         print("🚀 Викликаємо simulate_mpc...")
         results_df, metrics = simulate_mpc(reference_df, **filtered_params)
         
-        # ✅ ДОДАЄМО ЗБЕРЕЖЕННЯ РЕЗУЛЬТАТІВ
+        # ✅ ЗБЕРЕЖЕННЯ РЕЗУЛЬТАТІВ
         if save_results:
             print("\n💾 Зберігаємо результати симуляції...")
             

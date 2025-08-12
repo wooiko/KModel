@@ -520,7 +520,6 @@ def run_simulation_loop_enhanced(
         "d_hat": np.vstack(d_hat_hist) if d_hat_hist else np.array([]),
         "trust_region_stats": trust_region_stats_hist,
         "linearization_quality": linearization_quality_hist,
-        # ✅ ДОДАЄМО ДАНІ ДЛЯ ПОДАЛЬШОГО АНАЛІЗУ:
         "y_true_seq": y_true_seq,
         "y_pred_seq": y_pred_seq,
         "x_est_seq": x_est_seq,
@@ -576,7 +575,6 @@ def initialize_ekf(
 # =============================================================================
 # === ГОЛОВНА ФУНКЦІЯ-ОРКЕСТРАТОР ===
 # =============================================================================
-
 
 def simulate_mpc(
     reference_df: pd.DataFrame,
@@ -649,6 +647,8 @@ def simulate_mpc(
     run_analysis: bool = True,
     run_evaluation: bool = True,                # ✅ ІСНУЮЧИЙ ПАРАМЕТР
     show_evaluation_plots: bool = False,        # ✅ ДОДАТИ ЦЕЙ РЯДОК
+    tolerance_fe_percent: float = 2.0,         # ✅ ДОДАТИ ЦЕЙ РЯДОК
+    tolerance_mass_percent: float = 2.0,       # ✅ ДОДАТИ ЦЕЙ РЯДОК     
     P0: float = 1e-2,
     Q_phys: float = 1500,
     Q_dist: float = 1,
@@ -786,15 +786,15 @@ if __name__ == '__main__':
         else:
             print("ℹ️ Корегування не внесено")
     
-    # ✅ ДОДАНО: Запитуємо про оцінювання
+    # ✅ ДОДАНО: Запитуємо про оцінювання та візуалізацію
     want_evaluation = input(f"\nВключити оцінку ефективності? (Y/n): ").strip().lower()
     run_evaluation = want_evaluation not in ['n', 'no', 'ні']
-   
+    
     show_evaluation_plots = False
     if run_evaluation:
         want_plots = input(f"Показати графіки оцінки? (Y/n): ").strip().lower()
         show_evaluation_plots = want_plots not in ['n', 'no', 'ні']
-        
+    
     # Запуск симуляції
     print(f"\n🚀 Запуск симуляції...")
     print("=" * 50)
@@ -805,8 +805,8 @@ if __name__ == '__main__':
             config_name=selected_config,
             manual_overrides=manual_overrides,
             progress_callback=my_progress,
-            run_evaluation=run_evaluation,
-            show_evaluation_plots=show_evaluation_plots
+            run_evaluation=run_evaluation,  # ✅ ПЕРЕДАЄМО ПАРАМЕТР
+            show_evaluation_plots=show_evaluation_plots  # ✅ ПЕРЕДАЄМО ПАРАМЕТР ВІЗУАЛІЗАЦІЇ
         )
         
         if result is None:

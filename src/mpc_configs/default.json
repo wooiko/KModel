@@ -3,8 +3,8 @@
     "description": "Конфігурація, збережена за замовченням",
     
     "_SIMULATION_": "================================================",
-    "N_data": 2000,
-    "control_pts": 200,
+    "N_data": 500,
+    "control_pts": 50,
     "seed": 42,
     
     "_DATA_PROCESSING_": "=========================================",
@@ -34,6 +34,8 @@
     "w_mass": 2.0,
     "ref_fe": 54.0,
     "ref_mass": 58.0,
+    "tolerance_fe_percent": 1.5,
+    "tolerance_mass_percent": 2.0,
     "y_max_fe": 55.0,
     "y_max_mass": 60.0,
     "K_I": 0.01,
@@ -95,5 +97,5 @@
         "concentrate_mass_flow": ["pow", 1.5]
     },
     "_RUN_ANALYSIS_": "=========================================",
-    "run_analysis": false    
+    "run_analysis": true    
 }

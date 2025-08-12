@@ -2,7 +2,6 @@
 
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt  
 from typing import Dict, List, Tuple, Optional
 import matplotlib.pyplot as plt
 from sklearn.metrics import mean_squared_error, r2_score
@@ -136,6 +135,10 @@ def evaluate_control_performance(results_df: pd.DataFrame, params: Dict) -> Dict
     ref_fe = params.get('ref_fe', 53.5)
     ref_mass = params.get('ref_mass', 57.0)
     
+    # ✅ НАСТРОЮВАНІ ТОЛЕРАНТНОСТІ
+    tolerance_fe_percent = params.get('tolerance_fe_percent', 2.0)    
+    tolerance_mass_percent = params.get('tolerance_mass_percent', 2.0) 
+    
     # Фактичні значення
     fe_values = results_df['conc_fe'].values
     mass_values = results_df['conc_mass'].values
@@ -145,25 +148,31 @@ def evaluate_control_performance(results_df: pd.DataFrame, params: Dict) -> Dict
     error_fe = fe_values - ref_fe
     error_mass = mass_values - ref_mass
     
-    # 1. Помилки відстеження (RMSE від уставки)
+    # 1. Помилки відстеження (RMSE від уставки) - ✅ ЗАЛИШАЄТЬСЯ
     tracking_error_fe = np.sqrt(np.mean(error_fe**2))
     tracking_error_mass = np.sqrt(np.mean(error_mass**2))
     
-    # 2. ISE (Integral of Squared Error) - сума квадратів помилок
+    # 2. ISE (Integral of Squared Error) - ✅ ЗАЛИШАЄТЬСЯ
     ise_fe = np.sum(error_fe**2)
     ise_mass = np.sum(error_mass**2)
     
-    # 3. IAE (Integral of Absolute Error) - сума абсолютних помилок
+    # 3. IAE (Integral of Absolute Error) - ✅ ЗАЛИШАЄТЬСЯ
     iae_fe = np.sum(np.abs(error_fe))
     iae_mass = np.sum(np.abs(error_mass))
     
-    # 4. Згладженість керування (обернена до варіації змін)
+    # 4. Згладженість керування - ✅ ЗАЛИШАЄТЬСЯ
     control_changes = np.diff(control_values)
     control_smoothness = 1 / (1 + np.std(control_changes))
     
-    # 5. Досягнення уставок (% часу в межах толерантності)
-    tolerance_fe = 0.05 * abs(ref_fe)  # 5% толерантність
-    tolerance_mass = 0.05 * abs(ref_mass)
+    # 5. Досягнення уставок з настроюваними толерантностями
+    tolerance_fe = (tolerance_fe_percent / 100.0) * abs(ref_fe)
+    tolerance_mass = (tolerance_mass_percent / 100.0) * abs(ref_mass)
+    
+    # ✅ ВИДАЛИТИ ТІЛЬКИ ЦІ 4 ЗАЙВІ PRINT-И (занадто багато тексту):
+    # print(f"\n🎯 Розрахунок досягнення уставок:")
+    # print(f"   ⚙️ Налаштування толерантності:")
+    # print(f"      Fe: {tolerance_fe_percent}% від уставки = ±{tolerance_fe:.3f}")
+    # print(f"      Mass: {tolerance_mass_percent}% від уставки = ±{tolerance_mass:.3f}")
     
     setpoint_achievement_fe = calculate_setpoint_achievement(fe_values, ref_fe, tolerance_fe)
     setpoint_achievement_mass = calculate_setpoint_achievement(mass_values, ref_mass, tolerance_mass)
@@ -180,10 +189,22 @@ def evaluate_control_performance(results_df: pd.DataFrame, params: Dict) -> Dict
         'setpoint_achievement_mass': setpoint_achievement_mass
     }
 
+
 def calculate_setpoint_achievement(values: np.ndarray, setpoint: float, tolerance: float) -> float:
     """Розраховує відсоток часу, коли значення в межах толерантності від уставки"""
     within_tolerance = np.abs(values - setpoint) <= tolerance
-    return np.mean(within_tolerance) * 100.0
+    achievement_pct = np.mean(within_tolerance) * 100.0
+    
+    # ✅ ДОДАЄМО ДІАГНОСТИКУ
+    # print(f"   🔍 Діагностика уставки:")
+    # print(f"      Уставка: {setpoint:.2f}")
+    # print(f"      Толерантність: ±{tolerance:.2f}")
+    # print(f"      Діапазон допуску: [{setpoint-tolerance:.2f}, {setpoint+tolerance:.2f}]")
+    # print(f"      Фактичний діапазон: [{np.min(values):.2f}, {np.max(values):.2f}]")
+    # print(f"      Точок в допуску: {np.sum(within_tolerance)}/{len(values)}")
+    print(f"      Уставка {setpoint:.1f} ±{tolerance:.2f}: {np.sum(within_tolerance)}/{len(values)} точок ({achievement_pct:.1f}%)")
+
+    return achievement_pct
 
 # =============================================================================
 # === ФУНКЦІЇ ЗАГАЛЬНОГО ОЦІНЮВАННЯ ===
@@ -281,6 +302,10 @@ def print_evaluation_report(eval_results: EvaluationResults, detailed: bool = Tr
     print(f"⭐ ЗАГАЛЬНА ОЦІНКА: {eval_results.overall_score:.1f}/100")
     print(f"🔒 СТАБІЛЬНІСТЬ ПРОЦЕСУ: {eval_results.process_stability:.3f}")
     
+    # ✅ ДОДАЄМО КЛАСИФІКАЦІЮ
+    classification = get_mpc_quality_classification(eval_results.overall_score)
+    print(f"📊 КЛАСИФІКАЦІЯ: {classification}")
+    
     if detailed:
         print(f"\n📊 ЯКІСТЬ МОДЕЛЕЙ:")
         print(f"   • Fe RMSE: {eval_results.model_rmse_fe:.3f} (R² = {eval_results.model_r2_fe:.3f})")
@@ -298,6 +323,64 @@ def print_evaluation_report(eval_results: EvaluationResults, detailed: bool = Tr
         print(f"   • Згладженість керування: {eval_results.control_smoothness:.3f}")
         print(f"   • Досягнення уставки Fe: {eval_results.setpoint_achievement_fe:.1f}%")
         print(f"   • Досягнення уставки Mass: {eval_results.setpoint_achievement_mass:.1f}%")
+        
+        # ✅ ДОДАЄМО РЕКОМЕНДАЦІЇ
+        recommendations = generate_recommendations(eval_results)
+        if recommendations:
+            print(f"\n💡 РЕКОМЕНДАЦІЇ:")
+            for i, rec in enumerate(recommendations, 1):
+                print(f"   {i}. {rec}")
+
+def get_mpc_quality_classification(score: float) -> str:
+    """Класифікує якість MPC системи"""
+    if score >= 80:
+        return "Відмінно"
+    elif score >= 65:
+        return "Добре" 
+    elif score >= 50:
+        return "Задовільно"
+    elif score >= 35:
+        return "Потребує покращення"
+    else:
+        return "Незадовільно"
+
+def generate_recommendations(eval_results: EvaluationResults) -> List[str]:
+    """Генерує автоматичні рекомендації для покращення системи"""
+    recommendations = []
+    
+    # Перевіряємо точність відстеження Mass
+    if eval_results.tracking_error_mass > 2.0:
+        recommendations.append("Покращити точність відслідковування Mass (помилка > 2.0)")
+    
+    # Перевіряємо досягнення уставок
+    if eval_results.setpoint_achievement_fe < 70:
+        recommendations.append("Покращити відстеження уставки Fe (< 70% в допуску)")
+        
+    if eval_results.setpoint_achievement_mass < 70:
+        recommendations.append("Покращити відстеження уставки Mass (< 70% в допуску)")
+    
+    # Перевіряємо якість моделі
+    if eval_results.model_r2_fe < 0.8:
+        recommendations.append("Покращити якість моделі для Fe (R² < 0.8)")
+        
+    if eval_results.model_r2_mass < 0.8:
+        recommendations.append("Покращити якість моделі для Mass (R² < 0.8)")
+    
+    # Перевіряємо згладженість керування
+    if eval_results.control_smoothness < 0.5:
+        recommendations.append("Зменшити коливання керуючого сигналу")
+    
+    # Позитивні відгуки
+    if eval_results.control_smoothness > 0.8:
+        recommendations.append("✅ Стабільне керування - добре налаштовано!")
+        
+    if eval_results.process_stability > 0.9:
+        recommendations.append("✅ Висока стабільність процесу!")
+        
+    if eval_results.overall_score > 80:
+        recommendations.append("✅ Відмінна загальна продуктивність!")
+    
+    return recommendations
 
 def get_performance_summary(eval_results: EvaluationResults) -> str:
     """Повертає короткий текстовий опис ефективності"""
@@ -442,26 +525,26 @@ def create_evaluation_plots(results_df: pd.DataFrame, eval_results: EvaluationRe
     ax4 = axes[1, 1]
     ax4.axis('off')
     
-    # Текстовий звіт
+    # Текстовий звіт без емодзі для matplotlib
     summary_text = f"""
 ПІДСУМОК ОЦІНКИ
 
-⭐ Загальна оцінка: {eval_results.overall_score:.1f}/100
-🎯 Статус: {get_performance_summary(eval_results)}
+Загальна оцінка: {eval_results.overall_score:.1f}/100
+Статус: {get_performance_summary(eval_results).replace('🌟', '').replace('✅', '').replace('📈', '').replace('⚠️', '').replace('❌', '').strip()}
 
-📊 Модель:
-  • R² Fe: {eval_results.model_r2_fe:.3f}
-  • R² Mass: {eval_results.model_r2_mass:.3f}
+Модель:
+  R² Fe: {eval_results.model_r2_fe:.3f}
+  R² Mass: {eval_results.model_r2_mass:.3f}
 
-🎮 Керування:
-  • Досягнення Fe: {eval_results.setpoint_achievement_fe:.1f}%
-  • Досягнення Mass: {eval_results.setpoint_achievement_mass:.1f}%
+Керування:
+  Досягнення Fe: {eval_results.setpoint_achievement_fe:.1f}%
+  Досягнення Mass: {eval_results.setpoint_achievement_mass:.1f}%
   
-🔒 Стабільність: {eval_results.process_stability:.3f}
+Стабільність: {eval_results.process_stability:.3f}
     """
     
     ax4.text(0.05, 0.95, summary_text, transform=ax4.transAxes, fontsize=11,
-             verticalalignment='top', fontfamily='monospace',
+             verticalalignment='top', fontfamily='sans-serif',  # Змінено з 'monospace'
              bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
     
     plt.tight_layout()
