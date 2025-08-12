@@ -38,6 +38,18 @@ class EvaluationResults:
     overall_score: float
     process_stability: float
     
+    control_aggressiveness: float           # mean_delta_u або mean_abs_nonzero_delta_u
+    control_variability: float              # std_delta_u
+    control_energy: float                   # energy_u
+    control_stability_index: float          # 1 - directional_switch_frequency
+    control_utilization: float              # percentage_of_max_delta_u_used
+    significant_changes_frequency: float    # significant_magnitude_changes_frequency
+    significant_changes_count: float        # significant_magnitude_changes_count
+    max_control_change: float               # max_abs_delta_u
+    directional_switches_per_step: float    # directional_switch_frequency
+    directional_switches_count: float       # directional_switch_count
+    steps_at_max_delta_u: float            # num_steps_at_delta_u_max
+
     def to_dict(self) -> Dict:
         """Конвертує в словник для зручності"""
         return {
@@ -57,7 +69,18 @@ class EvaluationResults:
             'iae_fe': self.iae_fe,
             'iae_mass': self.iae_mass,
             'overall_score': self.overall_score,
-            'process_stability': self.process_stability
+            'process_stability': self.process_stability,
+            'control_aggressiveness': self.control_aggressiveness,
+            'control_variability': self.control_variability,
+            'control_energy': self.control_energy,
+            'control_stability_index': self.control_stability_index,
+            'control_utilization': self.control_utilization,
+            'significant_changes_frequency': self.significant_changes_frequency,
+            'significant_changes_count': self.significant_changes_count,
+            'max_control_change': self.max_control_change,
+            'directional_switches_per_step': self.directional_switches_per_step,
+            'directional_switches_count': self.directional_switches_count,
+            'steps_at_max_delta_u': self.steps_at_max_delta_u
         }
 
 # =============================================================================
@@ -177,6 +200,9 @@ def evaluate_control_performance(results_df: pd.DataFrame, params: Dict) -> Dict
     setpoint_achievement_fe = calculate_setpoint_achievement(fe_values, ref_fe, tolerance_fe)
     setpoint_achievement_mass = calculate_setpoint_achievement(mass_values, ref_mass, tolerance_mass)
     
+    delta_u_max = params.get('delta_u_max', 1.0)
+    aggressiveness_metrics = calculate_control_aggressiveness_metrics(control_values, delta_u_max)
+    
     return {
         'tracking_error_fe': tracking_error_fe,
         'tracking_error_mass': tracking_error_mass,
@@ -186,9 +212,60 @@ def evaluate_control_performance(results_df: pd.DataFrame, params: Dict) -> Dict
         'iae_mass': iae_mass,
         'control_smoothness': control_smoothness,
         'setpoint_achievement_fe': setpoint_achievement_fe,
-        'setpoint_achievement_mass': setpoint_achievement_mass
+        'setpoint_achievement_mass': setpoint_achievement_mass,
+        **aggressiveness_metrics  # ✅ Додаємо всі метрики агресивності
     }
 
+def calculate_control_aggressiveness_metrics(control_values: np.ndarray, 
+                                           delta_u_max: float) -> Dict[str, float]:
+    """
+    Розраховує метрики агресивності керування на основі вашого прикладу
+    """
+    
+    # Обчислюємо зміни керування
+    delta_u = np.diff(control_values)
+    abs_delta_u = np.abs(delta_u)
+    nonzero_delta_u = abs_delta_u[abs_delta_u > 1e-8]
+    
+    # 1. Основні статистики
+    mean_delta_u = np.mean(abs_delta_u) if len(abs_delta_u) > 0 else 0.0
+    std_delta_u = np.std(delta_u) if len(delta_u) > 0 else 0.0
+    max_abs_delta_u = np.max(abs_delta_u) if len(abs_delta_u) > 0 else 0.0
+    mean_abs_nonzero_delta_u = np.mean(nonzero_delta_u) if len(nonzero_delta_u) > 0 else 0.0
+    
+    # 2. Енергія керування
+    energy_u = np.sum(delta_u**2)
+    
+    # 3. Значні зміни (> 50% від max)
+    significant_threshold = 0.5 * delta_u_max
+    significant_magnitude_changes_count = np.sum(abs_delta_u > significant_threshold)
+    significant_magnitude_changes_frequency = significant_magnitude_changes_count / len(delta_u) if len(delta_u) > 0 else 0.0
+    
+    # 4. Зміни напрямку
+    directional_switch_count = 0
+    for i in range(1, len(delta_u)):
+        if np.sign(delta_u[i]) != np.sign(delta_u[i-1]) and abs(delta_u[i]) > 1e-8 and abs(delta_u[i-1]) > 1e-8:
+            directional_switch_count += 1
+    
+    directional_switch_frequency = directional_switch_count / len(delta_u) if len(delta_u) > 0 else 0.0
+    
+    # 5. Використання максимуму
+    percentage_of_max_delta_u_used = (mean_delta_u / delta_u_max * 100) if delta_u_max > 0 else 0.0
+    num_steps_at_delta_u_max = np.sum(abs_delta_u >= 0.95 * delta_u_max)
+    
+    return {
+        'control_aggressiveness': mean_abs_nonzero_delta_u,  # Використовуємо nonzero як у вас
+        'control_variability': std_delta_u,
+        'control_energy': energy_u,
+        'control_stability_index': 1.0 - directional_switch_frequency,
+        'control_utilization': percentage_of_max_delta_u_used,
+        'significant_changes_frequency': significant_magnitude_changes_frequency,
+        'significant_changes_count': float(significant_magnitude_changes_count),
+        'max_control_change': max_abs_delta_u,
+        'directional_switches_per_step': directional_switch_frequency,
+        'directional_switches_count': float(directional_switch_count),
+        'steps_at_max_delta_u': float(num_steps_at_delta_u_max)
+    }
 
 def calculate_setpoint_achievement(values: np.ndarray, setpoint: float, tolerance: float) -> float:
     """Розраховує відсоток часу, коли значення в межах толерантності від уставки"""
@@ -323,6 +400,17 @@ def print_evaluation_report(eval_results: EvaluationResults, detailed: bool = Tr
         print(f"   • Згладженість керування: {eval_results.control_smoothness:.3f}")
         print(f"   • Досягнення уставки Fe: {eval_results.setpoint_achievement_fe:.1f}%")
         print(f"   • Досягнення уставки Mass: {eval_results.setpoint_achievement_mass:.1f}%")
+
+        print(f"\n🎛️ АГРЕСИВНІСТЬ КЕРУВАННЯ:")
+        print(f"   • Середня зміна: {eval_results.control_aggressiveness:.3f}")
+        print(f"   • Варіативність: {eval_results.control_variability:.3f}")
+        print(f"   • Енергія керування: {eval_results.control_energy:.1f}")
+        print(f"   • Індекс стабільності: {eval_results.control_stability_index:.3f}")
+        print(f"   • Використання діапазону: {eval_results.control_utilization:.1f}%")
+        print(f"   • Значні зміни: {eval_results.significant_changes_count:.0f} ({eval_results.significant_changes_frequency:.1%})")
+        print(f"   • Зміни напрямку: {eval_results.directional_switches_count:.0f} ({eval_results.directional_switches_per_step:.1%})")
+        print(f"   • Максимальна зміна: {eval_results.max_control_change:.3f}")
+        print(f"   • Кроків на максимумі: {eval_results.steps_at_max_delta_u:.0f}")
         
         # ✅ ДОДАЄМО РЕКОМЕНДАЦІЇ
         recommendations = generate_recommendations(eval_results)
@@ -380,6 +468,22 @@ def generate_recommendations(eval_results: EvaluationResults) -> List[str]:
     if eval_results.overall_score > 80:
         recommendations.append("✅ Відмінна загальна продуктивність!")
     
+    if eval_results.control_stability_index < 0.6:
+        recommendations.append("🔄 Занадто часті зміни напрямку - збільшити λ_obj")
+        
+    if eval_results.control_aggressiveness > 1.0:
+        recommendations.append("⚡ Зменшити агресивність керування")
+        
+    if eval_results.control_utilization > 80:
+        recommendations.append("📊 Контролер працює на межі - збільшити delta_u_max")
+        
+    if eval_results.significant_changes_frequency > 0.3:
+        recommendations.append("📈 Занадто багато різких змін - розглянути фільтрацію")
+    
+    # Позитивні відгуки
+    if eval_results.control_stability_index > 0.8:
+        recommendations.append("✅ Стабільне керування без коливань!")
+        
     return recommendations
 
 def get_performance_summary(eval_results: EvaluationResults) -> str:

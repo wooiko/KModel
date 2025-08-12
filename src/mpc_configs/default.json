@@ -97,5 +97,5 @@
         "concentrate_mass_flow": ["pow", 1.5]
     },
     "_RUN_ANALYSIS_": "=========================================",
-    "run_analysis": true    
+    "run_analysis": false    
 }
