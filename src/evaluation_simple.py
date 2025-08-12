@@ -13,52 +13,67 @@ from dataclasses import dataclass
 
 @dataclass
 class EvaluationResults:
-    """Контейнер для всіх результатів оцінювання"""
-    # Модель (6 метрик)
+    """Контейнер для всіх результатів оцінювання з додатковими MAE та MAPE метриками"""
+    # Модель (10 метрик - додано MAE і MAPE)
     model_rmse_fe: float
     model_rmse_mass: float
     model_r2_fe: float
     model_r2_mass: float
     model_bias_fe: float
     model_bias_mass: float
+    model_mae_fe: float          # ✅ НОВИЙ: Mean Absolute Error для Fe
+    model_mae_mass: float        # ✅ НОВИЙ: Mean Absolute Error для Mass
+    model_mape_fe: float         # ✅ НОВИЙ: Mean Absolute Percentage Error для Fe
+    model_mape_mass: float       # ✅ НОВИЙ: Mean Absolute Percentage Error для Mass
     
-    # Керування (9 метрик)
+    # Керування (13 метрик - додано MAE і MAPE для відстеження)
     tracking_error_fe: float
     tracking_error_mass: float
     control_smoothness: float
-    setpoint_achievement_fe: float  # % часу в межах толерантності
+    setpoint_achievement_fe: float
     setpoint_achievement_mass: float
-    # Додаємо ISE/IAE метрики
-    ise_fe: float           # Integral of Squared Error для Fe
-    ise_mass: float         # Integral of Squared Error для Mass
-    iae_fe: float           # Integral of Absolute Error для Fe
-    iae_mass: float         # Integral of Absolute Error для Mass
+    ise_fe: float
+    ise_mass: float
+    iae_fe: float
+    iae_mass: float
+    tracking_mae_fe: float       # ✅ НОВИЙ: MAE для відстеження уставки Fe
+    tracking_mae_mass: float     # ✅ НОВИЙ: MAE для відстеження уставки Mass
+    tracking_mape_fe: float      # ✅ НОВИЙ: MAPE для відстеження уставки Fe
+    tracking_mape_mass: float    # ✅ НОВИЙ: MAPE для відстеження уставки Mass
     
-    # Загальна ефективність (2 метрики)
+    # Загальна ефективність (2 метрики - без змін)
     overall_score: float
     process_stability: float
     
-    control_aggressiveness: float           # mean_delta_u або mean_abs_nonzero_delta_u
-    control_variability: float              # std_delta_u
-    control_energy: float                   # energy_u
-    control_stability_index: float          # 1 - directional_switch_frequency
-    control_utilization: float              # percentage_of_max_delta_u_used
-    significant_changes_frequency: float    # significant_magnitude_changes_frequency
-    significant_changes_count: float        # significant_magnitude_changes_count
-    max_control_change: float               # max_abs_delta_u
-    directional_switches_per_step: float    # directional_switch_frequency
-    directional_switches_count: float       # directional_switch_count
-    steps_at_max_delta_u: float            # num_steps_at_delta_u_max
+    # Агресивність керування (11 метрик - без змін)
+    control_aggressiveness: float
+    control_variability: float
+    control_energy: float
+    control_stability_index: float
+    control_utilization: float
+    significant_changes_frequency: float
+    significant_changes_count: float
+    max_control_change: float
+    directional_switches_per_step: float
+    directional_switches_count: float
+    steps_at_max_delta_u: float
 
     def to_dict(self) -> Dict:
         """Конвертує в словник для зручності"""
         return {
+            # Модель
             'model_rmse_fe': self.model_rmse_fe,
             'model_rmse_mass': self.model_rmse_mass,
             'model_r2_fe': self.model_r2_fe,
             'model_r2_mass': self.model_r2_mass,
             'model_bias_fe': self.model_bias_fe,
             'model_bias_mass': self.model_bias_mass,
+            'model_mae_fe': self.model_mae_fe,
+            'model_mae_mass': self.model_mae_mass,
+            'model_mape_fe': self.model_mape_fe,
+            'model_mape_mass': self.model_mape_mass,
+            
+            # Керування
             'tracking_error_fe': self.tracking_error_fe,
             'tracking_error_mass': self.tracking_error_mass,
             'control_smoothness': self.control_smoothness,
@@ -68,8 +83,16 @@ class EvaluationResults:
             'ise_mass': self.ise_mass,
             'iae_fe': self.iae_fe,
             'iae_mass': self.iae_mass,
+            'tracking_mae_fe': self.tracking_mae_fe,
+            'tracking_mae_mass': self.tracking_mae_mass,
+            'tracking_mape_fe': self.tracking_mape_fe,
+            'tracking_mape_mass': self.tracking_mape_mass,
+            
+            # Загальна ефективність
             'overall_score': self.overall_score,
             'process_stability': self.process_stability,
+            
+            # Агресивність керування
             'control_aggressiveness': self.control_aggressiveness,
             'control_variability': self.control_variability,
             'control_energy': self.control_energy,
@@ -88,14 +111,14 @@ class EvaluationResults:
 # =============================================================================
 
 def evaluate_model_performance(results_df: pd.DataFrame, analysis_data: Dict) -> Dict[str, float]:
-    """Оцінює якість роботи моделей прогнозування"""
+    """Оцінює якість роботи моделей прогнозування з додатковими MAE та MAPE метриками"""
     
     # Витягуємо дані для порівняння
     y_true = analysis_data.get('y_true_seq', [])
     y_pred = analysis_data.get('y_pred_seq', [])
     
     if not y_true or not y_pred:
-        # Fallback: використовуємо інновації EKF як проксі для помилок моделі
+        # Fallback: використовуємо EKF інновації як проксі для помилок моделі
         print("⚠️ Прямі дані моделі недоступні, використовуємо EKF інновації")
         innovations = analysis_data.get('innov', np.array([]))
         
@@ -103,6 +126,10 @@ def evaluate_model_performance(results_df: pd.DataFrame, analysis_data: Dict) ->
             # Використовуємо інновації як оцінку помилки моделі
             rmse_fe = np.sqrt(np.mean(innovations[:, 0]**2))
             rmse_mass = np.sqrt(np.mean(innovations[:, 1]**2))
+            
+            # ✅ НОВИЙ: MAE з інновацій
+            mae_fe = np.mean(np.abs(innovations[:, 0]))
+            mae_mass = np.mean(np.abs(innovations[:, 1]))
             
             # Оцінюємо R² через дисперсію інновацій
             fe_values = results_df['conc_fe'].values
@@ -113,9 +140,20 @@ def evaluate_model_performance(results_df: pd.DataFrame, analysis_data: Dict) ->
             
             bias_fe = np.mean(innovations[:, 0])
             bias_mass = np.mean(innovations[:, 1])
+            
+            # ✅ НОВИЙ: MAPE для інновацій (використовуємо фактичні значення як базу)
+            # Обчислюємо відносну помилку по відношенню до реальних значень
+            min_len = min(len(innovations), len(fe_values), len(mass_values))
+            if min_len > 0:
+                mape_fe = calculate_mape(fe_values[:min_len], 
+                                       fe_values[:min_len] - innovations[:min_len, 0])
+                mape_mass = calculate_mape(mass_values[:min_len], 
+                                         mass_values[:min_len] - innovations[:min_len, 1])
+            else:
+                mape_fe = mape_mass = 0.0
         else:
             # Якщо взагалі нема даних
-            rmse_fe = rmse_mass = 0.0
+            rmse_fe = rmse_mass = mae_fe = mae_mass = mape_fe = mape_mass = 0.0
             r2_fe = r2_mass = 0.0
             bias_fe = bias_mass = 0.0
     else:
@@ -132,19 +170,30 @@ def evaluate_model_performance(results_df: pd.DataFrame, analysis_data: Dict) ->
         rmse_fe = np.sqrt(mean_squared_error(y_true[:, 0], y_pred[:, 0]))
         r2_fe = r2_score(y_true[:, 0], y_pred[:, 0])
         bias_fe = np.mean(y_pred[:, 0] - y_true[:, 0])
+        mae_fe = calculate_mae(y_true[:, 0], y_pred[:, 0])              # ✅ НОВИЙ
+        mape_fe = calculate_mape(y_true[:, 0], y_pred[:, 0])            # ✅ НОВИЙ
         
         # Розрахунки для Mass (колонка 1)
         rmse_mass = np.sqrt(mean_squared_error(y_true[:, 1], y_pred[:, 1]))
         r2_mass = r2_score(y_true[:, 1], y_pred[:, 1])
         bias_mass = np.mean(y_pred[:, 1] - y_true[:, 1])
+        mae_mass = calculate_mae(y_true[:, 1], y_pred[:, 1])            # ✅ НОВИЙ
+        mape_mass = calculate_mape(y_true[:, 1], y_pred[:, 1])          # ✅ НОВИЙ
     
     return {
+        # Існуючі метрики
         'model_rmse_fe': rmse_fe,
         'model_rmse_mass': rmse_mass,
         'model_r2_fe': r2_fe,
         'model_r2_mass': r2_mass,
         'model_bias_fe': bias_fe,
-        'model_bias_mass': bias_mass
+        'model_bias_mass': bias_mass,
+        
+        # ✅ НОВІ МЕТРИКИ
+        'model_mae_fe': mae_fe,
+        'model_mae_mass': mae_mass,
+        'model_mape_fe': mape_fe,
+        'model_mape_mass': mape_mass
     }
 
 # =============================================================================
@@ -152,13 +201,13 @@ def evaluate_model_performance(results_df: pd.DataFrame, analysis_data: Dict) ->
 # =============================================================================
 
 def evaluate_control_performance(results_df: pd.DataFrame, params: Dict) -> Dict[str, float]:
-    """Оцінює якість роботи системи керування"""
+    """Оцінює якість роботи системи керування з додатковими MAE та MAPE метриками"""
     
     # Уставки
     ref_fe = params.get('ref_fe', 53.5)
     ref_mass = params.get('ref_mass', 57.0)
     
-    # ✅ НАСТРОЮВАНІ ТОЛЕРАНТНОСТІ
+    # Настроювані толерантності
     tolerance_fe_percent = params.get('tolerance_fe_percent', 2.0)    
     tolerance_mass_percent = params.get('tolerance_mass_percent', 2.0) 
     
@@ -171,31 +220,39 @@ def evaluate_control_performance(results_df: pd.DataFrame, params: Dict) -> Dict
     error_fe = fe_values - ref_fe
     error_mass = mass_values - ref_mass
     
-    # 1. Помилки відстеження (RMSE від уставки) - ✅ ЗАЛИШАЄТЬСЯ
+    # ========== ІСНУЮЧІ МЕТРИКИ ==========
+    
+    # 1. Помилки відстеження (RMSE від уставки)
     tracking_error_fe = np.sqrt(np.mean(error_fe**2))
     tracking_error_mass = np.sqrt(np.mean(error_mass**2))
     
-    # 2. ISE (Integral of Squared Error) - ✅ ЗАЛИШАЄТЬСЯ
+    # 2. ISE (Integral of Squared Error)
     ise_fe = np.sum(error_fe**2)
     ise_mass = np.sum(error_mass**2)
     
-    # 3. IAE (Integral of Absolute Error) - ✅ ЗАЛИШАЄТЬСЯ
+    # 3. IAE (Integral of Absolute Error)
     iae_fe = np.sum(np.abs(error_fe))
     iae_mass = np.sum(np.abs(error_mass))
     
-    # 4. Згладженість керування - ✅ ЗАЛИШАЄТЬСЯ
+    # ========== НОВІ МЕТРИКИ ==========
+    
+    # 4. ✅ MAE для відстеження уставок
+    tracking_mae_fe = calculate_mae(np.full_like(fe_values, ref_fe), fe_values)
+    tracking_mae_mass = calculate_mae(np.full_like(mass_values, ref_mass), mass_values)
+    
+    # 5. ✅ MAPE для відстеження уставок
+    tracking_mape_fe = calculate_mape(np.full_like(fe_values, ref_fe), fe_values)
+    tracking_mape_mass = calculate_mape(np.full_like(mass_values, ref_mass), mass_values)
+    
+    # ========== РЕШТА ІСНУЮЧИХ МЕТРИК ==========
+    
+    # 6. Згладженість керування
     control_changes = np.diff(control_values)
     control_smoothness = 1 / (1 + np.std(control_changes))
     
-    # 5. Досягнення уставок з настроюваними толерантностями
+    # 7. Досягнення уставок з настроюваними толерантностями
     tolerance_fe = (tolerance_fe_percent / 100.0) * abs(ref_fe)
     tolerance_mass = (tolerance_mass_percent / 100.0) * abs(ref_mass)
-    
-    # ✅ ВИДАЛИТИ ТІЛЬКИ ЦІ 4 ЗАЙВІ PRINT-И (занадто багато тексту):
-    # print(f"\n🎯 Розрахунок досягнення уставок:")
-    # print(f"   ⚙️ Налаштування толерантності:")
-    # print(f"      Fe: {tolerance_fe_percent}% від уставки = ±{tolerance_fe:.3f}")
-    # print(f"      Mass: {tolerance_mass_percent}% від уставки = ±{tolerance_mass:.3f}")
     
     setpoint_achievement_fe = calculate_setpoint_achievement(fe_values, ref_fe, tolerance_fe)
     setpoint_achievement_mass = calculate_setpoint_achievement(mass_values, ref_mass, tolerance_mass)
@@ -204,6 +261,7 @@ def evaluate_control_performance(results_df: pd.DataFrame, params: Dict) -> Dict
     aggressiveness_metrics = calculate_control_aggressiveness_metrics(control_values, delta_u_max)
     
     return {
+        # Існуючі метрики
         'tracking_error_fe': tracking_error_fe,
         'tracking_error_mass': tracking_error_mass,
         'ise_fe': ise_fe,
@@ -213,7 +271,15 @@ def evaluate_control_performance(results_df: pd.DataFrame, params: Dict) -> Dict
         'control_smoothness': control_smoothness,
         'setpoint_achievement_fe': setpoint_achievement_fe,
         'setpoint_achievement_mass': setpoint_achievement_mass,
-        **aggressiveness_metrics  # ✅ Додаємо всі метрики агресивності
+        
+        # ✅ НОВІ МЕТРИКИ
+        'tracking_mae_fe': tracking_mae_fe,
+        'tracking_mae_mass': tracking_mae_mass,
+        'tracking_mape_fe': tracking_mape_fe,
+        'tracking_mape_mass': tracking_mape_mass,
+        
+        # Агресивність керування (без змін)
+        **aggressiveness_metrics
     }
 
 def calculate_control_aggressiveness_metrics(control_values: np.ndarray, 
@@ -266,6 +332,27 @@ def calculate_control_aggressiveness_metrics(control_values: np.ndarray,
         'directional_switches_count': float(directional_switch_count),
         'steps_at_max_delta_u': float(num_steps_at_delta_u_max)
     }
+
+def calculate_mae(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """Розраховує Mean Absolute Error"""
+    return np.mean(np.abs(y_true - y_pred))
+
+def calculate_mape(y_true: np.ndarray, y_pred: np.ndarray, epsilon: float = 1e-8) -> float:
+    """
+    Розраховує Mean Absolute Percentage Error
+    
+    Args:
+        y_true: Справжні значення
+        y_pred: Передбачені значення
+        epsilon: Мала константа для уникнення ділення на нуль
+        
+    Returns:
+        MAPE у відсотках
+    """
+    # Уникаємо ділення на нуль, додаючи epsilon
+    denominator = np.maximum(np.abs(y_true), epsilon)
+    mape = np.mean(np.abs((y_true - y_pred) / denominator)) * 100.0
+    return mape
 
 def calculate_setpoint_achievement(values: np.ndarray, setpoint: float, tolerance: float) -> float:
     """Розраховує відсоток часу, коли значення в межах толерантності від уставки"""
@@ -365,11 +452,7 @@ def evaluate_simulation(results_df: pd.DataFrame, analysis_data: Dict,
 
 def print_evaluation_report(eval_results: EvaluationResults, detailed: bool = True):
     """
-    Виводить звіт про оцінювання ефективності
-    
-    Args:
-        eval_results: Результати оцінювання
-        detailed: Чи виводити детальний звіт
+    Виводить розширений звіт про оцінювання ефективності з новими метриками
     """
     
     print("🎯 ОЦІНКА ЕФЕКТИВНОСТІ MPC СИМУЛЯЦІЇ")
@@ -379,27 +462,44 @@ def print_evaluation_report(eval_results: EvaluationResults, detailed: bool = Tr
     print(f"⭐ ЗАГАЛЬНА ОЦІНКА: {eval_results.overall_score:.1f}/100")
     print(f"🔒 СТАБІЛЬНІСТЬ ПРОЦЕСУ: {eval_results.process_stability:.3f}")
     
-    # ✅ ДОДАЄМО КЛАСИФІКАЦІЮ
+    # Класифікація
     classification = get_mpc_quality_classification(eval_results.overall_score)
     print(f"📊 КЛАСИФІКАЦІЯ: {classification}")
     
     if detailed:
         print(f"\n📊 ЯКІСТЬ МОДЕЛЕЙ:")
-        print(f"   • Fe RMSE: {eval_results.model_rmse_fe:.3f} (R² = {eval_results.model_r2_fe:.3f})")
-        print(f"   • Mass RMSE: {eval_results.model_rmse_mass:.3f} (R² = {eval_results.model_r2_mass:.3f})")
-        print(f"   • Систематична помилка Fe: {eval_results.model_bias_fe:+.3f}")
-        print(f"   • Систематична помилка Mass: {eval_results.model_bias_mass:+.3f}")
+        print(f"   🎯 Fe метрики:")
+        print(f"      • RMSE: {eval_results.model_rmse_fe:.3f}")
+        print(f"      • MAE: {eval_results.model_mae_fe:.3f}")               # ✅ НОВИЙ
+        print(f"      • MAPE: {eval_results.model_mape_fe:.2f}%")            # ✅ НОВИЙ
+        print(f"      • R²: {eval_results.model_r2_fe:.3f}")
+        print(f"      • Bias: {eval_results.model_bias_fe:+.3f}")
+        
+        print(f"   🎯 Mass метрики:")
+        print(f"      • RMSE: {eval_results.model_rmse_mass:.3f}")
+        print(f"      • MAE: {eval_results.model_mae_mass:.3f}")             # ✅ НОВИЙ
+        print(f"      • MAPE: {eval_results.model_mape_mass:.2f}%")          # ✅ НОВИЙ
+        print(f"      • R²: {eval_results.model_r2_mass:.3f}")
+        print(f"      • Bias: {eval_results.model_bias_mass:+.3f}")
         
         print(f"\n🎮 ЯКІСТЬ КЕРУВАННЯ:")
-        print(f"   • Помилка відстеження Fe: {eval_results.tracking_error_fe:.3f}")
-        print(f"   • Помилка відстеження Mass: {eval_results.tracking_error_mass:.3f}")
-        print(f"   • ISE Fe: {eval_results.ise_fe:.1f}")
-        print(f"   • ISE Mass: {eval_results.ise_mass:.1f}")
-        print(f"   • IAE Fe: {eval_results.iae_fe:.1f}")
-        print(f"   • IAE Mass: {eval_results.iae_mass:.1f}")
-        print(f"   • Згладженість керування: {eval_results.control_smoothness:.3f}")
-        print(f"   • Досягнення уставки Fe: {eval_results.setpoint_achievement_fe:.1f}%")
-        print(f"   • Досягнення уставки Mass: {eval_results.setpoint_achievement_mass:.1f}%")
+        print(f"   🎯 Fe відстеження:")
+        print(f"      • RMSE: {eval_results.tracking_error_fe:.3f}")
+        print(f"      • MAE: {eval_results.tracking_mae_fe:.3f}")            # ✅ НОВИЙ
+        print(f"      • MAPE: {eval_results.tracking_mape_fe:.2f}%")         # ✅ НОВИЙ
+        print(f"      • ISE: {eval_results.ise_fe:.1f}")
+        print(f"      • IAE: {eval_results.iae_fe:.1f}")
+        print(f"      • Досягнення уставки: {eval_results.setpoint_achievement_fe:.1f}%")
+        
+        print(f"   🎯 Mass відстеження:")
+        print(f"      • RMSE: {eval_results.tracking_error_mass:.3f}")
+        print(f"      • MAE: {eval_results.tracking_mae_mass:.3f}")          # ✅ НОВИЙ
+        print(f"      • MAPE: {eval_results.tracking_mape_mass:.2f}%")       # ✅ НОВИЙ
+        print(f"      • ISE: {eval_results.ise_mass:.1f}")
+        print(f"      • IAE: {eval_results.iae_mass:.1f}")
+        print(f"      • Досягнення уставки: {eval_results.setpoint_achievement_mass:.1f}%")
+        
+        print(f"   ⚙️ Згладженість керування: {eval_results.control_smoothness:.3f}")
 
         print(f"\n🎛️ АГРЕСИВНІСТЬ КЕРУВАННЯ:")
         print(f"   • Середня зміна: {eval_results.control_aggressiveness:.3f}")
@@ -412,7 +512,7 @@ def print_evaluation_report(eval_results: EvaluationResults, detailed: bool = Tr
         print(f"   • Максимальна зміна: {eval_results.max_control_change:.3f}")
         print(f"   • Кроків на максимумі: {eval_results.steps_at_max_delta_u:.0f}")
         
-        # ✅ ДОДАЄМО РЕКОМЕНДАЦІЇ
+        # Рекомендації
         recommendations = generate_recommendations(eval_results)
         if recommendations:
             print(f"\n💡 РЕКОМЕНДАЦІЇ:")
@@ -508,11 +608,7 @@ def get_performance_summary(eval_results: EvaluationResults) -> str:
 def compare_evaluations(evaluations: Dict[str, EvaluationResults], 
                        show_details: bool = True) -> None:
     """
-    Порівнює результати кількох симуляцій
-    
-    Args:
-        evaluations: Словник {назва_конфігурації: EvaluationResults}
-        show_details: Чи показувати детальні метрики
+    Порівнює результати кількох симуляцій з розширеними метриками
     """
     
     print("\n🔍 ПОРІВНЯННЯ КОНФІГУРАЦІЙ")
@@ -534,14 +630,20 @@ def compare_evaluations(evaluations: Dict[str, EvaluationResults],
     print()
     
     if show_details:
-        # Ключові метрики
+        # Розширені ключові метрики з новими MAE та MAPE
         metrics_to_show = [
             ('Model R² Fe', 'model_r2_fe', '.3f'),
             ('Model R² Mass', 'model_r2_mass', '.3f'),
+            ('Model MAE Fe', 'model_mae_fe', '.3f'),              # ✅ НОВИЙ
+            ('Model MAE Mass', 'model_mae_mass', '.3f'),          # ✅ НОВИЙ
+            ('Model MAPE Fe', 'model_mape_fe', '.1f'),            # ✅ НОВИЙ
+            ('Model MAPE Mass', 'model_mape_mass', '.1f'),        # ✅ НОВИЙ
+            ('Track MAE Fe', 'tracking_mae_fe', '.3f'),           # ✅ НОВИЙ
+            ('Track MAE Mass', 'tracking_mae_mass', '.3f'),       # ✅ НОВИЙ
+            ('Track MAPE Fe', 'tracking_mape_fe', '.1f'),         # ✅ НОВИЙ
+            ('Track MAPE Mass', 'tracking_mape_mass', '.1f'),     # ✅ НОВИЙ
             ('ISE Fe', 'ise_fe', '.1f'),
             ('ISE Mass', 'ise_mass', '.1f'),
-            ('IAE Fe', 'iae_fe', '.1f'),
-            ('IAE Mass', 'iae_mass', '.1f'),
             ('Tracking Fe', 'setpoint_achievement_fe', '.1f'),
             ('Tracking Mass', 'setpoint_achievement_mass', '.1f'),
             ('Стабільність', 'process_stability', '.3f')
@@ -553,6 +655,8 @@ def compare_evaluations(evaluations: Dict[str, EvaluationResults],
                 value = getattr(evaluations[config], attr_name)
                 if 'achievement' in attr_name:
                     print(f"{value:>{13}{fmt}}%", end="")
+                elif 'mape' in attr_name.lower():
+                    print(f"{value:>{13}{fmt}}%", end="")         # ✅ НОВИЙ: відсоток для MAPE
                 else:
                     print(f"{value:>{15}{fmt}}", end="")
             print()
@@ -563,7 +667,7 @@ def compare_evaluations(evaluations: Dict[str, EvaluationResults],
     best_score = evaluations[best_config].overall_score
     
     print(f"\n💡 Рекомендація: '{best_config}' (оцінка: {best_score:.1f})")
-
+    
 # =============================================================================
 # === ФУНКЦІЇ ВІЗУАЛІЗАЦІЇ ===
 # =============================================================================
