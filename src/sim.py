@@ -12,12 +12,16 @@ from model import KernelModel
 from objectives import MaxIronMassTrackingObjective
 from mpc import MPCController
 from utils import (
-    run_post_simulation_analysis_enhanced, analyze_trust_region_performance, diagnose_mpc_behavior, diagnose_ekf_detailed,
-    diagnose_svr_quality
+    run_post_simulation_analysis_enhanced, diagnose_mpc_behavior, diagnose_ekf_detailed
+    
 )
 from ekf import ExtendedKalmanFilter
 from anomaly_detector import SignalAnomalyDetector
 from maf import MovingAverageFilter
+import json
+from pathlib import Path
+from typing import Optional, Dict
+
 
 # =============================================================================
 # === БЛОК 1: ПІДГОТОВКА ДАНИХ ТА СКАЛЕРІВ ===
@@ -691,131 +695,633 @@ def simulate_mpc(
     
     return results_df, metrics
 
+# ---- Додаткові методи для sim.py з системою конфігурацій
 
+# Додаткові методи для sim.py з системою конфігурацій
 
+# Додаткові методи для sim.py з системою конфігурацій
+
+import json
+import os
+from pathlib import Path
+from typing import Dict, Any, Optional
+
+def load_mpc_config(config_name: str) -> Dict[str, Any]:
+    """
+    Завантажує конфігурацію MPC з файлу.
+    
+    Args:
+        config_name: Назва конфігурації (без розширення .json)
+        
+    Returns:
+        Словник з параметрами конфігурації
+    """
+    config_dir = Path("mpc_configs")
+    config_file = config_dir / f"{config_name}.json"
+    
+    if not config_file.exists():
+        raise FileNotFoundError(f"Конфігурація '{config_name}' не знайдена в {config_dir}")
+    
+    try:
+        with open(config_file, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+        print(f"✅ Завантажено конфігурацію: {config_name}")
+        return config
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Помилка у форматі JSON конфігурації '{config_name}': {e}")
+
+def save_mpc_config(config: Dict[str, Any], config_name: str) -> None:
+    """
+    Зберігає конфігурацію MPC у файл.
+    
+    Args:
+        config: Словник з параметрами конфігурації
+        config_name: Назва конфігурації (без розширення .json)
+    """
+    config_dir = Path("mpc_configs")
+    config_dir.mkdir(exist_ok=True)
+    
+    config_file = config_dir / f"{config_name}.json"
+    
+    with open(config_file, 'w', encoding='utf-8') as f:
+        json.dump(config, f, indent=4, ensure_ascii=False)
+    
+    print(f"💾 Збережено конфігурацію: {config_name}")
+
+def list_available_configs() -> list:
+    """
+    Повертає список доступних конфігурацій.
+    
+    Returns:
+        Список назв конфігурацій
+    """
+    config_dir = Path("mpc_configs")
+    if not config_dir.exists():
+        return []
+    
+    configs = []
+    for config_file in config_dir.glob("*.json"):
+        configs.append(config_file.stem)
+    
+    return sorted(configs)
+
+def create_default_configs():
+    """
+    Створює стандартні конфігурації MPC з валідними параметрами.
+    """
+    config_dir = Path("mpc_configs")
+    config_dir.mkdir(exist_ok=True)
+    
+    # Отримуємо валідні параметри
+    valid_params = get_valid_simulate_mpc_params()
+    valid_params.discard('reference_df')  # Виключаємо reference_df
+    
+    # Базова консервативна конфігурація
+    conservative_config = {
+        "name": "conservative",
+        "description": "Консервативна конфігурація для стабільної роботи",
+        
+        # Основні параметри
+        "N_data": 2000,
+        "control_pts": 200,
+        "seed": 42,
+        
+        # Модель
+        "model_type": "krr",
+        "kernel": "rbf",
+        "find_optimal_params": True,
+        
+        # MPC параметри
+        "Np": 6,
+        "Nc": 4,
+        "lag": 2,
+        "λ_obj": 0.2,
+        
+        # Ваги та уставки
+        "w_fe": 5.0,
+        "w_mass": 1.0,
+        "ref_fe": 53.5,
+        "ref_mass": 57.0,
+        
+        # Trust region
+        "adaptive_trust_region": True,
+        "initial_trust_radius": 1.0,
+        "min_trust_radius": 0.5,
+        "max_trust_radius": 3.0,
+        "trust_decay_factor": 0.9,
+        "rho_trust": 0.3,
+        
+        # EKF параметри
+        "P0": 0.01,
+        "Q_phys": 800,
+        "Q_dist": 1,
+        "R": 0.5,
+        "q_adaptive_enabled": True,
+        "q_alpha": 0.95,
+        "q_nis_threshold": 2.0,
+        
+        # Перенавчання
+        "enable_retraining": True,
+        "retrain_period": 50,
+        "retrain_innov_threshold": 0.3,
+        "retrain_window_size": 1000,
+        
+        # Обмеження
+        "use_soft_constraints": True,
+        "delta_u_max": 0.8,
+        "u_min": 20.0,
+        "u_max": 40.0,
+        
+        # Процес
+        "plant_model_type": "rf",
+        "noise_level": "low",
+        "enable_nonlinear": False,
+        
+        # Аномалії
+        "anomaly_params": {
+            "window": 25,
+            "spike_z": 4.0,
+            "drop_rel": 0.30,
+            "freeze_len": 5,
+            "enabled": True
+        },
+        
+        "run_analysis": True
+    }
+    
+    # Агресивна конфігурація
+    aggressive_config = {
+        "name": "aggressive",
+        "description": "Агресивна конфігурація для швидкого відгуку",
+        
+        # Основні параметри
+        "N_data": 3000,
+        "control_pts": 300,
+        "seed": 42,
+        
+        # Модель
+        "model_type": "svr",
+        "kernel": "rbf", 
+        "find_optimal_params": True,
+        
+        # MPC параметри
+        "Np": 8,
+        "Nc": 6,
+        "lag": 2,
+        "λ_obj": 0.05,
+        
+        # Ваги та уставки
+        "w_fe": 10.0,
+        "w_mass": 2.0,
+        "ref_fe": 54.0,
+        "ref_mass": 58.0,
+        
+        # Trust region
+        "adaptive_trust_region": True,
+        "initial_trust_radius": 2.0,
+        "min_trust_radius": 0.8,
+        "max_trust_radius": 5.0,
+        "trust_decay_factor": 0.8,
+        "rho_trust": 0.1,
+        
+        # EKF параметри
+        "P0": 0.01,
+        "Q_phys": 1200,
+        "Q_dist": 1,
+        "R": 0.1,
+        "q_adaptive_enabled": True,
+        "q_alpha": 0.90,
+        "q_nis_threshold": 3.0,
+        
+        # Перенавчання
+        "enable_retraining": True,
+        "retrain_period": 30,
+        "retrain_innov_threshold": 0.2,
+        "retrain_window_size": 800,
+        
+        # Обмеження
+        "use_soft_constraints": True,
+        "delta_u_max": 1.2,
+        "u_min": 18.0,
+        "u_max": 42.0,
+        
+        # Процес
+        "plant_model_type": "rf",
+        "noise_level": "medium",
+        "enable_nonlinear": True,
+        
+        # Нелінійність
+        "nonlinear_config": {
+            "concentrate_fe_percent": ("pow", 2),
+            "concentrate_mass_flow": ("pow", 1.5)
+        },
+        
+        # Аномалії
+        "anomaly_params": {
+            "window": 20,
+            "spike_z": 3.5,
+            "drop_rel": 0.25,
+            "freeze_len": 3,
+            "enabled": True
+        },
+        
+        "run_analysis": True
+    }
+    
+    # Швидка конфігурація для тестування
+    fast_test_config = {
+        "name": "fast_test",
+        "description": "Швидка конфігурація для тестування та відладки",
+        
+        # Основні параметри
+        "N_data": 1000,
+        "control_pts": 100,
+        "seed": 42,
+        
+        # Модель
+        "model_type": "linear",
+        "find_optimal_params": False,
+        
+        # MPC параметри
+        "Np": 4,
+        "Nc": 3,
+        "lag": 1,
+        "λ_obj": 0.1,
+        
+        # Ваги та уставки
+        "w_fe": 7.0,
+        "w_mass": 1.0,
+        "ref_fe": 53.5,
+        "ref_mass": 57.0,
+        
+        # Trust region
+        "adaptive_trust_region": False,
+        "rho_trust": 0.2,
+        
+        # EKF параметри
+        "P0": 0.01,
+        "Q_phys": 600,
+        "Q_dist": 1,
+        "R": 1.0,
+        "q_adaptive_enabled": False,
+        
+        # Перенавчання
+        "enable_retraining": False,
+        
+        # Обмеження
+        "use_soft_constraints": False,
+        "delta_u_max": 1.0,
+        
+        # Процес
+        "plant_model_type": "rf",
+        "noise_level": "none",
+        "enable_nonlinear": False,
+        
+        # Аномалії
+        "anomaly_params": {
+            "enabled": False
+        },
+        
+        "run_analysis": False
+    }
+    
+    # Фільтруємо конфігурації та зберігаємо
+    configs = [conservative_config, aggressive_config, fast_test_config]
+    
+    for config in configs:
+        config_name = config["name"]
+        
+        # Фільтруємо невалідні параметри
+        filtered_config = {}
+        invalid_params = []
+        
+        for key, value in config.items():
+            if key in valid_params or key in ["name", "description"]:
+                filtered_config[key] = value
+            else:
+                invalid_params.append(key)
+        
+        if invalid_params:
+            print(f"⚠️ Пропущено невалідні параметри в {config_name}: {', '.join(invalid_params)}")
+        
+        save_mpc_config(filtered_config, config_name)
+    
+    print(f"✅ Створено {len(configs)} стандартних конфігурацій")
+
+def get_valid_simulate_mpc_params() -> set:
+    """
+    Повертає множину валідних параметрів для функції simulate_mpc.
+    
+    Returns:
+        Множина назв параметрів
+    """
+    import inspect
+    
+    # Отримуємо підпис функції simulate_mpc
+    sig = inspect.signature(simulate_mpc)
+    return set(sig.parameters.keys())
+
+def filter_config_for_simulate_mpc(config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Фільтрує конфігурацію, залишаючи тільки валідні параметри для simulate_mpc.
+    
+    Args:
+        config: Повна конфігурація
+        
+    Returns:
+        Відфільтрована конфігурація
+    """
+    valid_params = get_valid_simulate_mpc_params()
+    
+    # Виключаємо 'reference_df' так як він передається окремо
+    valid_params.discard('reference_df')
+    
+    filtered_config = {}
+    invalid_params = []
+    
+    for key, value in config.items():
+        if key in valid_params:
+            filtered_config[key] = value
+        else:
+            invalid_params.append(key)
+    
+    if invalid_params:
+        print(f"ℹ️ Пропущено невалідні параметри: {', '.join(invalid_params)}")
+    
+    return filtered_config
+
+def simulate_mpc_with_config(
+    reference_df: pd.DataFrame,
+    config_name: str = "conservative",
+    manual_overrides: Optional[Dict[str, Any]] = None,
+    progress_callback: Callable = None,
+    **kwargs
+) -> Tuple[pd.DataFrame, Dict]:
+    """
+    Запускає симуляцію MPC з базовою конфігурацією та ручними корегуваннями.
+    
+    Args:
+        reference_df: Референсні дані
+        config_name: Назва базової конфігурації (за замовчуванням "conservative")
+        manual_overrides: Словник для ручного перевизначення параметрів
+        progress_callback: Функція зворотного виклику для прогресу
+        **kwargs: Додаткові параметри для перевизначення
+        
+    Returns:
+        Кортеж (результати, метрики)
+    """
+    
+    # 1. Завантажуємо базову конфігурацію
+    try:
+        params = load_mpc_config(config_name)
+        print(f"📋 Завантажено базову конфігурацію: {config_name}")
+        
+        # Показуємо ключові параметри базової конфігурації
+        key_params = ['model_type', 'Np', 'Nc', 'ref_fe', 'ref_mass', 'w_fe', 'w_mass', 'λ_obj']
+        print("📊 Ключові параметри базової конфігурації:")
+        for param in key_params:
+            if param in params:
+                print(f"   • {param}: {params[param]}")
+                
+    except FileNotFoundError:
+        print(f"⚠️ Конфігурація '{config_name}' не знайдена")
+        available = list_available_configs()
+        if available:
+            print(f"Доступні конфігурації: {', '.join(available)}")
+            print("Створюємо стандартні конфігурації...")
+            create_default_configs()
+            params = load_mpc_config("conservative")
+        else:
+            raise FileNotFoundError(f"Не вдається завантажити конфігурацію '{config_name}'")
+    
+    # 2. Застосовуємо ручні корегування
+    if manual_overrides:
+        print(f"\n🔧 Застосовуємо {len(manual_overrides)} ручних корегувань:")
+        for key, value in manual_overrides.items():
+            old_value = params.get(key, "не задано")
+            params[key] = value
+            print(f"   • {key}: {old_value} → {value}")
+    
+    # 3. Застосовуємо додаткові kwargs (найнижчий пріоритет)
+    if kwargs:
+        print(f"\n⚙️ Застосовуємо {len(kwargs)} додаткових параметрів:")
+        for key, value in kwargs.items():
+            if key not in manual_overrides:  # Не перезаписуємо ручні корегування
+                old_value = params.get(key, "не задано")
+                params[key] = value
+                print(f"   • {key}: {old_value} → {value}")
+    
+    # 4. Додаємо progress_callback
+    if progress_callback:
+        params['progress_callback'] = progress_callback
+    
+    # 5. Показуємо фінальну конфігурацію
+    print(f"\n✅ Фінальна конфігурація для запуску:")
+    for param in key_params:
+        if param in params:
+            print(f"   • {param}: {params[param]}")
+    
+    # 6. Фільтруємо параметри для simulate_mpc
+    filtered_params = filter_config_for_simulate_mpc(params)
+    
+    # 7. Запускаємо основну симуляцію
+    return simulate_mpc(reference_df, **filtered_params)
+
+def prompt_manual_adjustments(base_config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Запитує користувача про ручні корегування базової конфігурації.
+    
+    Args:
+        base_config: Базова конфігурація
+        
+    Returns:
+        Словник з ручними корегуваннями
+    """
+    print(f"\n🔧 РУЧНЕ КОРЕГУВАННЯ ПАРАМЕТРІВ")
+    print("=" * 50)
+    print("Натисніть Enter щоб залишити значення без змін")
+    
+    adjustments = {}
+    
+    # Групуємо параметри за категоріями
+    categories = {
+        "📊 Основні параметри": [
+            ("N_data", "Кількість точок даних", int),
+            ("control_pts", "Кроків керування", int),
+            ("seed", "Зерно випадковості", int)
+        ],
+        "🤖 Модель": [
+            ("model_type", "Тип моделі (krr/svr/linear/gpr)", str),
+            ("kernel", "Тип ядра (rbf/linear/poly)", str),
+            ("find_optimal_params", "Оптимізація параметрів (true/false)", lambda x: x.lower() == 'true')
+        ],
+        "🎯 MPC горизонти": [
+            ("Np", "Горизонт прогнозування", int),
+            ("Nc", "Горизонт керування", int),
+            ("lag", "Лаг моделі", int),
+            ("λ_obj", "Коефіцієнт згладжування", float)
+        ],
+        "📍 Уставки та ваги": [
+            ("ref_fe", "Уставка Fe %", float),
+            ("ref_mass", "Уставка масового потоку", float),
+            ("w_fe", "Вага для Fe", float),
+            ("w_mass", "Вага для масового потоку", float)
+        ],
+        "🔧 Trust Region": [
+            ("adaptive_trust_region", "Адаптивний trust region (true/false)", lambda x: x.lower() == 'true'),
+            ("initial_trust_radius", "Початковий радіус", float),
+            ("min_trust_radius", "Мінімальний радіус", float),
+            ("max_trust_radius", "Максимальний радіус", float)
+        ],
+        "⚙️ EKF параметри": [
+            ("Q_phys", "Шум процесу (фізичні стани)", float),
+            ("R", "Шум вимірювань", float),
+            ("q_alpha", "Коефіцієнт адаптації Q", float)
+        ]
+    }
+    
+    for category_name, params_list in categories.items():
+        print(f"\n{category_name}:")
+        
+        for param_name, description, param_type in params_list:
+            current_value = base_config.get(param_name, "не задано")
+            
+            try:
+                prompt = f"  {description} (поточне: {current_value}): "
+                user_input = input(prompt).strip()
+                
+                if user_input:  # Користувач ввів щось
+                    if param_type == str:
+                        adjustments[param_name] = user_input
+                    elif param_type in [int, float]:
+                        adjustments[param_name] = param_type(user_input)
+                    elif callable(param_type):  # Для bool та інших функцій
+                        adjustments[param_name] = param_type(user_input)
+                        
+            except (ValueError, TypeError) as e:
+                print(f"    ⚠️ Некоректне значення для {param_name}: {e}")
+                continue
+    
+    return adjustments
+
+# Змінений блок if __name__ == '__main__':
 if __name__ == '__main__':
     
     def my_progress(step, total, msg):
-        # Простий callback для виводу прогресу в консоль
-        print(f"[{step}/{total}] {msg}")
+        """Простий callback для виводу прогресу в консоль"""
+        if step % 20 == 0 or step == total:  # Показуємо кожні 20 кроків
+            print(f"[{step}/{total}] {msg}")
 
+    # Завантажуємо дані
     try:
         hist_df = pd.read_parquet('processed.parquet')
+        print("✅ Дані завантажено успішно")
     except FileNotFoundError:
-        print("Помилка: файл 'processed.parquet' не знайдено.")
-        exit()
+        print("❌ Помилка: файл 'processed.parquet' не знайдено.")
+        exit(1)
     
-    # Запускаємо симуляцію з оновленими, більш стабільними параметрами
-    res, mets = simulate_mpc(
-        hist_df, 
-        progress_callback=my_progress, 
-        
-        # ---- Блок даних
-        N_data=4000, 
-        control_pts=400,
-        # N_data=2000, 
-        # control_pts=200,
-        seed=42,
-        
-        plant_model_type='rf',
-        
-        train_size=0.75,
-        val_size=0.2,
-        test_size=0.05,
+    # Створюємо стандартні конфігурації якщо їх немає
+    config_dir = Path("mpc_configs")
+    if not config_dir.exists() or len(list_available_configs()) == 0:
+        print("📁 Створюємо стандартні конфігурації...")
+        create_default_configs()
     
-        # ---- Налаштування моделі
-        noise_level='low',
-        model_type='svr',
-        kernel='linear', 
-        find_optimal_params=True,
-        use_soft_constraints=True,
-        
-        # ---- Налаштування EKF
-        P0=1e-2,
-        Q_phys=600, #1000,
-        Q_dist=1,
-        R=1.0, # 0.18
-        q_adaptive_enabled=True,
-        q_alpha = 0.90,
-        q_nis_threshold = 3.0,
-
-        # Адаптивний Trust Region
-        adaptive_trust_region=True,           # Увімкнути адаптацію
-        initial_trust_radius=3.0,             # Початковий розмір
-        min_trust_radius=0.5,                 # Мінімальний розмір  
-        max_trust_radius=2.0,                 # Максимальний розмір
-        trust_decay_factor=0.9,               # Затухання по горизонту
-        rho_trust=0.5,
-        
-        # Контроль лінеаризації
-        linearization_check_enabled=True,     # Увімкнути перевірку
-        max_linearization_distance=0.8,       # Поріг відстані
-        retrain_linearization_threshold=1.0,  # Поріг для перенавчання
-
-        # ---- Налантування аномалій
-        anomaly_params = 
-        {
-            'window': 25,
-            'spike_z': 4.0,
-            'drop_rel': 0.30,
-            'freeze_len': 5,
-            'enabled': True
-        },
-
-        # ---- Нелінійні параметри
-        nonlinear_config = 
-        {
-            'concentrate_fe_percent': ('pow', 2),
-            'concentrate_mass_flow': ('pow', 1.5)
-        },
-        enable_nonlinear =  True, 
-
-        # ---- Параметри затримки, чавові параметри
-        time_step_s = 1800,
-        dead_times_s = 
-        {
-            'concentrate_fe_percent': 20.0,
-            'tailings_fe_percent': 25.0,
-            'concentrate_mass_flow': 20.0,
-            'tailings_mass_flow': 25.0
-        },
-                time_constants_s = 
-        {
-            'concentrate_fe_percent': 8.0,
-            'tailings_fe_percent': 10.0,
-            'concentrate_mass_flow': 5.0,
-            'tailings_mass_flow': 7.0
-        },
-        
-        # ---- Обмеження моделі
-        delta_u_max = 0.6,
-        λ_obj=0.2,
-        
-        # ---- MPC горизонти
-        Nc=6, #8
-        Np=8, #12
-        lag=2, #2
-        
-        # ---- Цільові параметри/ваги
-        w_fe=1.0,
-        w_mass=1.0,
-        ref_fe=54.5,
-        ref_mass=57.0,
-        y_max_fe=55.0,
-        y_max_mass=60.0,
-        
-        # ---- Блок перенавчання
-        enable_retraining=True,          # Ввімкнути/вимкнути функціонал перенавчання
-        retrain_period=50,                 # Як часто перевіряти необхідність перенавчання (кожні 50 кроків)
-        retrain_window_size=1000,          # Розмір буфера даних для перенавчання (останні 1000 точок)
-        retrain_innov_threshold=0.25,     # Поріг для середньої нормованої інновації EKF
-        
-        run_analysis=True
-    )
+    # Показуємо доступні конфігурації
+    available_configs = list_available_configs()
+    print(f"\n📋 Доступні конфігурації: {', '.join(available_configs)}")
     
-    print("\nФінальні метрики:")
-    print(mets)
-    res.to_parquet('mpc_simulation_results.parquet')
-
-
-
+    # Вибір базової конфігурації
+    print(f"\nОберіть базову конфігурацію:")
+    for i, config in enumerate(available_configs, 1):
+        print(f"{i}. {config}")
+    
+    choice = input(f"Ваш вибір (1-{len(available_configs)}, за замовчуванням 1): ").strip()
+    
+    try:
+        config_index = int(choice) - 1 if choice else 0
+        if 0 <= config_index < len(available_configs):
+            selected_config = available_configs[config_index]
+        else:
+            selected_config = available_configs[0]
+    except (ValueError, IndexError):
+        selected_config = available_configs[0]
+    
+    print(f"🎯 Обрано базову конфігурацію: {selected_config}")
+    
+    # Завантаження базової конфігурації
+    base_config = load_mpc_config(selected_config)
+    
+    # Показуємо поточні ключові параметри
+    key_params = ['model_type', 'Np', 'Nc', 'ref_fe', 'ref_mass', 'w_fe', 'w_mass', 'λ_obj', 'N_data', 'control_pts']
+    print(f"\n📊 Поточні ключові параметри:")
+    for param in key_params:
+        if param in base_config:
+            print(f"   • {param}: {base_config[param]}")
+    
+    # Запитуємо про ручні корегування
+    want_adjustments = input(f"\nХочете внести ручні корегування? (y/N): ").strip().lower()
+    
+    manual_overrides = {}
+    if want_adjustments in ['y', 'yes', 'так', 'т']:
+        manual_overrides = prompt_manual_adjustments(base_config)
+        
+        if manual_overrides:
+            print(f"\n✅ Заплановано {len(manual_overrides)} корегувань")
+            
+            # Запитуємо про збереження як нової конфігурації
+            save_as_new = input("Зберегти як нову конфігурацію? (y/N): ").strip().lower()
+            if save_as_new in ['y', 'yes', 'так', 'т']:
+                new_config_name = input("Введіть назву нової конфігурації: ").strip()
+                if new_config_name:
+                    # Створюємо нову конфігурацію
+                    new_config = base_config.copy()
+                    new_config.update(manual_overrides)
+                    new_config['name'] = new_config_name
+                    new_config['description'] = f"Базується на {selected_config} з ручними корегуваннями"
+                    
+                    save_mpc_config(new_config, new_config_name)
+                    print(f"💾 Нову конфігурацію збережено як: {new_config_name}")
+        else:
+            print("ℹ️ Корегування не внесено")
+    
+    # Запуск симуляції
+    print(f"\n🚀 Запуск симуляції...")
+    print("=" * 50)
+    
+    try:
+        result = simulate_mpc_with_config(
+            hist_df,
+            config_name=selected_config,
+            manual_overrides=manual_overrides,
+            progress_callback=my_progress
+        )
+        
+        if result is None:
+            print("❌ simulate_mpc_with_config повернув None")
+            exit(1)
+        
+        results_df, metrics = result
+        
+        # Виводимо результати
+        print("\n📊 РЕЗУЛЬТАТИ СИМУЛЯЦІЇ:")
+        print("=" * 40)
+        print(f"📈 Оброблено кроків: {len(results_df)}")
+        
+        # Ключові метрики
+        key_metrics = ['test_mse_total', 'test_rmse_conc_fe', 'test_rmse_conc_mass']
+        for metric in key_metrics:
+            if metric in metrics:
+                print(f"📊 {metric}: {metrics[metric]:.6f}")
+        
+        # Збереження результатів
+        timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+        output_file = f'mpc_results_{selected_config}_{timestamp}.parquet'
+        results_df.to_parquet(output_file)
+        print(f"💾 Результати збережено: {output_file}")
+        
+        print("\n✅ Симуляція завершена успішно!")
+        
+    except Exception as e:
+        print(f"\n❌ Помилка під час симуляції: {e}")
+        import traceback
+        traceback.print_exc()

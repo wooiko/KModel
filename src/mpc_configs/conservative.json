@@ -1,0 +1,61 @@
+{
+    "name": "conservative",
+    "description": "Консервативна конфігурація для стабільної роботи",
+    
+    "N_data": 2000,
+    "control_pts": 200,
+    "seed": 42,
+    
+    "model_type": "krr",
+    "kernel": "rbf",
+    "find_optimal_params": true,
+    
+    "Np": 6,
+    "Nc": 4,
+    "lag": 2,
+    "λ_obj": 0.2,
+    
+    "w_fe": 5.0,
+    "w_mass": 1.0,
+    "ref_fe": 53.5,
+    "ref_mass": 57.0,
+    
+    "adaptive_trust_region": true,
+    "initial_trust_radius": 1.0,
+    "min_trust_radius": 0.5,
+    "max_trust_radius": 3.0,
+    "trust_decay_factor": 0.9,
+    "rho_trust": 0.3,
+    
+    "P0": 0.01,
+    "Q_phys": 800,
+    "Q_dist": 1,
+    "R": 0.5,
+    "q_adaptive_enabled": true,
+    "q_alpha": 0.95,
+    "q_nis_threshold": 2.0,
+    
+    "enable_retraining": true,
+    "retrain_period": 50,
+    "retrain_innov_threshold": 0.3,
+    "retrain_window_size": 1000,
+    
+    "use_soft_constraints": true,
+    "delta_u_max": 0.8,
+    "u_min": 20.0,
+    "u_max": 40.0,
+    
+    "plant_model_type": "rf",
+    "noise_level": "low",
+    "enable_nonlinear": false,
+    
+    "anomaly_params": {
+        "window": 25,
+        "spike_z": 4.0,
+        "drop_rel": 0.30,
+        "freeze_len": 5,
+        "enabled": true
+    },
+    
+    "run_analysis": true
+}
