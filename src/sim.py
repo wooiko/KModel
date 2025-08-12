@@ -26,7 +26,8 @@ from config_manager import (
     list_configs,
     create_default_configs,
     prompt_manual_adjustments,
-    load_config
+    load_config,
+    list_saved_results
 )
 
 # =============================================================================
@@ -570,12 +571,7 @@ def initialize_ekf(
         q_nis_threshold=params.get('q_nis_threshold', 1.8)        
     )
 
-# =============================================================================
-# === БЛОК 3: ОСНОВНИЙ ЦИКЛ СИМУЛЯЦІЇ ===
-# =============================================================================
-
-
-    
+   
 # =============================================================================
 # === ГОЛОВНА ФУНКЦІЯ-ОРКЕСТРАТОР ===
 # =============================================================================
@@ -701,6 +697,8 @@ def simulate_mpc(
     
     return results_df, metrics
 
+# 3. ЗАМІНИТИ if __name__ == '__main__': на більш простий варіант:
+
 if __name__ == '__main__':
     
     def my_progress(step, total, msg):
@@ -775,7 +773,8 @@ if __name__ == '__main__':
             hist_df,
             config_name=selected_config,
             manual_overrides=manual_overrides,
-            progress_callback=my_progress
+            progress_callback=my_progress,
+            save_results=True  # ✅ ЯВНО ВКАЗУЄМО ЗБЕРЕЖЕННЯ
         )
         
         if result is None:
@@ -795,11 +794,13 @@ if __name__ == '__main__':
             if metric in metrics:
                 print(f"📊 {metric}: {metrics[metric]:.6f}")
         
-        # Збереження результатів
-        timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
-        output_file = f'mpc_results_{selected_config}_{timestamp}.parquet'
-        results_df.to_parquet(output_file)
-        print(f"💾 Результати збережено: {output_file}")
+        # Показуємо збережені файли
+        saved_results = list_saved_results()
+        if saved_results:
+            latest = saved_results[0]  # Останній збережений файл
+            print(f"\n💾 Останній збережений файл:")
+            print(f"   📁 {latest['file']}")
+            print(f"   📊 Розмір: {latest['size_mb']:.2f} MB")
         
         print("\n✅ Симуляція завершена успішно!")
         

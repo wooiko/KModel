@@ -14,10 +14,19 @@ def _get_config_dir() -> Path:
     """Повертає шлях до папки з конфігураціями."""
     return Path("mpc_configs")
 
+def _get_results_dir() -> Path:
+    """Повертає шлях до папки з результатами."""
+    return Path("mpc_results")
+
 def _ensure_config_dir_exists() -> None:
     """Створює папку конфігурацій якщо її немає."""
     config_dir = _get_config_dir()
     config_dir.mkdir(exist_ok=True)
+
+def _ensure_results_dir_exists() -> None:
+    """Створює папку результатів якщо її немає."""
+    results_dir = _get_results_dir()
+    results_dir.mkdir(exist_ok=True)
 
 def _validate_config_file(config_file: Path) -> bool:
     """Перевіряє чи є файл валідним JSON."""
@@ -47,6 +56,12 @@ def _filter_for_simulate_mpc(config: Dict[str, Any]) -> Dict[str, Any]:
             filtered_config[key] = value
         elif key in ['name', 'description']:
             # Пропускаємо службові поля без повідомлення
+            continue
+        elif key.startswith('_') and key.endswith('_'):
+            # Пропускаємо роздільники секцій (_SIMULATION_, _MODEL_, etc.)
+            continue
+        elif isinstance(value, str) and value.startswith('='):
+            # Пропускаємо значення-роздільники ("======")
             continue
         else:
             invalid_params.append(key)
@@ -413,11 +428,14 @@ def prompt_manual_adjustments(base_config: Dict[str, Any]) -> Dict[str, Any]:
 # === ГОЛОВНА ФУНКЦІЯ ===
 # =============================================================================
 
+# Виправлення в config_manager.py
+
 def simulate_mpc_with_config(
     reference_df: pd.DataFrame,
     config_name: str = "conservative",
     manual_overrides: Optional[Dict[str, Any]] = None,
     progress_callback: Optional[Callable] = None,
+    save_results: bool = True,  # ДОДАЄМО НОВИЙ ПАРАМЕТР
     **kwargs
 ) -> Tuple[pd.DataFrame, Dict]:
     """
@@ -428,6 +446,7 @@ def simulate_mpc_with_config(
         config_name: Назва базової конфігурації (за замовчуванням "conservative")
         manual_overrides: Словник для ручного перевизначення параметрів
         progress_callback: Функція зворотного виклику для прогресу
+        save_results: Чи зберігати результати автоматично (за замовчуванням True)
         **kwargs: Додаткові параметри для перевизначення
         
     Returns:
@@ -441,6 +460,8 @@ def simulate_mpc_with_config(
     try:
         # Імпортуємо функцію симуляції
         from sim import simulate_mpc
+        
+        # 1-7. [Весь існуючий код залишається без змін до пункту "Запускаємо основну симуляцію"]
         
         # 1. Завантажуємо базову конфігурацію
         try:
@@ -502,13 +523,66 @@ def simulate_mpc_with_config(
         
         # 7. Запускаємо основну симуляцію
         print("🚀 Викликаємо simulate_mpc...")
-        return simulate_mpc(reference_df, **filtered_params)
+        results_df, metrics = simulate_mpc(reference_df, **filtered_params)
+        
+        # ✅ ДОДАЄМО ЗБЕРЕЖЕННЯ РЕЗУЛЬТАТІВ
+        if save_results:
+            print("\n💾 Зберігаємо результати симуляції...")
+            
+            # Створюємо назву конфігурації з корегуваннями
+            config_save_name = config_name
+            if manual_overrides:
+                config_save_name += "_modified"
+            
+            try:
+                saved_path = save_simulation_results(results_df, config_save_name, metrics)
+                print(f"✅ Результати збережено: {saved_path}")
+                
+                # Додаткова інформація
+                file_size = Path(saved_path).stat().st_size / (1024 * 1024)
+                print(f"📁 Розмір файлу: {file_size:.2f} MB")
+                
+            except Exception as save_error:
+                print(f"⚠️ Помилка при збереженні: {save_error}")
+        
+        return results_df, metrics
         
     except Exception as e:
         print(f"❌ Помилка в simulate_mpc_with_config: {e}")
         import traceback
         traceback.print_exc()
         raise
+
+# Також потрібно додати відсутню функцію validate_config:
+
+def validate_config(config: Dict[str, Any]) -> Tuple[bool, List[str]]:
+    """
+    Валідує конфігурацію на наявність обов'язкових параметрів.
+    
+    Args:
+        config: Конфігурація для перевірки
+        
+    Returns:
+        Кортеж (валідна, список_помилок)
+    """
+    required_params = ['model_type', 'Np', 'Nc', 'N_data', 'control_pts']
+    errors = []
+    
+    for param in required_params:
+        if param not in config:
+            errors.append(f"Відсутній обов'язковий параметр: {param}")
+    
+    # Перевірка типів та діапазонів
+    if 'Np' in config and (not isinstance(config['Np'], int) or config['Np'] < 1):
+        errors.append("Np повинен бути додатним цілим числом")
+    
+    if 'Nc' in config and (not isinstance(config['Nc'], int) or config['Nc'] < 1):
+        errors.append("Nc повинен бути додатним цілим числом")
+    
+    if 'model_type' in config and config['model_type'] not in ['krr', 'svr', 'linear', 'gpr']:
+        errors.append("model_type повинен бути одним з: krr, svr, linear, gpr")
+    
+    return len(errors) == 0, errors
 
 # =============================================================================
 # === УТИЛІТАРНІ ФУНКЦІЇ ===
@@ -537,7 +611,97 @@ def get_config_info(config_name: str) -> Optional[Dict[str, Any]]:
     except (FileNotFoundError, ValueError):
         return None
 
-def validate_config(config: Dict[str, Any]) -> Tuple[bool, List[str]]:
+def generate_results_filename(config_name: str, file_format: str = "parquet") -> Path:
+    """
+    Генерує шлях до файлу результатів з timestamp.
+    
+    Args:
+        config_name: Назва конфігурації
+        file_format: Формат файлу ('parquet', 'csv', 'json')
+        
+    Returns:
+        Path до файлу результатів
+    """
+    import pandas as pd
+    
+    _ensure_results_dir_exists()
+    
+    timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"mpc_results_{config_name}_{timestamp}.{file_format}"
+    
+    return _get_results_dir() / filename
+
+def save_simulation_results(results_df: pd.DataFrame, config_name: str, 
+                          metrics: Optional[Dict] = None) -> str:
+    """
+    Зберігає результати симуляції в папку mpc_results.
+    
+    Args:
+        results_df: DataFrame з результатами симуляції
+        config_name: Назва використаної конфігурації
+        metrics: Додаткові метрики для збереження
+        
+    Returns:
+        Шлях до збереженого файлу
+    """
+    # Зберігаємо основні результати
+    results_file = generate_results_filename(config_name, "parquet")
+    results_df.to_parquet(results_file, index=False)
+    
+    # Додатково зберігаємо метрики якщо є
+    if metrics:
+        metrics_file = generate_results_filename(config_name, "json")
+        metrics_file = metrics_file.with_name(metrics_file.name.replace("mpc_results_", "mpc_metrics_"))
+        
+        # Очищаємо метрики для JSON серіалізації
+        clean_metrics = {}
+        for key, value in metrics.items():
+            try:
+                import numpy as np
+                if isinstance(value, (np.integer, np.floating)):
+                    clean_metrics[key] = float(value)
+                elif isinstance(value, np.ndarray):
+                    clean_metrics[key] = value.tolist()
+                elif pd.isna(value):
+                    clean_metrics[key] = None
+                else:
+                    clean_metrics[key] = value
+            except:
+                clean_metrics[key] = str(value)
+        
+        with open(metrics_file, 'w', encoding='utf-8') as f:
+            json.dump(clean_metrics, f, indent=4, ensure_ascii=False)
+    
+    return str(results_file)
+
+def list_saved_results() -> List[Dict[str, str]]:
+    """
+    Повертає список збережених результатів.
+    
+    Returns:
+        Список словників з інформацією про файли результатів
+    """
+    results_dir = _get_results_dir()
+    if not results_dir.exists():
+        return []
+    
+    results = []
+    for file_path in results_dir.glob("mpc_results_*.parquet"):
+        # Парсимо назву файлу: mpc_results_CONFIG_TIMESTAMP.parquet
+        name_parts = file_path.stem.split('_')
+        if len(name_parts) >= 4:
+            config_name = '_'.join(name_parts[2:-2]) if len(name_parts) > 4 else name_parts[2]
+            timestamp = '_'.join(name_parts[-2:])
+            
+            results.append({
+                'file': file_path.name,
+                'config': config_name,
+                'timestamp': timestamp,
+                'path': str(file_path),
+                'size_mb': file_path.stat().st_size / (1024 * 1024)
+            })
+    
+    return sorted(results, key=lambda x: x['timestamp'], reverse=True)
     """
     Валідує конфігурацію на наявність обов'язкових параметрів.
     
