@@ -21,6 +21,7 @@ from maf import MovingAverageFilter
 import json
 from pathlib import Path
 from typing import Optional, Dict
+from evaluation_simple import evaluate_simulation, print_evaluation_report
 from config_manager import (
     simulate_mpc_with_config,
     list_configs,
@@ -578,49 +579,47 @@ def initialize_ekf(
 
 
 def simulate_mpc(
-    reference_df: pd.DataFrame,             # DataFrame, що містить референсні дані для генерації даних симуляції.
-    N_data: int = 5000,                     # Загальна кількість точок даних, що генеруються для симуляції.
-    control_pts : int = 1000,               # Кількість точок (кроків) симуляції, на яких відбувається керування MPC.
-    time_step_s : int = 5,                  # Часовий крок виконання
-    dead_times_s : dict = 
-    {
+    reference_df: pd.DataFrame,
+    N_data: int = 5000,
+    control_pts : int = 1000,
+    time_step_s : int = 5,
+    dead_times_s : dict = {
         'concentrate_fe_percent': 20.0,
         'tailings_fe_percent': 25.0,
         'concentrate_mass_flow': 20.0,
         'tailings_mass_flow': 25.0
-    },                                      # Транспортна затримка вихідних параметрів
-    time_constants_s : dict = 
-    {
+    },
+    time_constants_s : dict = {
         'concentrate_fe_percent': 8.0,
         'tailings_fe_percent': 10.0,
         'concentrate_mass_flow': 5.0,
         'tailings_mass_flow': 7.0
-    },                                      # Інерційність вихідних параметрів
-    lag: int = 2,                           # Кількість кроків затримки (lag) для моделі, впливає на розмір вектора стану.
-    Np: int = 6,                            # Горизонт прогнозування (Prediction Horizon) MPC. Кількість майбутніх кроків, які модель прогнозує.
-    Nc: int = 4,                            # Горизонт керування (Control Horizon) MPC. Кількість майбутніх змін керування, які MPC розраховує.
-    n_neighbors: int = 5,                   # Кількість сусідів для KNN регресора, якщо використовується (наразі не використовується в `KernelModel`).
-    seed: int = 0,                          # Зерно для генератора випадкових чисел, для відтворюваності симуляції.
-    noise_level: str = 'none',              # Рівень шуму, який додається до вимірювань 'none', 'low', 'medium', 'high'. Визначає відсоток похибки.
-    model_type: str = 'krr',                # Тип моделі, що використовується в MPC: 'krr' (Kernel Ridge Regression), 'gpr' (Gaussian Process Regressor), 'svr' (Support-Vector Regression).
-    kernel: str = 'rbf',                    # Тип ядра для KernelModel ('linear', 'poly', 'rbf').
-    find_optimal_params: bool = True,       # Чи потрібно шукати оптимальні гіперпараметри моделі за допомогою RandomizedSearchCV.
-    λ_obj: float = 0.1,                     # Коефіцієнт ваги для терму згладжування керування (lambda) в цільовій функції MPC.
-    K_I: float = 0.01,                      # Інтегральний коефіцієнт для інтегрального контролера (якщо використовується). Наразі не застосовується явно в MPC.
-    w_fe: float = 7.0,                      # Вага для помилки прогнозування концентрації заліза (Fe) в цільовій функції MPC.
-    w_mass: float = 1.0,                    # Вага для помилки прогнозування масової витрати концентрату в цільовій функції MPC.
-    ref_fe: float = 53.5,                   # Бажане (референсне) значення концентрації заліза (Fe) в концентраті.
-    ref_mass: float = 57.0,                 # Бажане (референсне) значення масової витрати концентрату.
-    train_size: float = 0.7,                # Частка даних, що використовуються для навчання моделі MPC.
-    val_size: float = 0.15,                 # Частка даних, що використовуються для валідації моделі (якщо `find_optimal_params=True`).
-    test_size: float = 0.15,                # Частка даних, що використовуються для тестування моделі (зазвичай не використовується безпосередньо в циклі MPC).
-    u_min: float = 20.0,                    # Мінімальне допустиме значення для керуючої змінної `u` (ore_flow_rate_target).
-    u_max: float = 40.0,                    # Максимальне допустиме значення для керуючої змінної `u` (ore_flow_rate_target).
-    delta_u_max: float = 1.0,               # Максимальне допустиме абсолютне значення зміни керуючої змінної `u` між послідовними кроками.
-    use_disturbance_estimator: bool = True, # Чи використовувати оцінювач збурень (Extended Kalman Filter) в циклі MPC.
-    y_max_fe: float = 54.5,                 # Верхня межа для концентрації заліза (Fe) в концентраті (жорстке або м'яке обмеження).
-    y_max_mass: float = 58.0,               # Верхня межа для масової витрати концентрату (жорстке або м'яке обмеження).
-    rho_trust: float = 0.1,                 # Коефіцієнт штрафу (rho) для терму довіри в цільовій функції MPC, що використовується для регуляризації.
+    },
+    lag: int = 2,
+    Np: int = 6,
+    Nc: int = 4,
+    n_neighbors: int = 5,
+    seed: int = 0,
+    noise_level: str = 'none',
+    model_type: str = 'krr',
+    kernel: str = 'rbf',
+    find_optimal_params: bool = True,
+    λ_obj: float = 0.1,
+    K_I: float = 0.01,
+    w_fe: float = 7.0,
+    w_mass: float = 1.0,
+    ref_fe: float = 53.5,
+    ref_mass: float = 57.0,
+    train_size: float = 0.7,
+    val_size: float = 0.15,
+    test_size: float = 0.15,
+    u_min: float = 20.0,
+    u_max: float = 40.0,
+    delta_u_max: float = 1.0,
+    use_disturbance_estimator: bool = True,
+    y_max_fe: float = 54.5,
+    y_max_mass: float = 58.0,
+    rho_trust: float = 0.1,
     max_trust_radius: float = 5.0,
     adaptive_trust_region: bool = True,
     initial_trust_radius: float =  1.0,
@@ -629,25 +628,27 @@ def simulate_mpc(
     linearization_check_enabled: bool = True,
     max_linearization_distance: float =  2.0,
     retrain_linearization_threshold: float =  1.5,
-    use_soft_constraints: bool = True,      # Чи використовувати м'які обмеження для виходів (y) та зміни керування (delta_u).
-    plant_model_type: str = 'rf',           # Тип моделі, що імітує "реальний об'єкт" (plant) для генерації даних: 'rf' (Random Forest) або 'nn' (Neural Network).
-    enable_retraining: bool = True,         # Ввімкнути/вимкнути функціонал перенавчання моделі MPC під час симуляції.
-    retrain_period: int = 50,               # Як часто перевіряти необхідність перенавчання (кожні N кроків).
-    retrain_window_size: int = 1000,        # Розмір буфера даних для перенавчання (використовуються останні `retrain_window_size` точок).
-    retrain_innov_threshold: float = 0.3,   # Поріг для середньої нормованої інновації EKF. Якщо NIS перевищує цей поріг, ініціюється перенавчання.
+    use_soft_constraints: bool = True,
+    plant_model_type: str = 'rf',
+    enable_retraining: bool = True,
+    retrain_period: int = 50,
+    retrain_window_size: int = 1000,
+    retrain_innov_threshold: float = 0.3,
     anomaly_params: dict = {
         'window': 25,
         'spike_z': 4.0,
         'drop_rel': 0.30,
         'freeze_len': 5,
         'enabled': True
-    },                                      # Параметри детектора аномалій
+    },
     nonlinear_config: dict = {
         'concentrate_fe_percent': ('pow', 2),
         'concentrate_mass_flow': ('pow', 1.5)
-    },                                      # Нелінійна конфігунація
-    enable_nonlinear: bool =  False,        # Використовувати нелінійну конфігурацію
-    run_analysis: bool = True,              # Показати візуалізацію результатів роботи симулятора
+    },
+    enable_nonlinear: bool =  False,
+    run_analysis: bool = True,
+    run_evaluation: bool = True,                # ✅ ІСНУЮЧИЙ ПАРАМЕТР
+    show_evaluation_plots: bool = False,        # ✅ ДОДАТИ ЦЕЙ РЯДОК
     P0: float = 1e-2,
     Q_phys: float = 1500,
     Q_dist: float = 1,
@@ -655,7 +656,7 @@ def simulate_mpc(
     q_adaptive_enabled: bool = True,
     q_alpha:float = 0.99,
     q_nis_threshold:float = 1.5,
-    progress_callback: Callable[[int, int, str], None] = None # Функція зворотного виклику для відстеження прогресу симуляції. Приймає поточний крок, загальну кількість кроків та повідомлення.
+    progress_callback: Callable[[int, int, str], None] = None
 ):
     """
     Покращена версія головної функції-оркестратора.
@@ -695,9 +696,30 @@ def simulate_mpc(
     if params.get('run_analysis', True):
         run_post_simulation_analysis_enhanced(results_df, analysis_data, params)
     
+    # ✅ НОВИЙ БЛОК: ОЦІНЮВАННЯ ЕФЕКТИВНОСТІ
+    if params.get('run_evaluation', True):
+        print("\n" + "="*60)
+        print("🎯 ОЦІНЮВАННЯ ЕФЕКТИВНОСТІ MPC СИСТЕМИ")
+        print("="*60)
+        try:
+            eval_results = evaluate_simulation(results_df, analysis_data, params)
+            print_evaluation_report(eval_results, detailed=True)
+            
+            # ✅ ДОДАЄМО ВІЗУАЛІЗАЦІЮ
+            if params.get('show_evaluation_plots', False):
+                print("\n📊 Створення графіків оцінки...")
+                try:
+                    from evaluation_simple import create_evaluation_plots
+                    create_evaluation_plots(results_df, eval_results, params)
+                except Exception as plot_error:
+                    print(f"⚠️ Помилка при створенні графіків: {plot_error}")
+                    
+        except Exception as e:
+            print(f"⚠️ Помилка при оцінюванні: {e}")
+            print("Продовжуємо без оцінювання...")
+        print("="*60)
+    
     return results_df, metrics
-
-# 3. ЗАМІНИТИ if __name__ == '__main__': на більш простий варіант:
 
 if __name__ == '__main__':
     
@@ -764,6 +786,15 @@ if __name__ == '__main__':
         else:
             print("ℹ️ Корегування не внесено")
     
+    # ✅ ДОДАНО: Запитуємо про оцінювання
+    want_evaluation = input(f"\nВключити оцінку ефективності? (Y/n): ").strip().lower()
+    run_evaluation = want_evaluation not in ['n', 'no', 'ні']
+   
+    show_evaluation_plots = False
+    if run_evaluation:
+        want_plots = input(f"Показати графіки оцінки? (Y/n): ").strip().lower()
+        show_evaluation_plots = want_plots not in ['n', 'no', 'ні']
+        
     # Запуск симуляції
     print(f"\n🚀 Запуск симуляції...")
     print("=" * 50)
@@ -774,7 +805,8 @@ if __name__ == '__main__':
             config_name=selected_config,
             manual_overrides=manual_overrides,
             progress_callback=my_progress,
-            save_results=True  # ✅ ЯВНО ВКАЗУЄМО ЗБЕРЕЖЕННЯ
+            run_evaluation=run_evaluation,
+            show_evaluation_plots=show_evaluation_plots
         )
         
         if result is None:

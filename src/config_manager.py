@@ -435,7 +435,8 @@ def simulate_mpc_with_config(
     config_name: str = "conservative",
     manual_overrides: Optional[Dict[str, Any]] = None,
     progress_callback: Optional[Callable] = None,
-    save_results: bool = True,  # ДОДАЄМО НОВИЙ ПАРАМЕТР
+    save_results: bool = True,
+    show_evaluation_plots: bool = False,        # ✅ ДОДАТИ ЦЕЙ РЯДОК
     **kwargs
 ) -> Tuple[pd.DataFrame, Dict]:
     """
@@ -447,6 +448,7 @@ def simulate_mpc_with_config(
         manual_overrides: Словник для ручного перевизначення параметрів
         progress_callback: Функція зворотного виклику для прогресу
         save_results: Чи зберігати результати автоматично (за замовчуванням True)
+        show_evaluation_plots: Чи показувати графіки оцінки (за замовчуванням False)  # ✅ ДОДАТИ ЦЕЙ РЯДОК
         **kwargs: Додаткові параметри для перевизначення
         
     Returns:
@@ -510,6 +512,9 @@ def simulate_mpc_with_config(
         # 4. Додаємо progress_callback
         if progress_callback:
             params['progress_callback'] = progress_callback
+        
+        if show_evaluation_plots:                           
+            params['show_evaluation_plots'] = show_evaluation_plots
         
         # 5. Показуємо фінальну конфігурацію
         print(f"\n✅ Фінальна конфігурація для запуску:")

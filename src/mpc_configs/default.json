@@ -6,7 +6,6 @@
     "N_data": 2000,
     "control_pts": 200,
     "seed": 42,
-    "run_analysis": true,
     
     "_DATA_PROCESSING_": "=========================================",
     "train_size": 0.75,
@@ -94,5 +93,7 @@
     "nonlinear_config": {
         "concentrate_fe_percent": ["pow", 2],
         "concentrate_mass_flow": ["pow", 1.5]
-    }
+    },
+    "_RUN_ANALYSIS_": "=========================================",
+    "run_analysis": false    
 }
