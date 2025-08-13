@@ -12,8 +12,9 @@ from dataclasses import dataclass
 # =============================================================================
 
 @dataclass
+
 class EvaluationResults:
-    """Контейнер для всіх результатів оцінювання з додатковими MAE та MAPE метриками"""
+    """Контейнер для всіх результатів оцінювання з додатковими MAE, MAPE та часовими метриками"""
     # Модель (10 метрик - додано MAE і MAPE)
     model_rmse_fe: float
     model_rmse_mass: float
@@ -25,6 +26,12 @@ class EvaluationResults:
     model_mae_mass: float        # ✅ НОВИЙ: Mean Absolute Error для Mass
     model_mape_fe: float         # ✅ НОВИЙ: Mean Absolute Percentage Error для Fe
     model_mape_mass: float       # ✅ НОВИЙ: Mean Absolute Percentage Error для Mass
+    
+    # Часові метрики (4 метрики)
+    initial_training_time: float     # ✅ НОВИЙ: Час початкового навчання (сек)
+    avg_retraining_time: float       # ✅ НОВИЙ: Середній час перенавчання (сек)
+    avg_prediction_time: float       # ✅ НОВИЙ: Середній час прогнозування (мс)
+    total_retraining_count: float    # ✅ НОВИЙ: Загальна кількість перенавчань
     
     # Керування (13 метрик - додано MAE і MAPE для відстеження)
     tracking_error_fe: float
@@ -73,6 +80,12 @@ class EvaluationResults:
             'model_mape_fe': self.model_mape_fe,
             'model_mape_mass': self.model_mape_mass,
             
+            # Часові метрики
+            'initial_training_time': self.initial_training_time,
+            'avg_retraining_time': self.avg_retraining_time,
+            'avg_prediction_time': self.avg_prediction_time,
+            'total_retraining_count': self.total_retraining_count,
+            
             # Керування
             'tracking_error_fe': self.tracking_error_fe,
             'tracking_error_mass': self.tracking_error_mass,
@@ -105,7 +118,7 @@ class EvaluationResults:
             'directional_switches_count': self.directional_switches_count,
             'steps_at_max_delta_u': self.steps_at_max_delta_u
         }
-
+    
 # =============================================================================
 # === ФУНКЦІЇ ОЦІНЮВАННЯ МОДЕЛЕЙ ===
 # =============================================================================
@@ -333,6 +346,43 @@ def calculate_control_aggressiveness_metrics(control_values: np.ndarray,
         'steps_at_max_delta_u': float(num_steps_at_delta_u_max)
     }
 
+# =============================================================================
+# === НОВІ ФУНКЦІЇ ДЛЯ ЧАСОВИХ МЕТРИК ===
+# =============================================================================
+
+def extract_timing_metrics(analysis_data: Dict) -> Dict[str, float]:
+    """
+    Витягує часові метрики з даних аналізу симуляції
+    
+    Args:
+        analysis_data: Словник з даними симуляції, що містить часові метрики
+        
+    Returns:
+        Словник з часовими метриками
+    """
+    # Витягуємо часові дані з analysis_data
+    timing_data = analysis_data.get('timing_metrics', {})
+    
+    # Початкове навчання
+    initial_training_time = timing_data.get('initial_training_time', 0.0)
+    
+    # Перенавчання
+    retraining_times = timing_data.get('retraining_times', [])
+    avg_retraining_time = np.mean(retraining_times) if retraining_times else 0.0
+    total_retraining_count = len(retraining_times)
+    
+    # Прогнозування  
+    prediction_times = timing_data.get('prediction_times', [])
+    # Конвертуємо в мілісекунди для кращої читабельності
+    avg_prediction_time = np.mean(prediction_times) * 1000 if prediction_times else 0.0
+    
+    return {
+        'initial_training_time': initial_training_time,
+        'avg_retraining_time': avg_retraining_time,
+        'avg_prediction_time': avg_prediction_time,
+        'total_retraining_count': float(total_retraining_count)
+    }
+
 def calculate_mae(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     """Розраховує Mean Absolute Error"""
     return np.mean(np.abs(y_true - y_pred))
@@ -418,15 +468,15 @@ def calculate_overall_metrics(results_df: pd.DataFrame, params: Dict,
 def evaluate_simulation(results_df: pd.DataFrame, analysis_data: Dict, 
                        params: Dict) -> EvaluationResults:
     """
-    Головна функція оцінювання ефективності симуляції
+    Головна функція оцінювання ефективності симуляції з часовими метриками
     
     Args:
         results_df: DataFrame з результатами симуляції
-        analysis_data: Словник з додатковими даними аналізу
+        analysis_data: Словник з додатковими даними аналізу (включаючи часові метрики)
         params: Параметри симуляції
         
     Returns:
-        EvaluationResults з усіма метриками
+        EvaluationResults з усіма метриками включаючи часові
     """
     
     # Оцінка моделей
@@ -439,20 +489,32 @@ def evaluate_simulation(results_df: pd.DataFrame, analysis_data: Dict,
     overall_metrics = calculate_overall_metrics(results_df, params, 
                                                model_metrics, control_metrics)
     
-    # Збираємо все разом
-    return EvaluationResults(
-        **model_metrics,
-        **control_metrics,
-        **overall_metrics
-    )
+    # ✅ НОВИЙ: Часові метрики
+    timing_metrics = extract_timing_metrics(analysis_data)
+    
+    # ✅ ВИПРАВЛЕННЯ: Збираємо все разом у правильному порядку
+    all_metrics = {}
+    all_metrics.update(model_metrics)
+    all_metrics.update(control_metrics) 
+    all_metrics.update(overall_metrics)
+    all_metrics.update(timing_metrics)
+    
+    # Створюємо EvaluationResults з усіма аргументами
+    return EvaluationResults(**all_metrics)
 
 # =============================================================================
 # === ФУНКЦІЇ ВИВОДУ ТА ЗВІТНОСТІ ===
 # =============================================================================
 
-def print_evaluation_report(eval_results: EvaluationResults, detailed: bool = True):
+def print_evaluation_report(eval_results: EvaluationResults, detailed: bool = True, 
+                           simulation_steps: Optional[int] = None):
     """
     Виводить розширений звіт про оцінювання ефективності з новими метриками
+    
+    Args:
+        eval_results: Результати оцінювання
+        detailed: Чи виводити детальний звіт
+        simulation_steps: Кількість кроків симуляції (для кращих рекомендацій)
     """
     
     print("🎯 ОЦІНКА ЕФЕКТИВНОСТІ MPC СИМУЛЯЦІЇ")
@@ -500,6 +562,20 @@ def print_evaluation_report(eval_results: EvaluationResults, detailed: bool = Tr
         print(f"      • Досягнення уставки: {eval_results.setpoint_achievement_mass:.1f}%")
         
         print(f"   ⚙️ Згладженість керування: {eval_results.control_smoothness:.3f}")
+        
+        print(f"\n⏱️ ЧАСОВІ МЕТРИКИ:")
+        print(f"   • Початкове навчання: {eval_results.initial_training_time:.2f} сек")
+        if eval_results.total_retraining_count > 0:
+            print(f"   • Середній час перенавчання: {eval_results.avg_retraining_time:.3f} сек")
+            print(f"   • Кількість перенавчань: {eval_results.total_retraining_count:.0f}")
+        else:
+            print(f"   • Перенавчання: не виконувалось")
+        print(f"   • Середній час прогнозування: {eval_results.avg_prediction_time:.2f} мс")
+        
+        # Розрахунок ефективності (прогнозів на секунду)
+        if eval_results.avg_prediction_time > 0:
+            predictions_per_second = 1000 / eval_results.avg_prediction_time
+            print(f"   • Пропускна здатність: {predictions_per_second:.1f} прогнозів/сек")
 
         print(f"\n🎛️ АГРЕСИВНІСТЬ КЕРУВАННЯ:")
         print(f"   • Середня зміна: {eval_results.control_aggressiveness:.3f}")
@@ -512,13 +588,13 @@ def print_evaluation_report(eval_results: EvaluationResults, detailed: bool = Tr
         print(f"   • Максимальна зміна: {eval_results.max_control_change:.3f}")
         print(f"   • Кроків на максимумі: {eval_results.steps_at_max_delta_u:.0f}")
         
-        # Рекомендації
-        recommendations = generate_recommendations(eval_results)
+        # ✅ ВИПРАВЛЕННЯ: Передаємо simulation_steps
+        recommendations = generate_recommendations(eval_results, simulation_steps)
         if recommendations:
             print(f"\n💡 РЕКОМЕНДАЦІЇ:")
             for i, rec in enumerate(recommendations, 1):
                 print(f"   {i}. {rec}")
-
+                
 def get_mpc_quality_classification(score: float) -> str:
     """Класифікує якість MPC системи"""
     if score >= 80:
@@ -532,8 +608,9 @@ def get_mpc_quality_classification(score: float) -> str:
     else:
         return "Незадовільно"
 
-def generate_recommendations(eval_results: EvaluationResults) -> List[str]:
-    """Генерує автоматичні рекомендації для покращення системи"""
+def generate_recommendations(eval_results: EvaluationResults, 
+                           simulation_steps: Optional[int] = None) -> List[str]:
+    """Генерує автоматичні рекомендації для покращення системи включаючи часові метрики"""
     recommendations = []
     
     # Перевіряємо точність відстеження Mass
@@ -554,9 +631,43 @@ def generate_recommendations(eval_results: EvaluationResults) -> List[str]:
     if eval_results.model_r2_mass < 0.8:
         recommendations.append("Покращити якість моделі для Mass (R² < 0.8)")
     
+    # ✅ НОВИЙ: Перевіряємо MAE та MAPE
+    if eval_results.model_mape_fe > 10.0:
+        recommendations.append("Висока відносна помилка моделі Fe (MAPE > 10%)")
+        
+    if eval_results.model_mape_mass > 10.0:
+        recommendations.append("Висока відносна помилка моделі Mass (MAPE > 10%)")
+        
+    if eval_results.tracking_mape_fe > 5.0:
+        recommendations.append("Висока відносна помилка відстеження Fe (MAPE > 5%)")
+        
+    if eval_results.tracking_mape_mass > 5.0:
+        recommendations.append("Висока відносна помилка відстеження Mass (MAPE > 5%)")
+    
     # Перевіряємо згладженість керування
     if eval_results.control_smoothness < 0.5:
         recommendations.append("Зменшити коливання керуючого сигналу")
+    
+    # ✅ НОВИЙ: Часові рекомендації
+    if eval_results.initial_training_time > 30.0:
+        recommendations.append("⏰ Тривале початкове навчання (> 30 сек) - розглянути спрощення моделі")
+        
+    if eval_results.avg_retraining_time > 5.0 and eval_results.total_retraining_count > 0:
+        recommendations.append("⏰ Тривале перенавчання (> 5 сек) - оптимізувати алгоритм")
+        
+    if eval_results.avg_prediction_time > 100.0:  # > 100ms
+        recommendations.append("⏰ Повільне прогнозування (> 100 мс) - для real-time застосувань критично")
+        
+    # ✅ ВИПРАВЛЕННЯ: Використовуємо simulation_steps якщо доступно
+    if simulation_steps is not None:
+        retrain_frequency = eval_results.total_retraining_count / simulation_steps
+        if retrain_frequency > 0.1:  # Якщо > 10% кроків
+            recommendations.append("🔄 Занадто часте перенавчання - перевірити стабільність процесу")
+    elif eval_results.total_retraining_count > 50:  # Fallback до абсолютного числа
+        recommendations.append("🔄 Занадто часте перенавчання - перевірити стабільність процесу")
+        
+    if eval_results.total_retraining_count == 0 and eval_results.model_r2_fe < 0.7:
+        recommendations.append("🔄 Розглянути увімкнення адаптивного перенавчання")
     
     # Позитивні відгуки
     if eval_results.control_smoothness > 0.8:
@@ -580,7 +691,13 @@ def generate_recommendations(eval_results: EvaluationResults) -> List[str]:
     if eval_results.significant_changes_frequency > 0.3:
         recommendations.append("📈 Занадто багато різких змін - розглянути фільтрацію")
     
-    # Позитивні відгуки
+    # ✅ НОВИЙ: Позитивні відгуки про часові метрики
+    if eval_results.avg_prediction_time < 10.0:  # < 10ms
+        recommendations.append("✅ Відмінна швидкість прогнозування!")
+        
+    if eval_results.initial_training_time < 5.0:
+        recommendations.append("✅ Швидке початкове навчання!")
+        
     if eval_results.control_stability_index > 0.8:
         recommendations.append("✅ Стабільне керування без коливань!")
         
@@ -630,7 +747,7 @@ def compare_evaluations(evaluations: Dict[str, EvaluationResults],
     print()
     
     if show_details:
-        # Розширені ключові метрики з новими MAE та MAPE
+        # Розширені ключові метрики з новими MAE, MAPE та часовими метриками
         metrics_to_show = [
             ('Model R² Fe', 'model_r2_fe', '.3f'),
             ('Model R² Mass', 'model_r2_mass', '.3f'),
@@ -642,6 +759,10 @@ def compare_evaluations(evaluations: Dict[str, EvaluationResults],
             ('Track MAE Mass', 'tracking_mae_mass', '.3f'),       # ✅ НОВИЙ
             ('Track MAPE Fe', 'tracking_mape_fe', '.1f'),         # ✅ НОВИЙ
             ('Track MAPE Mass', 'tracking_mape_mass', '.1f'),     # ✅ НОВИЙ
+            ('Training time', 'initial_training_time', '.2f'),    # ✅ НОВИЙ
+            ('Avg retrain time', 'avg_retraining_time', '.3f'),   # ✅ НОВИЙ
+            ('Avg pred time', 'avg_prediction_time', '.2f'),      # ✅ НОВИЙ
+            ('Retraining count', 'total_retraining_count', '.0f'), # ✅ НОВИЙ
             ('ISE Fe', 'ise_fe', '.1f'),
             ('ISE Mass', 'ise_mass', '.1f'),
             ('Tracking Fe', 'setpoint_achievement_fe', '.1f'),
@@ -657,6 +778,14 @@ def compare_evaluations(evaluations: Dict[str, EvaluationResults],
                     print(f"{value:>{13}{fmt}}%", end="")
                 elif 'mape' in attr_name.lower():
                     print(f"{value:>{13}{fmt}}%", end="")         # ✅ НОВИЙ: відсоток для MAPE
+                elif 'time' in attr_name.lower():
+                    # ✅ НОВИЙ: Спеціальне форматування для часових метрик
+                    if 'prediction' in attr_name:
+                        print(f"{value:>{13}{fmt}}ms", end="")    # мілісекунди
+                    else:
+                        print(f"{value:>{13}{fmt}}s", end="")     # секунди
+                elif 'count' in attr_name.lower():
+                    print(f"{value:>{15}{fmt}}", end="")          # ✅ НОВИЙ: ціле число для підрахунків
                 else:
                     print(f"{value:>{15}{fmt}}", end="")
             print()
@@ -729,31 +858,73 @@ def create_evaluation_plots(results_df: pd.DataFrame, eval_results: EvaluationRe
     ax3.legend()
     ax3.grid(True, alpha=0.3)
     
-    # 4. Підсумкові метрики
+    # 4. ✅ НОВИЙ: Відхилення від уставок у відсотках
     ax4 = axes[1, 1]
-    ax4.axis('off')
     
-    # Текстовий звіт без емодзі для matplotlib
-    summary_text = f"""
-ПІДСУМОК ОЦІНКИ
+    # Розрахунок відхилень у відсотках
+    ref_fe = params.get('ref_fe', 53.5)
+    ref_mass = params.get('ref_mass', 57.0)
+    
+    fe_deviation_pct = ((results_df['conc_fe'] - ref_fe) / ref_fe) * 100
+    mass_deviation_pct = ((results_df['conc_mass'] - ref_mass) / ref_mass) * 100
+    
+    # Побудова графіків відхилень
+    ax4.plot(time_steps, fe_deviation_pct, 'b-', label='Fe відхилення', alpha=0.8, linewidth=1.5)
+    ax4.plot(time_steps, mass_deviation_pct, 'r-', label='Mass відхилення', alpha=0.8, linewidth=1.5)
+    
+    # Лінії допустимих відхилень (толерантність)
+    tolerance_fe_pct = params.get('tolerance_fe_percent', 2.0)
+    tolerance_mass_pct = params.get('tolerance_mass_percent', 2.0)
+    
+    ax4.axhline(y=tolerance_fe_pct, color='b', linestyle=':', alpha=0.7, 
+                label=f'Fe допуск (+{tolerance_fe_pct}%)')
+    ax4.axhline(y=-tolerance_fe_pct, color='b', linestyle=':', alpha=0.7, 
+                label=f'Fe допуск (-{tolerance_fe_pct}%)')
+    ax4.axhline(y=tolerance_mass_pct, color='r', linestyle=':', alpha=0.7,
+                label=f'Mass допуск (+{tolerance_mass_pct}%)')
+    ax4.axhline(y=-tolerance_mass_pct, color='r', linestyle=':', alpha=0.7,
+                label=f'Mass допуск (-{tolerance_mass_pct}%)')
+    
+    # Нульова лінія (ідеальне відстеження)
+    ax4.axhline(y=0, color='black', linestyle='-', alpha=0.8, linewidth=1)
+    
+    # Заповнення зон допуску
+    ax4.fill_between(time_steps, -tolerance_fe_pct, tolerance_fe_pct, 
+                     color='blue', alpha=0.1, label='Зона допуску Fe')
+    ax4.fill_between(time_steps, -tolerance_mass_pct, tolerance_mass_pct, 
+                     color='red', alpha=0.1, label='Зона допуску Mass')
+    
+    ax4.set_xlabel('Крок симуляції')
+    ax4.set_ylabel('Відхилення від уставки, %')
+    ax4.set_title('Відхилення від уставок')
+    ax4.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+    ax4.grid(True, alpha=0.3)
+    
+    # Статистика для підпису
+    fe_in_tolerance = np.abs(fe_deviation_pct) <= tolerance_fe_pct
+    mass_in_tolerance = np.abs(mass_deviation_pct) <= tolerance_mass_pct
+    
+    fe_success_rate = np.mean(fe_in_tolerance) * 100
+    mass_success_rate = np.mean(mass_in_tolerance) * 100
+    
+    # Додаємо текстову статистику
+    stats_text = f"""
+Досягнення уставок:
+Fe: {fe_success_rate:.1f}%
+Mass: {mass_success_rate:.1f}%
 
-Загальна оцінка: {eval_results.overall_score:.1f}/100
-Статус: {get_performance_summary(eval_results).replace('🌟', '').replace('✅', '').replace('📈', '').replace('⚠️', '').replace('❌', '').strip()}
+Середні відхилення:
+Fe: {np.mean(np.abs(fe_deviation_pct)):.2f}%
+Mass: {np.mean(np.abs(mass_deviation_pct)):.2f}%
 
-Модель:
-  R² Fe: {eval_results.model_r2_fe:.3f}
-  R² Mass: {eval_results.model_r2_mass:.3f}
-
-Керування:
-  Досягнення Fe: {eval_results.setpoint_achievement_fe:.1f}%
-  Досягнення Mass: {eval_results.setpoint_achievement_mass:.1f}%
-  
-Стабільність: {eval_results.process_stability:.3f}
+Максимальні відхилення:
+Fe: {np.max(np.abs(fe_deviation_pct)):.2f}%
+Mass: {np.max(np.abs(mass_deviation_pct)):.2f}%
     """
     
-    ax4.text(0.05, 0.95, summary_text, transform=ax4.transAxes, fontsize=11,
-             verticalalignment='top', fontfamily='sans-serif',  # Змінено з 'monospace'
-             bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
+    ax4.text(0.02, 0.98, stats_text.strip(), transform=ax4.transAxes, 
+             fontsize=9, verticalalignment='top',
+             bbox=dict(boxstyle='round,pad=0.3', facecolor='lightgray', alpha=0.8))
     
     plt.tight_layout()
     
@@ -762,7 +933,7 @@ def create_evaluation_plots(results_df: pd.DataFrame, eval_results: EvaluationRe
         print(f"📊 Графіки збережено: {save_path}")
     
     plt.show()
-
+    
 # =============================================================================
 # === ДОПОМІЖНІ ФУНКЦІЇ ===
 # =============================================================================

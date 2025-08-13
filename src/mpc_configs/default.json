@@ -62,7 +62,7 @@
     
     "_RETRAINING_": "==========================================",
     "enable_retraining": true,
-    "retrain_period": 30,
+    "retrain_period": 50,
     "retrain_window_size": 800,
     "retrain_innov_threshold": 0.2,
     

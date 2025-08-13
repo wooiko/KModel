@@ -19,6 +19,7 @@ from ekf import ExtendedKalmanFilter
 from anomaly_detector import SignalAnomalyDetector
 from maf import MovingAverageFilter
 import json
+import time
 from pathlib import Path
 from typing import Optional, Dict
 from evaluation_simple import evaluate_simulation, print_evaluation_report
@@ -165,12 +166,18 @@ def train_and_evaluate_model(
     mpc: MPCController,
     data: Dict[str, np.ndarray],
     y_scaler: StandardScaler
-) -> Dict[str, float]:
+) -> Tuple[Dict[str, float], Dict[str, list]]:  # ✅ ЗМІНИЛИ: повертає кортеж з метриками та часовими даними
     """
-    Навчає модель всередині MPC та оцінює її якість на тестових даних.
+    Навчає модель всередині MPC та оцінює її якість на тестових даних з вимірюванням часу.
     """
     print("Крок 3: Навчання та оцінка моделі процесу...")
+    
+    # ✅ НОВИЙ: Вимірюємо час навчання
+    start_time = time.time()
     mpc.fit(data['X_train_scaled'], data['Y_train_scaled'])
+    training_time = time.time() - start_time
+    
+    print(f"-> Час навчання моделі: {training_time:.2f} сек")
 
     y_pred_scaled = mpc.model.predict(data['X_test_scaled'])
     y_pred_orig = y_scaler.inverse_transform(y_pred_scaled)
@@ -184,8 +191,15 @@ def train_and_evaluate_model(
         rmse = np.sqrt(mean_squared_error(data['Y_test'][:, i], y_pred_orig[:, i]))
         metrics[f'test_rmse_{col}'] = rmse
         print(f"-> RMSE для {col}: {rmse:.3f}")
+    
+    # ✅ НОВИЙ: Часові метрики
+    timing_metrics = {
+        'initial_training_time': training_time,
+        'retraining_times': [],  # Буде заповнюватись під час симуляції
+        'prediction_times': []   # Буде заповнюватись під час симуляції
+    }
         
-    return metrics
+    return metrics, timing_metrics
 
 def initialize_mpc_controller_enhanced(
     params: Dict[str, Any],
@@ -256,10 +270,11 @@ def run_simulation_loop_enhanced(
     data: Dict[str, np.ndarray],
     scalers: Tuple[StandardScaler, StandardScaler],
     params: Dict[str, Any],
+    timing_metrics: Dict[str, list],  # ✅ НОВИЙ: передаємо часові метрики
     progress_callback: Callable | None = None,
 ) -> Tuple[pd.DataFrame, Dict]:
     """
-    Покращений цикл симуляції з моніторингом trust region та якості лінеаризації.
+    Покращений цикл симуляції з моніторингом trust region та вимірюванням часу.
     """
     print("Крок 5: Запуск покращеного циклу симуляції...")
     x_scaler, y_scaler = scalers
@@ -346,6 +361,9 @@ def run_simulation_loop_enhanced(
         mpc.reset_history(x_est_phys_unscaled)
         mpc.d_hat = ekf.x_hat[ekf.n_phys:]
 
+        # ✅ НОВИЙ: Вимірюємо час прогнозування
+        pred_start_time = time.time()
+        
         # Беремо поточний стан і передбачаємо наступний вихід
         current_state = x_est_phys_unscaled.flatten().reshape(1, -1)
         current_state_scaled = x_scaler.transform(current_state)
@@ -356,6 +374,10 @@ def run_simulation_loop_enhanced(
         d_seq = np.repeat(d_filt.reshape(1, -1), params['Np'], axis=0)
         u_seq = mpc.optimize(d_seq, u_prev)
         u_cur = u_prev if u_seq is None else float(u_seq[0])
+        
+        # ✅ НОВИЙ: Записуємо час прогнозування
+        prediction_time = time.time() - pred_start_time
+        timing_metrics['prediction_times'].append(prediction_time)
 
         # ДОДАЙ ДІАГНОСТИКУ ТУТ:
         if t % 10 == 0:  # Кожні 10 кроків
@@ -373,15 +395,7 @@ def run_simulation_loop_enhanced(
 
         # ✅ ЗБИРАЄМО ДАНІ ДЛЯ ДІАГНОСТИКИ EKF:
         y_true_seq.append(y_meas_unscaled.copy())
-        
-        # Передбачення моделі (зберігаємо перед update)
-        # if hasattr(ekf, 'y_pred') and ekf.y_pred is not None:
-        #     y_pred_seq.append(ekf.y_pred.copy())
-        # else:
-        #     y_pred_seq.append(np.zeros(2))
         y_pred_seq.append(y_pred_unscaled.copy())
-        
-        # Оцінка стану після update
         x_est_seq.append(ekf.x_hat.copy())
         
         # Інновації
@@ -459,8 +473,14 @@ def run_simulation_loop_enhanced(
                     Y_retrain = np.array([p[1] for p in retrain_data])
 
                     print(f"--> mpc.fit() на {len(X_retrain)} семплах ...")
+                    
+                    # ✅ НОВИЙ: Вимірюємо час перенавчання
+                    retrain_start_time = time.time()
                     mpc.fit(X_retrain, Y_retrain)
-                    print("--> Перенавчання завершено.")
+                    retrain_time = time.time() - retrain_start_time
+                    timing_metrics['retraining_times'].append(retrain_time)
+                    
+                    print(f"--> Перенавчання завершено за {retrain_time:.3f} сек.")
                     
                     # Скидаємо trust region після перенавчання
                     if hasattr(mpc, 'reset_trust_region'):
@@ -508,6 +528,20 @@ def run_simulation_loop_enhanced(
 
     # ✅ ДОДАЄМО ДІАГНОСТИКУ EKF:
     diagnose_ekf_detailed(ekf, y_true_seq, y_pred_seq, x_est_seq, innovation_seq)
+    
+    # ✅ НОВИЙ: Виводимо статистику часових метрик
+    print(f"\n⏱️ СТАТИСТИКА ЧАСОВИХ МЕТРИК:")
+    print(f"   • Початкове навчання: {timing_metrics['initial_training_time']:.2f} сек")
+    if timing_metrics['retraining_times']:
+        avg_retrain = np.mean(timing_metrics['retraining_times'])
+        print(f"   • Середній час перенавчання: {avg_retrain:.3f} сек ({len(timing_metrics['retraining_times'])} разів)")
+    else:
+        print(f"   • Перенавчання: не виконувалось")
+    
+    if timing_metrics['prediction_times']:
+        avg_pred = np.mean(timing_metrics['prediction_times']) * 1000  # конвертуємо в мс
+        print(f"   • Середній час прогнозування: {avg_pred:.2f} мс")
+        print(f"   • Пропускна здатність: {1000/avg_pred:.1f} прогнозів/сек")
         
     # Розширені дані для аналізу
     analysis_data = {
@@ -524,6 +558,7 @@ def run_simulation_loop_enhanced(
         "y_pred_seq": y_pred_seq,
         "x_est_seq": x_est_seq,
         "innovation_seq": innovation_seq,
+        "timing_metrics": timing_metrics  # ✅ НОВИЙ: Додаємо часові метрики
     }
 
     return pd.DataFrame(records), analysis_data
@@ -659,67 +694,82 @@ def simulate_mpc(
     progress_callback: Callable[[int, int, str], None] = None
 ):
     """
-    Покращена версія головної функції-оркестратора.
+    Покращена версія головної функції-оркестратора з часовими метриками.
     """
     # Збираємо всі параметри в один словник
     params = locals()
-    # params.update(kwargs)  # Додаємо будь-які додаткові параметри
     
-    # 1. Підготовка даних (без змін)
-    true_gen, df_true, X, Y = prepare_simulation_data(reference_df, params)
-    data, x_scaler, y_scaler = split_and_scale_data(X, Y, params)
+    try:
+        # 1. Підготовка даних (без змін)
+        true_gen, df_true, X, Y = prepare_simulation_data(reference_df, params)
+        data, x_scaler, y_scaler = split_and_scale_data(X, Y, params)
 
-    # 2. Ініціалізація покращеного MPC
-    mpc = initialize_mpc_controller_enhanced(params, x_scaler, y_scaler)
-    metrics = train_and_evaluate_model(mpc, data, y_scaler)
-    
-    # 3. Ініціалізація EKF (без змін)
-    n_train_pts = len(data['X_train'])
-    n_val_pts = len(data['X_val'])
-    test_idx_start = params['lag'] + 1 + n_train_pts + n_val_pts
-    hist0_unscaled = df_true[['feed_fe_percent', 'ore_mass_flow', 'solid_feed_percent']].iloc[
-        test_idx_start - (params['lag'] + 1): test_idx_start
-    ].values
-    
-    ekf = initialize_ekf(mpc, (x_scaler, y_scaler), hist0_unscaled, data['Y_train_scaled'], params['lag'], params)
+        # 2. Ініціалізація покращеного MPC
+        mpc = initialize_mpc_controller_enhanced(params, x_scaler, y_scaler)
+        
+        # ✅ ЗМІНЕНО: Отримуємо як метрики, так і часові дані
+        metrics, timing_metrics = train_and_evaluate_model(mpc, data, y_scaler)
+        
+        # 3. Ініціалізація EKF (без змін)
+        n_train_pts = len(data['X_train'])
+        n_val_pts = len(data['X_val'])
+        test_idx_start = params['lag'] + 1 + n_train_pts + n_val_pts
+        hist0_unscaled = df_true[['feed_fe_percent', 'ore_mass_flow', 'solid_feed_percent']].iloc[
+            test_idx_start - (params['lag'] + 1): test_idx_start
+        ].values
+        
+        ekf = initialize_ekf(mpc, (x_scaler, y_scaler), hist0_unscaled, data['Y_train_scaled'], params['lag'], params)
 
-    # 4. Запуск покращеної симуляції
-    results_df, analysis_data = run_simulation_loop_enhanced(
-        true_gen, mpc, ekf, df_true, data, (x_scaler, y_scaler), params, 
-        params.get('progress_callback')
-    )
-    
-    # 5. Розширений аналіз результатів
-    test_idx_start = params['lag'] + 1 + len(data['X_train']) + len(data['X_val'])
-    analysis_data['d_all_test'] = df_true.iloc[test_idx_start:][['feed_fe_percent','ore_mass_flow']].values
-    
-    if params.get('run_analysis', True):
-        run_post_simulation_analysis_enhanced(results_df, analysis_data, params)
-    
-    # ✅ НОВИЙ БЛОК: ОЦІНЮВАННЯ ЕФЕКТИВНОСТІ
-    if params.get('run_evaluation', True):
-        print("\n" + "="*60)
-        print("🎯 ОЦІНЮВАННЯ ЕФЕКТИВНОСТІ MPC СИСТЕМИ")
-        print("="*60)
-        try:
-            eval_results = evaluate_simulation(results_df, analysis_data, params)
-            print_evaluation_report(eval_results, detailed=True)
-            
-            # ✅ ДОДАЄМО ВІЗУАЛІЗАЦІЮ
-            if params.get('show_evaluation_plots', False):
-                print("\n📊 Створення графіків оцінки...")
-                try:
-                    from evaluation_simple import create_evaluation_plots
-                    create_evaluation_plots(results_df, eval_results, params)
-                except Exception as plot_error:
-                    print(f"⚠️ Помилка при створенні графіків: {plot_error}")
-                    
-        except Exception as e:
-            print(f"⚠️ Помилка при оцінюванні: {e}")
-            print("Продовжуємо без оцінювання...")
-        print("="*60)
-    
-    return results_df, metrics
+        # 4. ✅ ЗМІНЕНО: Передаємо timing_metrics в симуляцію
+        results_df, analysis_data = run_simulation_loop_enhanced(
+            true_gen, mpc, ekf, df_true, data, (x_scaler, y_scaler), params, 
+            timing_metrics,  # ✅ НОВИЙ: передаємо часові метрики
+            params.get('progress_callback')
+        )
+        
+        # 5. Розширений аналіз результатів
+        test_idx_start = params['lag'] + 1 + len(data['X_train']) + len(data['X_val'])
+        analysis_data['d_all_test'] = df_true.iloc[test_idx_start:][['feed_fe_percent','ore_mass_flow']].values
+        
+        if params.get('run_analysis', True):
+            run_post_simulation_analysis_enhanced(results_df, analysis_data, params)
+        
+        # ✅ ОЦІНЮВАННЯ ЕФЕКТИВНОСТІ (тепер з часовими метриками)
+        if params.get('run_evaluation', True):
+            print("\n" + "="*60)
+            print("🎯 ОЦІНЮВАННЯ ЕФЕКТИВНОСТІ MPC СИСТЕМИ")
+            print("="*60)
+            try:
+                eval_results = evaluate_simulation(results_df, analysis_data, params)
+                # ✅ ВИПРАВЛЕННЯ: Передаємо кількість кроків симуляції
+                simulation_steps = len(results_df)
+                print_evaluation_report(eval_results, detailed=True, simulation_steps=simulation_steps)
+                
+                # Візуалізація
+                if params.get('show_evaluation_plots', False):
+                    print("\n📊 Створення графіків оцінки...")
+                    try:
+                        from evaluation_simple import create_evaluation_plots
+                        create_evaluation_plots(results_df, eval_results, params)
+                    except Exception as plot_error:
+                        print(f"⚠️ Помилка при створенні графіків: {plot_error}")
+                        
+            except Exception as e:
+                print(f"⚠️ Помилка при оцінюванні: {e}")
+                print("Продовжуємо без оцінювання...")
+                import traceback
+                traceback.print_exc()  # ✅ ДОДАЄМО для кращої діагностики
+            print("="*60)
+        
+        # ✅ ВИПРАВЛЕННЯ: ОБОВ'ЯЗКОВО повертаємо результат
+        return results_df, metrics
+        
+    except Exception as e:
+        print(f"❌ Критична помилка в simulate_mpc: {e}")
+        import traceback
+        traceback.print_exc()
+        # ✅ ВИПРАВЛЕННЯ: Повертаємо None, None замість просто None
+        return None, None
 
 if __name__ == '__main__':
     
