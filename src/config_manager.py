@@ -38,7 +38,9 @@ def _validate_config_file(config_file: Path) -> bool:
         return False
 
 def _filter_for_simulate_mpc(config: Dict[str, Any]) -> Dict[str, Any]:
-    """Фільтрує конфігурацію, залишаючи тільки валідні параметри для simulate_mpc."""
+    """
+    Фільтрує конфігурацію, залишаючи тільки валідні параметри для simulate_mpc з підтримкою L-MPC.
+    """
     # Імпортуємо тут щоб уникнути циклічних імпортів
     from sim import simulate_mpc
     
@@ -66,10 +68,42 @@ def _filter_for_simulate_mpc(config: Dict[str, Any]) -> Dict[str, Any]:
         else:
             invalid_params.append(key)
     
+    # 🆕 СПЕЦІАЛЬНА ОБРОБКА ЛІНІЙНИХ МОДЕЛЕЙ
+    if filtered_config.get('model_type', '').lower() == 'linear':
+        # Додаємо L-MPC специфічні параметри якщо вони відсутні
+        linear_defaults = {
+            'linear_type': 'ols',
+            'poly_degree': 1,
+            'include_bias': True,
+            'alpha': 1.0
+        }
+        
+        for param, default_value in linear_defaults.items():
+            if param not in filtered_config:
+                filtered_config[param] = default_value
+                print(f"ℹ️ Додано параметр L-MPC за замовчуванням: {param}={default_value}")
+        
+        # Валідація L-MPC параметрів
+        if filtered_config.get('linear_type') not in ['ols', 'ridge', 'lasso']:
+            print(f"⚠️ Некоректний linear_type '{filtered_config.get('linear_type')}', встановлено 'ols'")
+            filtered_config['linear_type'] = 'ols'
+            
+        if not (1 <= filtered_config.get('poly_degree', 1) <= 3):
+            print(f"⚠️ Некоректний poly_degree {filtered_config.get('poly_degree')}, встановлено 1")
+            filtered_config['poly_degree'] = 1
+    
+    # 🆕 ВАЛІДАЦІЯ ЯДЕРНИХ МОДЕЛЕЙ
+    elif filtered_config.get('model_type', '').lower() in ['krr', 'svr', 'gpr']:
+        # Забезпечуємо наявність kernel для ядерних моделей
+        if 'kernel' not in filtered_config:
+            filtered_config['kernel'] = 'rbf'
+            print(f"ℹ️ Додано kernel за замовчуванням для K-MPC: rbf")
+    
     if invalid_params:
         print(f"ℹ️ Пропущено невалідні параметри: {', '.join(invalid_params)}")
     
     return filtered_config
+
 
 # =============================================================================
 # === ПУБЛІЧНІ ФУНКЦІЇ ===
@@ -138,14 +172,14 @@ def list_configs() -> List[str]:
 
 def create_default_configs() -> None:
     """
-    Створює стандартні конфігурації MPC.
+    Створює стандартні конфігурації MPC з підтримкою L-MPC.
     """
     _ensure_config_dir_exists()
     
-    # Консервативна конфігурація
+    # Консервативна конфігурація (K-MPC)
     conservative_config = {
         "name": "conservative",
-        "description": "Консервативна конфігурація для стабільної роботи",
+        "description": "Консервативна конфігурація для стабільної роботи (K-MPC)",
         
         # Основні параметри
         "N_data": 2000,
@@ -168,7 +202,7 @@ def create_default_configs() -> None:
         "w_mass": 1.0,
         "ref_fe": 53.5,
         "ref_mass": 57.0,
-        "tolerance_fe_percent": 1.5,    # Строга толерантність для консервативної
+        "tolerance_fe_percent": 1.5,
         "tolerance_mass_percent": 2.0,
         
         # Trust region
@@ -217,10 +251,10 @@ def create_default_configs() -> None:
         "run_analysis": True
     }
     
-    # Агресивна конфігурація
+    # Агресивна конфігурація (K-MPC)
     aggressive_config = {
         "name": "aggressive",
-        "description": "Агресивна конфігурація для швидкого відгуку",
+        "description": "Агресивна конфігурація для швидкого відгуку (K-MPC)",
         
         # Основні параметри
         "N_data": 3000,
@@ -243,7 +277,7 @@ def create_default_configs() -> None:
         "w_mass": 2.0,
         "ref_fe": 54.0,
         "ref_mass": 58.0,
-        "tolerance_fe_percent": 2.5,    # Строга толерантність для консервативної
+        "tolerance_fe_percent": 2.5,
         "tolerance_mass_percent": 3.0,
         
         # Trust region
@@ -298,6 +332,161 @@ def create_default_configs() -> None:
         "run_analysis": True
     }
     
+    # 🆕 ЛІНІЙНА КОНФІГУРАЦІЯ (L-MPC) - OLS
+    linear_ols_config = {
+        "name": "linear_ols",
+        "description": "Лінійна модель з OLS регресією (L-MPC)",
+        
+        # Основні параметри
+        "N_data": 2000,
+        "control_pts": 200,
+        "seed": 42,
+        
+        # 🎯 ЛІНІЙНА МОДЕЛЬ
+        "model_type": "linear",
+        "linear_type": "ols",
+        "poly_degree": 1,
+        "include_bias": True,
+        "find_optimal_params": False,
+        
+        # MPC параметри
+        "Np": 6,
+        "Nc": 4,
+        "lag": 2,
+        "λ_obj": 0.15,
+        
+        # Ваги та уставки
+        "w_fe": 6.0,
+        "w_mass": 1.0,
+        "ref_fe": 53.5,
+        "ref_mass": 57.0,
+        "tolerance_fe_percent": 2.5,
+        "tolerance_mass_percent": 3.0,
+        
+        # Trust region (менш агресивні налаштування для лінійної моделі)
+        "adaptive_trust_region": False,
+        "initial_trust_radius": 1.5,
+        "min_trust_radius": 0.8,
+        "max_trust_radius": 3.0,
+        "trust_decay_factor": 0.9,
+        "rho_trust": 0.2,
+        
+        # EKF параметри
+        "P0": 0.01,
+        "Q_phys": 600,
+        "Q_dist": 1,
+        "R": 0.3,
+        "q_adaptive_enabled": False,
+        "q_alpha": 0.98,
+        "q_nis_threshold": 2.5,
+        
+        # Перенавчання (частіше для лінійної моделі)
+        "enable_retraining": True,
+        "retrain_period": 40,
+        "retrain_innov_threshold": 0.25,
+        "retrain_window_size": 800,
+        
+        # Обмеження
+        "use_soft_constraints": True,
+        "delta_u_max": 1.0,
+        "u_min": 20.0,
+        "u_max": 40.0,
+        
+        # Процес
+        "plant_model_type": "rf",
+        "noise_level": "low",
+        "enable_nonlinear": False,
+        
+        # Аномалії
+        "anomaly_params": {
+            "window": 25,
+            "spike_z": 4.0,
+            "drop_rel": 0.30,
+            "freeze_len": 5,
+            "enabled": True
+        },
+        
+        "run_analysis": True
+    }
+    
+    # 🆕 ПОЛІНОМІАЛЬНА КОНФІГУРАЦІЯ (L-MPC) - Ridge
+    linear_poly_config = {
+        "name": "linear_poly",
+        "description": "Поліноміальна модель ступеня 2 з Ridge регуляризацією (L-MPC)",
+        
+        # Основні параметри
+        "N_data": 2500,
+        "control_pts": 250,
+        "seed": 42,
+        
+        # 🎯 ПОЛІНОМІАЛЬНА МОДЕЛЬ
+        "model_type": "linear",
+        "linear_type": "ridge",
+        "poly_degree": 2,
+        "include_bias": True,
+        "find_optimal_params": True,
+        "alpha": 1.0,  # Початкове значення для Ridge
+        
+        # MPC параметри
+        "Np": 5,
+        "Nc": 3,
+        "lag": 2,
+        "λ_obj": 0.1,
+        
+        # Ваги та уставки
+        "w_fe": 8.0,
+        "w_mass": 1.5,
+        "ref_fe": 53.8,
+        "ref_mass": 57.5,
+        "tolerance_fe_percent": 2.0,
+        "tolerance_mass_percent": 2.5,
+        
+        # Trust region
+        "adaptive_trust_region": True,
+        "initial_trust_radius": 1.2,
+        "min_trust_radius": 0.6,
+        "max_trust_radius": 4.0,
+        "trust_decay_factor": 0.85,
+        "rho_trust": 0.15,
+        
+        # EKF параметри
+        "P0": 0.01,
+        "Q_phys": 900,
+        "Q_dist": 1,
+        "R": 0.2,
+        "q_adaptive_enabled": True,
+        "q_alpha": 0.96,
+        "q_nis_threshold": 2.2,
+        
+        # Перенавчання
+        "enable_retraining": True,
+        "retrain_period": 35,
+        "retrain_innov_threshold": 0.22,
+        "retrain_window_size": 900,
+        
+        # Обмеження
+        "use_soft_constraints": True,
+        "delta_u_max": 1.1,
+        "u_min": 19.0,
+        "u_max": 41.0,
+        
+        # Процес
+        "plant_model_type": "rf",
+        "noise_level": "medium",
+        "enable_nonlinear": False,
+        
+        # Аномалії
+        "anomaly_params": {
+            "window": 22,
+            "spike_z": 3.8,
+            "drop_rel": 0.28,
+            "freeze_len": 4,
+            "enabled": True
+        },
+        
+        "run_analysis": True
+    }
+    
     # Швидка конфігурація для тестування
     fast_test_config = {
         "name": "fast_test",
@@ -310,6 +499,8 @@ def create_default_configs() -> None:
         
         # Модель
         "model_type": "linear",
+        "linear_type": "ols",
+        "poly_degree": 1,
         "find_optimal_params": False,
         
         # MPC параметри
@@ -323,7 +514,7 @@ def create_default_configs() -> None:
         "w_mass": 1.0,
         "ref_fe": 53.5,
         "ref_mass": 57.0,
-        "tolerance_fe_percent": 5.0,    # Строга толерантність для консервативної
+        "tolerance_fe_percent": 5.0,
         "tolerance_mass_percent": 5.0,
         
         # Trust region
@@ -358,17 +549,17 @@ def create_default_configs() -> None:
     }
     
     # Зберігаємо конфігурації
-    configs = [conservative_config, aggressive_config, fast_test_config]
+    configs = [conservative_config, aggressive_config, linear_ols_config, linear_poly_config, fast_test_config]
     
     for config in configs:
         config_name = config["name"]
         save_config(config, config_name)
     
-    print(f"✅ Створено {len(configs)} стандартних конфігурацій")
+    print(f"✅ Створено {len(configs)} стандартних конфігурацій (включаючи L-MPC)")
 
 def prompt_manual_adjustments(base_config: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Запитує користувача про ручні корегування базової конфігурації.
+    Запитує користувача про ручні корегування базової конфігурації з підтримкою L-MPC параметрів.
     
     Args:
         base_config: Базова конфігурація
@@ -382,7 +573,7 @@ def prompt_manual_adjustments(base_config: Dict[str, Any]) -> Dict[str, Any]:
     
     adjustments = {}
     
-    # Групуємо параметри за категоріями (спрощена версія)
+    # Групуємо параметри за категоріями з підтримкою L-MPC
     categories = {
         "📊 Основні параметри": [
             ("N_data", "Кількість точок даних", int),
@@ -390,7 +581,15 @@ def prompt_manual_adjustments(base_config: Dict[str, Any]) -> Dict[str, Any]:
         ],
         "🤖 Модель": [
             ("model_type", "Тип моделі (krr/svr/linear)", str),
+        ],
+        "🔧 Лінійна модель (якщо model_type=linear)": [
+            ("linear_type", "Тип лінійної моделі (ols/ridge/lasso)", str),
+            ("poly_degree", "Ступінь поліному (1-3)", int),
+            ("alpha", "Коефіцієнт регуляризації", float),
+        ],
+        "🔄 Ядерна модель (якщо model_type=krr/svr)": [
             ("kernel", "Тип ядра (rbf/linear/poly)", str),
+            ("find_optimal_params", "Автопошук параметрів (True/False)", str),
         ],
         "🎯 MPC": [
             ("Np", "Горизонт прогнозування", int),
@@ -424,7 +623,16 @@ def prompt_manual_adjustments(base_config: Dict[str, Any]) -> Dict[str, Any]:
                 
                 if user_input:  # Користувач ввів щось
                     if param_type == str:
-                        adjustments[param_name] = user_input
+                        # Спеціальна обробка для boolean значень
+                        if param_name == "find_optimal_params":
+                            if user_input.lower() in ['true', 't', '1', 'так']:
+                                adjustments[param_name] = True
+                            elif user_input.lower() in ['false', 'f', '0', 'ні']:
+                                adjustments[param_name] = False
+                            else:
+                                adjustments[param_name] = user_input
+                        else:
+                            adjustments[param_name] = user_input
                     elif param_type in [int, float]:
                         adjustments[param_name] = param_type(user_input)
                         
@@ -567,7 +775,7 @@ def simulate_mpc_with_config(
 
 def validate_config(config: Dict[str, Any]) -> Tuple[bool, List[str]]:
     """
-    Валідує конфігурацію на наявність обов'язкових параметрів.
+    Валідує конфігурацію на наявність обов'язкових параметрів з підтримкою L-MPC та K-MPC.
     
     Args:
         config: Конфігурація для перевірки
@@ -589,8 +797,33 @@ def validate_config(config: Dict[str, Any]) -> Tuple[bool, List[str]]:
     if 'Nc' in config and (not isinstance(config['Nc'], int) or config['Nc'] < 1):
         errors.append("Nc повинен бути додатним цілим числом")
     
-    if 'model_type' in config and config['model_type'] not in ['krr', 'svr', 'linear', 'gpr']:
+    # 🆕 РОЗШИРЕНА ВАЛІДАЦІЯ ДЛЯ РІЗНИХ ТИПІВ МОДЕЛЕЙ
+    model_type = config.get('model_type', '').lower()
+    
+    if model_type not in ['krr', 'svr', 'linear', 'gpr']:
         errors.append("model_type повинен бути одним з: krr, svr, linear, gpr")
+    
+    # 🎯 ВАЛІДАЦІЯ L-MPC ПАРАМЕТРІВ
+    if model_type == 'linear':
+        linear_type = config.get('linear_type', 'ols')
+        if linear_type not in ['ols', 'ridge', 'lasso']:
+            errors.append("linear_type повинен бути одним з: ols, ridge, lasso")
+            
+        poly_degree = config.get('poly_degree', 1)
+        if not isinstance(poly_degree, int) or not (1 <= poly_degree <= 3):
+            errors.append("poly_degree повинен бути цілим числом від 1 до 3")
+            
+        if linear_type in ['ridge', 'lasso']:
+            alpha = config.get('alpha', 1.0)
+            if not isinstance(alpha, (int, float)) or alpha <= 0:
+                errors.append("alpha повинен бути додатним числом для Ridge/Lasso")
+    
+    # 🎯 ВАЛІДАЦІЯ K-MPC ПАРАМЕТРІВ
+    elif model_type in ['krr', 'svr']:
+        kernel = config.get('kernel', 'rbf')
+        valid_kernels = ['rbf', 'linear', 'poly']
+        if kernel not in valid_kernels:
+            errors.append(f"kernel повинен бути одним з: {', '.join(valid_kernels)}")
     
     return len(errors) == 0, errors
 

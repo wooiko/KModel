@@ -29,7 +29,8 @@ from config_manager import (
     create_default_configs,
     prompt_manual_adjustments,
     load_config,
-    list_saved_results
+    list_saved_results,
+    get_config_info  # ✅ ДОДАНО цей імпорт
 )
 
 # =============================================================================
@@ -207,16 +208,45 @@ def initialize_mpc_controller_enhanced(
     y_scaler: StandardScaler
 ) -> MPCController:
     """
-    Ініціалізує покращений MPC контролер з адаптивним trust region.
+    Ініціалізує покращений MPC контролер з адаптивним trust region та підтримкою лінійних моделей.
     """
     print("Крок 2: Ініціалізація покращеного MPC контролера...")
     
-    # Створення моделі процесу
-    kernel_model = KernelModel(
-        model_type=params['model_type'],
-        kernel=params['kernel'],
-        find_optimal_params=params['find_optimal_params']
-    )
+    # 🆕 РОЗШИРЕНА ПІДТРИМКА ЛІНІЙНИХ МОДЕЛЕЙ
+    model_type = params['model_type'].lower()
+    
+    if model_type == 'linear':
+        print(f"🔧 Налаштування лінійної моделі (L-MPC)...")
+        
+        # Створення лінійної моделі з додатковими параметрами
+        kernel_model = KernelModel(
+            model_type=model_type,
+            linear_type=params.get('linear_type', 'ols'),
+            poly_degree=params.get('poly_degree', 1),
+            include_bias=params.get('include_bias', True),
+            alpha=params.get('alpha', 1.0),
+            find_optimal_params=params.get('find_optimal_params', False)
+        )
+        
+        print(f"   • Тип лінійної моделі: {params.get('linear_type', 'ols')}")
+        print(f"   • Ступінь полінома: {params.get('poly_degree', 1)}")
+        print(f"   • Включати bias: {params.get('include_bias', True)}")
+        if params.get('linear_type') in ['ridge', 'lasso']:
+            print(f"   • Коефіцієнт регуляризації: {params.get('alpha', 1.0)}")
+        print(f"   • Автопошук параметрів: {params.get('find_optimal_params', False)}")
+        
+    else:
+        print(f"🔧 Налаштування ядерної моделі (K-MPC): {model_type}...")
+        
+        # Створення ядерної моделі процесу
+        kernel_model = KernelModel(
+            model_type=model_type,
+            kernel=params.get('kernel', 'rbf'),
+            find_optimal_params=params.get('find_optimal_params', True)
+        )
+        
+        print(f"   • Тип ядра: {params.get('kernel', 'rbf')}")
+        print(f"   • Автопошук параметрів: {params.get('find_optimal_params', True)}")
     
     # Масштабування уставок та обмежень
     ref_point_scaled = y_scaler.transform(np.array([[params['ref_fe'], params['ref_mass']]]))[0]
@@ -232,6 +262,26 @@ def initialize_mpc_controller_enhanced(
     avg_tracking_weight = (params['w_fe'] + params['w_mass']) / 2.
     rho_y_val = avg_tracking_weight * 1000
     rho_du_val = params['λ_obj'] * 100
+
+    # 🎯 АДАПТИВНІ НАЛАШТУВАННЯ TRUST REGION ДЛЯ РІЗНИХ ТИПІВ МОДЕЛЕЙ
+    if model_type == 'linear':
+        # Для лінійних моделей менш агресивні налаштування
+        default_adaptive_trust = params.get('adaptive_trust_region', False)
+        default_initial_radius = params.get('initial_trust_radius', 1.2)
+        default_min_radius = params.get('min_trust_radius', 0.8)
+        default_max_radius = params.get('max_trust_radius', 3.0)
+        default_decay_factor = params.get('trust_decay_factor', 0.9)
+        
+        print(f"   🎯 L-MPC Trust Region: adaptive={default_adaptive_trust}, radius={default_initial_radius}")
+    else:
+        # Для ядерних моделей стандартні налаштування
+        default_adaptive_trust = params.get('adaptive_trust_region', True)
+        default_initial_radius = params.get('initial_trust_radius', 1.0)
+        default_min_radius = params.get('min_trust_radius', 0.1)
+        default_max_radius = params.get('max_trust_radius', 5.0)
+        default_decay_factor = params.get('trust_decay_factor', 0.8)
+        
+        print(f"   🎯 K-MPC Trust Region: adaptive={default_adaptive_trust}, radius={default_initial_radius}")
 
     # Створення покращеного контролера з новими параметрами
     mpc = MPCController(
@@ -251,15 +301,16 @@ def initialize_mpc_controller_enhanced(
         rho_y=rho_y_val, 
         rho_delta_u=rho_du_val, 
         rho_trust=params['rho_trust'],
-        # === НОВІ ПАРАМЕТРИ ===
-        adaptive_trust_region=params.get('adaptive_trust_region', True),
-        initial_trust_radius=params.get('initial_trust_radius', 1.0),
-        min_trust_radius=params.get('min_trust_radius', 0.1),
-        max_trust_radius=params.get('max_trust_radius', 5.0),
-        trust_decay_factor=params.get('trust_decay_factor', 0.8),
+        # === АДАПТИВНІ ПАРАМЕТРИ ===
+        adaptive_trust_region=default_adaptive_trust,
+        initial_trust_radius=default_initial_radius,
+        min_trust_radius=default_min_radius,
+        max_trust_radius=default_max_radius,
+        trust_decay_factor=default_decay_factor,
         linearization_check_enabled=params.get('linearization_check_enabled', True),
         max_linearization_distance=params.get('max_linearization_distance', 2.0)
     )
+    
     return mpc
 
 def run_simulation_loop_enhanced(
@@ -809,6 +860,11 @@ def simulate_mpc(
     model_type: str = 'krr',
     kernel: str = 'rbf',
     find_optimal_params: bool = True,
+    # 🆕 ПАРАМЕТРИ ЛІНІЙНОЇ МОДЕЛІ
+    linear_type: str = 'ols',                   # Тип лінійної моделі: 'ols', 'ridge', 'lasso'
+    poly_degree: int = 1,                       # Ступінь поліноміальних ознак (1-3)
+    include_bias: bool = True,                  # Включати bias терм
+    alpha: float = 1.0,                        # Коефіцієнт регуляризації для Ridge/Lasso
     λ_obj: float = 0.1,
     K_I: float = 0.01,
     w_fe: float = 7.0,
@@ -852,7 +908,7 @@ def simulate_mpc(
     },
     enable_nonlinear: bool =  False,
     run_analysis: bool = True,
-    run_evaluation: bool = True,                # ✅ ІСНУЮЧИЙ ПАРАМЕТР
+    run_evaluation: bool = True,                # ✅ ІСНУЮЧИЙ ПАРАМЕТР 
     show_evaluation_plots: bool = False,        # ✅ ДОДАТИ ЦЕЙ РЯДОК
     tolerance_fe_percent: float = 2.0,         # ✅ ДОДАТИ ЦЕЙ РЯДОК
     tolerance_mass_percent: float = 2.0,       # ✅ ДОДАТИ ЦЕЙ РЯДОК     
@@ -866,20 +922,59 @@ def simulate_mpc(
     progress_callback: Callable[[int, int, str], None] = None
 ):
     """
-    Покращена версія головної функції-оркестратора з часовими метриками.
+    Покращена версія головної функції-оркестратора з підтримкою лінійних моделей та часовими метриками.
+    
+    Args:
+        reference_df: Референсні дані
+        model_type: Тип моделі ('krr', 'svr', 'linear', 'gpr')
+        linear_type: Тип лінійної моделі ('ols', 'ridge', 'lasso') - тільки для model_type='linear'
+        poly_degree: Ступінь поліноміальних ознак (1-3) - тільки для model_type='linear'
+        include_bias: Включати bias терм - тільки для model_type='linear'
+        alpha: Коефіцієнт регуляризації - тільки для Ridge/Lasso
+        ... (інші параметри без змін)
+        
+    Returns:
+        Кортеж (results_df, metrics) або (None, None) у випадку помилки
     """
     # Збираємо всі параметри в один словник
     params = locals()
+    
+    # 🔍 ВАЛІДАЦІЯ ПАРАМЕТРІВ ЛІНІЙНОЇ МОДЕЛІ
+    if params['model_type'].lower() == 'linear':
+        print(f"🎯 НАЛАШТУВАННЯ L-MPC (Лінійна модель)")
+        print(f"   • Тип: {params['linear_type']}")
+        print(f"   • Ступінь полінома: {params['poly_degree']}")
+        print(f"   • Bias: {params['include_bias']}")
+        
+        # Валідація параметрів лінійної моделі
+        if params['linear_type'] not in ['ols', 'ridge', 'lasso']:
+            print(f"⚠️ Некоректний linear_type '{params['linear_type']}', використовуємо 'ols'")
+            params['linear_type'] = 'ols'
+            
+        if not (1 <= params['poly_degree'] <= 3):
+            print(f"⚠️ Некоректний poly_degree {params['poly_degree']}, використовуємо 1")
+            params['poly_degree'] = 1
+            
+        if params['linear_type'] in ['ridge', 'lasso'] and params['alpha'] <= 0:
+            print(f"⚠️ Некоректний alpha {params['alpha']}, використовуємо 1.0")
+            params['alpha'] = 1.0
+            
+        print(f"   • Регуляризація: {params['alpha'] if params['linear_type'] in ['ridge', 'lasso'] else 'Не застосовується'}")
+        
+    else:
+        print(f"🎯 НАЛАШТУВАННЯ K-MPC (Ядерна модель: {params['model_type']})")
+        print(f"   • Ядро: {params.get('kernel', 'rbf')}")
+        print(f"   • Автопошук параметрів: {params.get('find_optimal_params', True)}")
     
     try:
         # 1. Підготовка даних (без змін)
         true_gen, df_true, X, Y = prepare_simulation_data(reference_df, params)
         data, x_scaler, y_scaler = split_and_scale_data(X, Y, params)
 
-        # 2. Ініціалізація покращеного MPC
+        # 2. Ініціалізація покращеного MPC (з підтримкою лінійних моделей)
         mpc = initialize_mpc_controller_enhanced(params, x_scaler, y_scaler)
         
-        # ✅ ЗМІНЕНО: Отримуємо як метрики, так і часові дані
+        # ✅ ЗМІНО: Отримуємо як метрики, так і часові дані
         metrics, timing_metrics = train_and_evaluate_model(mpc, data, y_scaler)
         
         # 3. Ініціалізація EKF (без змін)
@@ -892,7 +987,7 @@ def simulate_mpc(
         
         ekf = initialize_ekf(mpc, (x_scaler, y_scaler), hist0_unscaled, data['Y_train_scaled'], params['lag'], params)
 
-        # 4. ✅ ЗМІНЕНО: Передаємо timing_metrics в симуляцію
+        # 4. ✅ ЗМІНО: Передаємо timing_metrics в симуляцію
         results_df, analysis_data = run_simulation_loop_enhanced(
             true_gen, mpc, ekf, df_true, data, (x_scaler, y_scaler), params, 
             timing_metrics,  # ✅ НОВИЙ: передаємо часові метрики
@@ -913,7 +1008,7 @@ def simulate_mpc(
             print("="*60)
             try:
                 eval_results = evaluate_simulation(results_df, analysis_data, params)
-                # ✅ ВИПРАВЛЕННЯ: Передаємо кількість кроків симуляції
+                # ✅ ВИПРАВО: Передаємо кількість кроків симуляції
                 simulation_steps = len(results_df)
                 print_evaluation_report(eval_results, detailed=True, simulation_steps=simulation_steps)
                 
@@ -930,19 +1025,19 @@ def simulate_mpc(
                 print(f"⚠️ Помилка при оцінюванні: {e}")
                 print("Продовжуємо без оцінювання...")
                 import traceback
-                traceback.print_exc()  # ✅ ДОДАЄМО для кращої діагностики
+                traceback.print_exc()  # ✅ ДОДАНО для кращої діагностики
             print("="*60)
         
-        # ✅ ВИПРАВЛЕННЯ: ОБОВ'ЯЗКОВО повертаємо результат
+        # ✅ ВИПРАВО: ОВ'ЯЗКОВО повертаємо результат
         return results_df, metrics
         
     except Exception as e:
         print(f"❌ Критична помилка в simulate_mpc: {e}")
         import traceback
         traceback.print_exc()
-        # ✅ ВИПРАВЛЕННЯ: Повертаємо None, None замість просто None
+        # ✅ ВИПРАВО: Повертаємо None, None замість просто None
         return None, None
-
+    
 if __name__ == '__main__':
     
     def my_progress(step, total, msg):
@@ -961,18 +1056,40 @@ if __name__ == '__main__':
     # Створюємо стандартні конфігурації якщо їх немає
     available_configs = list_configs()
     if not available_configs:
-        print("📁 Створюємо стандартні конфігурації...")
+        print("🔧 Створюємо стандартні конфігурації...")
         create_default_configs()
         available_configs = list_configs()
     
-    # Показуємо доступні конфігурації
-    print(f"\n📋 Доступні конфігурації: {', '.join(available_configs)}")
+    # Показуємо доступні конфігурації з типами моделей
+    print(f"\n📋 ДОСТУПНІ КОНФІГУРАЦІЇ:")
+    print("=" * 50)
+    for i, config in enumerate(available_configs, 1):
+        try:
+            config_info = get_config_info(config)
+            if config_info:
+                model_type = config_info.get('model_type', 'невідомо')
+                description = config_info.get('description', 'Опис відсутній')
+                
+                # 🎯 МАРКУВАННЯ ТИПУ МОДЕЛІ
+                if model_type.lower() == 'linear':
+                    type_marker = "🔧 L-MPC"
+                elif model_type.lower() in ['krr', 'svr', 'gpr']:
+                    type_marker = "🧠 K-MPC"
+                else:
+                    type_marker = "❓"
+                
+                print(f"{i}. {config} {type_marker}")
+                print(f"   📝 {description}")
+                print(f"   ⚙️ Модель: {model_type}, N_data: {config_info.get('N_data', '?')}, "
+                      f"Np: {config_info.get('Np', '?')}, Nc: {config_info.get('Nc', '?')}")
+                print()
+            else:
+                print(f"{i}. {config} (помилка завантаження)")
+        except Exception as e:
+            print(f"{i}. {config} (помилка: {e})")
     
     # Вибір базової конфігурації
-    print(f"\nОберіть базову конфігурацію:")
-    for i, config in enumerate(available_configs, 1):
-        print(f"{i}. {config}")
-    
+    print(f"Оберіть базову конфігурацію:")
     choice = input(f"Ваш вибір (1-{len(available_configs)}, за замовчуванням 1): ").strip()
     
     try:
@@ -989,9 +1106,26 @@ if __name__ == '__main__':
     # Завантаження базової конфігурації для показу
     base_config = load_config(selected_config)
     
+    # 🔍 ПОКАЗУЄМО СПЕЦИФІЧНІ ПАРАМЕТРИ ДЛЯ ОБРАНОГО ТИПУ МОДЕЛІ
+    model_type = base_config.get('model_type', 'krr').lower()
+    
+    if model_type == 'linear':
+        print(f"\n🔧 L-MPC КОНФІГУРАЦІЯ:")
+        print(f"   • Тип лінійної моделі: {base_config.get('linear_type', 'ols')}")
+        print(f"   • Ступінь полінома: {base_config.get('poly_degree', 1)}")
+        print(f"   • Включати bias: {base_config.get('include_bias', True)}")
+        if base_config.get('linear_type') in ['ridge', 'lasso']:
+            print(f"   • Коефіцієнт регуляризації: {base_config.get('alpha', 1.0)}")
+        print(f"   • Автопошук параметрів: {base_config.get('find_optimal_params', False)}")
+    else:
+        print(f"\n🧠 K-MPC КОНФІГУРАЦІЯ:")
+        print(f"   • Тип ядерної моделі: {model_type}")
+        print(f"   • Ядро: {base_config.get('kernel', 'rbf')}")
+        print(f"   • Автопошук параметрів: {base_config.get('find_optimal_params', True)}")
+    
     # Показуємо поточні ключові параметри
-    key_params = ['model_type', 'Np', 'Nc', 'ref_fe', 'ref_mass', 'w_fe', 'w_mass', 'λ_obj', 'N_data', 'control_pts']
-    print(f"\n📊 Поточні ключові параметри:")
+    key_params = ['Np', 'Nc', 'ref_fe', 'ref_mass', 'w_fe', 'w_mass', 'λ_obj', 'N_data', 'control_pts']
+    print(f"\n📊 КЛЮЧОВІ ПАРАМЕТРИ:")
     for param in key_params:
         if param in base_config:
             print(f"   • {param}: {base_config[param]}")
@@ -1005,6 +1139,11 @@ if __name__ == '__main__':
         
         if manual_overrides:
             print(f"\n✅ Заплановано {len(manual_overrides)} корегувань")
+            
+            # Показуємо які зміни планується внести
+            for key, value in manual_overrides.items():
+                old_value = base_config.get(key, "не задано")
+                print(f"   • {key}: {old_value} → {value}")
         else:
             print("ℹ️ Корегування не внесено")
     
@@ -1018,7 +1157,11 @@ if __name__ == '__main__':
         show_evaluation_plots = want_plots not in ['n', 'no', 'ні']
     
     # Запуск симуляції
-    print(f"\n🚀 Запуск симуляції...")
+    print(f"\n🚀 ЗАПУСК СИМУЛЯЦІЇ...")
+    if model_type == 'linear':
+        print(f"🔧 Режим: L-MPC (Лінійна модель)")
+    else:
+        print(f"🧠 Режим: K-MPC (Ядерна модель)")
     print("=" * 50)
     
     try:
@@ -1027,7 +1170,7 @@ if __name__ == '__main__':
             config_name=selected_config,
             manual_overrides=manual_overrides,
             progress_callback=my_progress,
-            run_evaluation=run_evaluation,  # ✅ ПЕРЕДАЄМО ПАРАМЕТР
+            run_evaluation=run_evaluation,  # ✅ ПЕРЕДАЄМО ПАРАМЕТР 
             show_evaluation_plots=show_evaluation_plots  # ✅ ПЕРЕДАЄМО ПАРАМЕТР ВІЗУАЛІЗАЦІЇ
         )
         
@@ -1048,11 +1191,24 @@ if __name__ == '__main__':
             if metric in metrics:
                 print(f"📊 {metric}: {metrics[metric]:.6f}")
         
+        # 🎯 ПОКАЗУЄМО ТИП ВИКОРИСТАНОЇ МОДЕЛІ
+        print(f"\n🎯 ВИКОРИСТАНА МОДЕЛЬ:")
+        if model_type == 'linear':
+            linear_type = base_config.get('linear_type', 'ols')
+            if manual_overrides.get('linear_type'):
+                linear_type = manual_overrides['linear_type']
+            print(f"   🔧 L-MPC: {linear_type} (ступінь {base_config.get('poly_degree', 1)})")
+        else:
+            kernel = base_config.get('kernel', 'rbf')
+            if manual_overrides.get('kernel'):
+                kernel = manual_overrides['kernel']
+            print(f"   🧠 K-MPC: {model_type} + {kernel}")
+        
         # Показуємо збережені файли
         saved_results = list_saved_results()
         if saved_results:
             latest = saved_results[0]  # Останній збережений файл
-            print(f"\n💾 Останній збережений файл:")
+            print(f"\n💾 ЗБЕРЕЖЕНО:")
             print(f"   📁 {latest['file']}")
             print(f"   📊 Розмір: {latest['size_mb']:.2f} MB")
         
