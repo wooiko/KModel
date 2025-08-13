@@ -304,7 +304,7 @@ def run_simulation_loop_enhanced(
     u_seq_hist = []
     d_hat_hist = []
     
-    # ✅ ДОДАЄМО ЗМІННІ ДЛЯ ДІАГНОСТИКИ EKF:
+    # ✅ ДОДАНО ЗМІННІ ДЛЯ ДІАГНОСТИКИ EKF:
     y_true_seq = []     # Реальні вимірювання
     y_pred_seq = []     # Передбачення моделі
     x_est_seq = []      # Оцінки стану EKF
@@ -398,28 +398,58 @@ def run_simulation_loop_enhanced(
         y_pred_seq.append(y_pred_unscaled.copy())
         x_est_seq.append(ekf.x_hat.copy())
         
+        # ✅ МОДИФІКАЦІЯ 2: НАДІЙНЕ ЗБЕРЕЖЕННЯ ІННОВАЦІЙ EKF
         # Інновації
         if hasattr(ekf, 'last_innovation') and ekf.last_innovation is not None:
-            innovation_seq.append(ekf.last_innovation.copy())
+            innovation_value = ekf.last_innovation.copy()
+            # Перевіряємо розмірність та коректність
+            if innovation_value.shape[0] >= 2:
+                innovation_seq.append(innovation_value[:2])  # Беремо перші 2 компоненти
+            else:
+                innovation_seq.append(np.zeros(2))
+                print(f"⚠️ Крок {t}: innovation має неправильну розмірність {innovation_value.shape}")
         else:
             innovation_seq.append(np.zeros(2))
+            if t % 50 == 0:  # Повідомляємо кожні 50 кроків
+                print(f"⚠️ Крок {t}: innovation недоступна")
 
         # 9. Зменшуємо cooldown-таймер
         if retrain_cooldown_timer > 0:
             retrain_cooldown_timer -= 1
 
-        # === НОВА ЛОГІКА: ЗБІР СТАТИСТИКИ TRUST REGION ===
+        # ✅ МОДИФІКАЦІЯ 1: ПОКРАЩЕНИЙ ЗБІР TRUST REGION СТАТИСТИКИ
+        trust_stats = None
         if hasattr(mpc, 'get_trust_region_stats'):
-            trust_stats = mpc.get_trust_region_stats()
-            trust_region_stats_hist.append(trust_stats)
+            try:
+                trust_stats = mpc.get_trust_region_stats()
+            except Exception as e:
+                print(f"⚠️ Помилка отримання Trust Region статистики: {e}")
+        
+        # Fallback логіка якщо основний метод недоступний
+        if trust_stats is None:
+            trust_stats = {
+                'current_radius': getattr(mpc, 'current_trust_radius', 
+                                        getattr(mpc, 'trust_radius', 1.0)),
+                'radius_increased': False,
+                'radius_decreased': False,
+                'step': t,
+                'optimization_success': u_seq is not None
+            }
+        
+        # Додаємо контекст до статистики
+        if isinstance(trust_stats, dict):
+            trust_stats['step'] = t
+            trust_stats['optimization_success'] = u_seq is not None
+        
+        trust_region_stats_hist.append(trust_stats)
             
-            # ВИПРАВЛЕННЯ: зберігаємо якість лінеаризації правильно
-            if hasattr(mpc, 'linearization_quality_history') and mpc.linearization_quality_history:
-                # Зберігаємо останнє значення з історії
-                if isinstance(mpc.linearization_quality_history[-1], dict):
-                    linearization_quality_hist.append(mpc.linearization_quality_history[-1]['euclidean_distance'])
-                else:
-                    linearization_quality_hist.append(mpc.linearization_quality_history[-1])
+        # ВИПРАВЛЕННЯ: зберігаємо якість лінеаризації правильно
+        if hasattr(mpc, 'linearization_quality_history') and mpc.linearization_quality_history:
+            # Зберігаємо останнє значення з історії
+            if isinstance(mpc.linearization_quality_history[-1], dict):
+                linearization_quality_hist.append(mpc.linearization_quality_history[-1]['euclidean_distance'])
+            else:
+                linearization_quality_hist.append(mpc.linearization_quality_history[-1])
 
         # 10. Буферизація та можливе перенавчання
         if params['enable_retraining']:
@@ -501,12 +531,43 @@ def run_simulation_loop_enhanced(
             else np.zeros(ekf.n_dist)
         )
 
-        # Збереження планів MPC та оцінок збурень
+        # ✅ МОДИФІКАЦІЯ 4: ПОКРАЩЕНЕ ЗБЕРЕЖЕННЯ MPC ПЛАНІВ
         if u_seq is not None:
-            u_seq_hist.append(u_seq)
+            try:
+                # Зберігаємо копію плану з метаданими
+                plan_data = {
+                    'plan': u_seq.copy(),
+                    'step': t,
+                    'horizon_length': len(u_seq),
+                    'first_action': float(u_seq[0]) if len(u_seq) > 0 else None
+                }
+                u_seq_hist.append(plan_data)
+            except Exception as e:
+                # Fallback: зберігаємо простий список
+                u_seq_hist.append(u_seq.copy() if hasattr(u_seq, 'copy') else list(u_seq))
+                print(f"⚠️ Крок {t}: помилка збереження MPC плану - {e}")
+        else:
+            # Зберігаємо інформацію про невдалу оптимізацію
+            u_seq_hist.append({
+                'plan': None,
+                'step': t,
+                'optimization_failed': True
+            })
+
+        # ✅ МОДИФІКАЦІЯ 3: НАДІЙНЕ ЗБЕРЕЖЕННЯ ОЦІНОК ЗБУРЕНЬ
         if mpc.d_hat is not None:
-            d_hat_orig = y_scaler.inverse_transform(mpc.d_hat.reshape(1, -1))[0]
-            d_hat_hist.append(d_hat_orig)
+            try:
+                # Конвертуємо назад в оригінальний масштаб
+                d_hat_orig = y_scaler.inverse_transform(mpc.d_hat.reshape(1, -1))[0]
+                d_hat_hist.append(d_hat_orig.copy())
+            except Exception as e:
+                # Fallback: зберігаємо як є
+                d_hat_hist.append(mpc.d_hat.copy())
+                if t % 50 == 0:
+                    print(f"⚠️ Крок {t}: помилка масштабування d_hat - {e}")
+        else:
+            # Зберігаємо нульові оцінки
+            d_hat_hist.append(np.zeros(2))
 
         y_meas = y_full.iloc[0]
         records.append({
@@ -526,11 +587,32 @@ def run_simulation_loop_enhanced(
     if progress_callback:
         progress_callback(T_sim, T_sim, "Симуляція завершена")
 
-    # ✅ ДОДАЄМО ДІАГНОСТИКУ EKF:
+    # ✅ ДОДАНО ДІАГНОСТИКУ EKF:
     diagnose_ekf_detailed(ekf, y_true_seq, y_pred_seq, x_est_seq, innovation_seq)
     
+    # ✅ МОДИФІКАЦІЯ 5: ВАЛІДАЦІЯ ЗІБРАНИХ ДАНИХ
+    print(f"\n🔍 ВАЛІДАЦІЯ ЗІБРАНИХ ДАНИХ:")
+    print(f"   📊 Кроків симуляції: {T_sim}")
+    print(f"   🎯 Innovation sequences: {len(innovation_seq)}")
+    print(f"   🎛️ Trust region stats: {len(trust_region_stats_hist)}")
+    print(f"   🎮 U sequences: {len(u_seq_hist)}")
+    print(f"   🔧 D_hat estimates: {len(d_hat_hist)}")
+    
+    # Перевіряємо структуру innovation_seq
+    if innovation_seq:
+        try:
+            innov_array = np.array(innovation_seq)
+            print(f"   ✅ Innovation array shape: {innov_array.shape}")
+        except Exception as e:
+            print(f"   ❌ Innovation array помилка: {e}")
+    
+    # Перевіряємо Trust Region статистику
+    if trust_region_stats_hist:
+        sample = trust_region_stats_hist[0]
+        print(f"   ✅ Trust region зразок: {type(sample)} - {sample}")
+    
     # ✅ НОВИЙ: Виводимо статистику часових метрик
-    print(f"\n⏱️ СТАТИСТИКА ЧАСОВИХ МЕТРИК:")
+    print(f"\nâ±ï¸ СТАТИСТИКА ЧАСОВИХ МЕТРИК:")
     print(f"   • Початкове навчання: {timing_metrics['initial_training_time']:.2f} сек")
     if timing_metrics['retraining_times']:
         avg_retrain = np.mean(timing_metrics['retraining_times'])
@@ -561,6 +643,15 @@ def run_simulation_loop_enhanced(
         "timing_metrics": timing_metrics  # ✅ НОВИЙ: Додаємо часові метрики
     }
 
+    # Додаємо діагностичний виклик
+    try:
+        from evaluation_simple import diagnose_analysis_data
+        diagnose_analysis_data(analysis_data)
+    except ImportError:
+        print("⚠️ diagnose_analysis_data недоступна")
+    except Exception as e:
+        print(f"⚠️ Помилка діагностики: {e}")
+
     return pd.DataFrame(records), analysis_data
 
 def initialize_ekf(
@@ -572,39 +663,120 @@ def initialize_ekf(
     params: Dict[str, Any]
 ) -> ExtendedKalmanFilter:
     """
-    Ініціалізує розширений фільтр Калмана (EKF).
+    Ініціалізує розширений фільтр Калмана (EKF) з покращеними початковими оцінками збурень.
     """
     print("Крок 4: Ініціалізація фільтра Калмана (EKF)...")
        
     x_scaler, y_scaler = scalers
     n_phys, n_dist = (lag + 1) * 3, 2
     
-    # x0_aug = np.hstack([hist0_unscaled.flatten(), np.zeros(n_dist)])
-    # ✅ ВИПРАВЛЕННЯ: Розумна початкова оцінка збурень
-    # Базуючись на систематичній помилці з попередніх результатів
-    initial_disturbances = np.array([0.7, 0.0])  # Близько до Innovation mean: [0.71, 0.04]
+    # ✅ ПОКРАЩЕНА ІНІЦІАЛІЗАЦІЯ ЗБУРЕНЬ
+    # Аналізуємо тренувальні дані для розумних початкових оцінок
+    if len(Y_train_scaled) > 100:
+        # Оцінюємо систематичні зміщення з історичних даних
+        early_period = Y_train_scaled[:50]  # Перші 50 зразків
+        late_period = Y_train_scaled[-50:]  # Останні 50 зразків
+        
+        fe_drift = np.mean(late_period[:, 0]) - np.mean(early_period[:, 0])
+        mass_drift = np.mean(late_period[:, 1]) - np.mean(early_period[:, 1])
+        
+        # Оцінюємо варіабельність для визначення надійності оцінок
+        fe_std = np.std(Y_train_scaled[:, 0])
+        mass_std = np.std(Y_train_scaled[:, 1])
+        
+        # Обмежуємо початкові збурення розумними межами
+        max_disturbance_fe = 0.5 * fe_std
+        max_disturbance_mass = 0.5 * mass_std
+        
+        fe_bias = np.clip(fe_drift, -max_disturbance_fe, max_disturbance_fe)
+        mass_bias = np.clip(mass_drift, -max_disturbance_mass, max_disturbance_mass)
+        
+        initial_disturbances = np.array([fe_bias, mass_bias])
+        
+        print(f"   📊 Аналіз тренувальних даних:")
+        print(f"      Fe drift: {fe_drift:.3f} → обрізано до {fe_bias:.3f}")
+        print(f"      Mass drift: {mass_drift:.3f} → обрізано до {mass_bias:.3f}")
+        print(f"      Fe std: {fe_std:.3f}, Mass std: {mass_std:.3f}")
+        
+    else:
+        # Fallback для малих тренувальних наборів
+        print(f"   ⚠️ Малий тренувальний набір ({len(Y_train_scaled)} зразків)")
+        initial_disturbances = np.array([0.1, 0.0])
     
+    print(f"   🔧 Початкові оцінки збурень: Fe={initial_disturbances[0]:.3f}, Mass={initial_disturbances[1]:.3f}")
+    
+    # Формуємо розширений початковий стан
     x0_aug = np.hstack([hist0_unscaled.flatten(), initial_disturbances])
     
-    # P0 = np.eye(n_phys + n_dist) * params['P0']
-    # P0[n_phys:, n_phys:] *= 1 
-    P0 = np.eye(n_phys + n_dist) * params['P0'] * 1.5  # Було: * 1.0
-    P0[n_phys:, n_phys:] *= 10  # Залишити як є
-
+    # ✅ АДАПТИВНА ІНІЦІАЛІЗАЦІЯ КОВАРІАЦІЙНИХ МАТРИЦЬ
+    # Базова коваріаційна матрица з адаптацією до даних
+    base_p0 = params['P0']
+    
+    # Збільшуємо невизначеність для збурень пропорційно їх оцінкам
+    disturbance_uncertainty_fe = max(0.1, abs(initial_disturbances[0]) * 2)
+    disturbance_uncertainty_mass = max(0.1, abs(initial_disturbances[1]) * 2)
+    
+    P0 = np.eye(n_phys + n_dist) * base_p0
+    P0[n_phys, n_phys] = disturbance_uncertainty_fe      # Fe збурення
+    P0[n_phys + 1, n_phys + 1] = disturbance_uncertainty_mass  # Mass збурення
+    
+    print(f"   📈 Початкова невизначеність збурень:")
+    print(f"      P0[Fe_dist]: {disturbance_uncertainty_fe:.3f}")
+    print(f"      P0[Mass_dist]: {disturbance_uncertainty_mass:.3f}")
+    
+    # ✅ АДАПТИВНІ МАТРИЦІ ШУМУ ПРОЦЕСУ
     Q_phys = np.eye(n_phys) * params['Q_phys']
-    Q_dist = np.eye(n_dist) * params['Q_dist'] 
-    Q = np.block([[Q_phys, np.zeros((n_phys, n_dist))], [np.zeros((n_dist, n_phys)), Q_dist]])
     
-    # R = np.diag(np.var(Y_train_scaled, axis=0)) * params['R']
-    R = np.diag(np.var(Y_train_scaled, axis=0)) * params['R'] * 0.5
+    # Адаптивний шум збурень на основі варіабельності даних
+    if len(Y_train_scaled) > 50:
+        fe_variability = np.std(np.diff(Y_train_scaled[:, 0]))
+        mass_variability = np.std(np.diff(Y_train_scaled[:, 1]))
+        
+        Q_dist_fe = max(params['Q_dist'], fe_variability * 0.1)
+        Q_dist_mass = max(params['Q_dist'], mass_variability * 0.1)
+        
+        Q_dist = np.diag([Q_dist_fe, Q_dist_mass])
+        
+        print(f"   🎚️ Адаптивний шум збурень:")
+        print(f"      Q_dist[Fe]: {Q_dist_fe:.3f} (варіабельність: {fe_variability:.3f})")
+        print(f"      Q_dist[Mass]: {Q_dist_mass:.3f} (варіабельність: {mass_variability:.3f})")
+    else:
+        Q_dist = np.eye(n_dist) * params['Q_dist']
+        print(f"   📊 Стандартний шум збурень: {params['Q_dist']}")
     
-    return ExtendedKalmanFilter(
+    Q = np.block([[Q_phys, np.zeros((n_phys, n_dist))], 
+                  [np.zeros((n_dist, n_phys)), Q_dist]])
+    
+    # ✅ ПОКРАЩЕНА МАТРИЦЯ ШУМУ ВИМІРЮВАНЬ
+    # Базуємо R на реальній варіабельності вимірювань
+    base_R_factor = params['R']
+    measurement_variances = np.var(Y_train_scaled, axis=0)
+    
+    # Обмежуємо мінімальними значеннями для стабільності
+    min_R_values = np.array([1e-4, 1e-4])
+    R_values = np.maximum(measurement_variances * base_R_factor, min_R_values)
+    
+    R = np.diag(R_values)
+    
+    print(f"   📏 Матриця шуму вимірювань R:")
+    print(f"      R[Fe]: {R_values[0]:.4f} (базова варіація: {measurement_variances[0]:.4f})")
+    print(f"      R[Mass]: {R_values[1]:.4f} (базова варіація: {measurement_variances[1]:.4f})")
+    
+    # ✅ СТВОРЕННЯ EKF З ПОКРАЩЕНИМИ ПАРАМЕТРАМИ
+    ekf = ExtendedKalmanFilter(
         mpc.model, x_scaler, y_scaler, x0_aug, P0, Q, R, lag,
-        beta_R=params.get('beta_R', 0.1), # .get для зворотної сумісності
+        beta_R=params.get('beta_R', 0.1),
         q_adaptive_enabled=params.get('q_adaptive_enabled', True),
         q_alpha=params.get('q_alpha', 0.995),
         q_nis_threshold=params.get('q_nis_threshold', 1.8)        
     )
+    
+    print(f"   ✅ EKF ініціалізовано з покращеними параметрами")
+    print(f"      Адаптивна Q матриця: {params.get('q_adaptive_enabled', True)}")
+    print(f"      Beta R: {params.get('beta_R', 0.1)}")
+    print(f"      Q alpha: {params.get('q_alpha', 0.995)}")
+    
+    return ekf
 
    
 # =============================================================================
