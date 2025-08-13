@@ -1,4 +1,5 @@
 # model.py
+
 import inspect
 from abc import ABC, abstractmethod
 from typing import Dict, Tuple, Type
@@ -16,6 +17,8 @@ from sklearn.gaussian_process.kernels import (
 from sklearn.kernel_ridge import KernelRidge
 from sklearn.model_selection import RandomizedSearchCV
 from sklearn.svm import SVR
+from sklearn.linear_model import LinearRegression, Ridge, Lasso
+from sklearn.preprocessing import PolynomialFeatures
 
 # ======================================================================
 #                        БАЗОВА СТРАТЕГІЯ
@@ -413,6 +416,219 @@ class _SVRModel(_BaseKernelModel):
         return best_model
 
 # ======================================================================
+#                   LINEAR MODEL (для L-MPC)
+# ======================================================================
+
+class _LinearModel(_BaseKernelModel):
+    """
+    Лінійна модель для L-MPC з підтримкою різних регуляризацій та поліноміальних ознак
+    """
+    
+    def __init__(
+        self,
+        linear_type: str = "ols",         # "ols", "ridge", "lasso" 
+        alpha: float = 1.0,               # Коефіцієнт регуляризації для Ridge/Lasso
+        poly_degree: int = 1,             # Степінь поліноміальних ознак (1=лінійна)
+        include_bias: bool = True,        # Включати bias термин
+        find_optimal_params: bool = False, # Пошук оптимальних параметрів
+        n_iter_random_search: int = 20,
+    ):
+        super().__init__()
+        self.linear_type = linear_type.lower()
+        self.alpha = alpha
+        self.poly_degree = poly_degree
+        self.include_bias = include_bias
+        self.find_optimal_params = find_optimal_params
+        self.n_iter_random_search = n_iter_random_search
+        
+        # Валідація
+        if self.linear_type not in ("ols", "ridge", "lasso"):
+            raise ValueError("linear_type повинен бути 'ols', 'ridge' або 'lasso'")
+        
+        if self.poly_degree < 1 or self.poly_degree > 3:
+            raise ValueError("poly_degree повинен бути від 1 до 3")
+        
+        # Внутрішні атрибути
+        self.model: LinearRegression | Ridge | Lasso | None = None
+        self.poly_features: PolynomialFeatures | None = None
+        self.coef_: np.ndarray | None = None
+        self.intercept_: np.ndarray | None = None
+        
+        # Для compatibility з kernel моделями
+        self._kernel = "linear"  # Позначаємо як лінійну
+
+    def fit(self, X: np.ndarray, Y: np.ndarray) -> None:
+        """Навчання лінійної моделі"""
+        
+        # 🔧 Створення поліноміальних ознак якщо потрібно
+        if self.poly_degree > 1:
+            self.poly_features = PolynomialFeatures(
+                degree=self.poly_degree,
+                include_bias=False  # bias додамо в модель
+            )
+            X_features = self.poly_features.fit_transform(X)
+        else:
+            self.poly_features = None
+            X_features = X
+            
+        # 🎯 Вибір та налаштування моделі
+        if self.find_optimal_params:
+            self.model = self._run_random_search(X_features, Y)
+        else:
+            if self.linear_type == "ols":
+                self.model = LinearRegression(fit_intercept=self.include_bias)
+            elif self.linear_type == "ridge":
+                self.model = Ridge(alpha=self.alpha, fit_intercept=self.include_bias)
+            elif self.linear_type == "lasso":
+                self.model = Lasso(alpha=self.alpha, fit_intercept=self.include_bias, max_iter=2000)
+        
+        # 🚀 Навчання
+        self.model.fit(X_features, Y)
+        
+        # 📊 Зберігаємо коефіцієнти для швидкого доступу
+        self.coef_ = self.model.coef_.T if Y.ndim > 1 else self.model.coef_.reshape(-1, 1)
+        self.intercept_ = (
+            self.model.intercept_ if hasattr(self.model, 'intercept_') 
+            else np.zeros(Y.shape[1] if Y.ndim > 1 else 1)
+        )
+        
+        print(f"✅ Linear Model навчена: {self.linear_type}, poly_degree={self.poly_degree}")
+        print(f"   Коефіцієнти shape: {self.coef_.shape}, Intercept: {self.intercept_.shape}")
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        """Передбачення лінійної моделі"""
+        if self.model is None:
+            raise RuntimeError("Linear Model не навчена!")
+            
+        # Застосування поліноміальних ознак якщо потрібно
+        if self.poly_features is not None:
+            X_features = self.poly_features.transform(X)
+        else:
+            X_features = X
+            
+        return self.model.predict(X_features)
+
+    def linearize(self, X0: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Лінеаризація для лінійної моделі
+        
+        Returns:
+            W: (n_features, n_outputs) - градієнт матриця (як у K-MPC)
+            b: (n_outputs,) - зміщення вектор
+        """
+        if X0.ndim == 1:
+            X0 = X0.reshape(1, -1)
+            
+        if self.coef_ is None:
+            raise RuntimeError("Модель не навчена!")
+            
+        # 🎯 ЛІНІЙНИЙ ВИПАДОК (poly_degree = 1)
+        if self.poly_degree == 1:
+            # sklearn LinearRegression: coef_ = (n_features, n_outputs)
+            W = self.coef_  # ✅ Залишаємо (n_features, n_outputs) як у K-MPC
+            b = self.intercept_  # (n_outputs,)
+            return W, b
+            
+        # 🎯 ПОЛІНОМІАЛЬНИЙ ВИПАДОК (poly_degree > 1)
+        else:
+            # ✅ ВИПРАВЛЕНО: використовуємо include_bias=False
+            grad_poly = self._compute_polynomial_gradient(X0)  # (n_samples, n_features, n_poly_features_no_bias)
+            
+            # Перевіряємо розмірності
+            n_samples, n_features, n_poly_features = grad_poly.shape
+            n_coef_features, n_outputs = self.coef_.shape
+            
+            if n_poly_features != n_coef_features:
+                raise ValueError(f"Розмірність градієнта {n_poly_features} != розмірність коефіцієнтів {n_coef_features}")
+            
+            # W = градієнт * коефіцієнти
+            W = np.einsum('ijk,kl->ijl', grad_poly, self.coef_)  # (n_samples, n_features, n_outputs)
+            
+            # Беремо перший семпл: (n_features, n_outputs) - як у K-MPC
+            W_local = W[0]  # ✅ (n_features, n_outputs)
+            
+            # ✅ ПРАВИЛЬНЕ МНОЖЕННЯ: X @ W (як у K-MPC)
+            y0 = self.predict(X0)
+            b_local = y0[0] - X0[0] @ W_local
+            
+            return W_local, b_local
+
+    def _compute_polynomial_gradient(self, X0: np.ndarray) -> np.ndarray:
+        """
+        Обчислює градієнт поліноміальних ознак в точці X0
+        
+        Returns:
+            grad_poly: (n_samples, n_features, n_poly_features) - градієнт матриця
+        """
+        from sklearn.preprocessing import PolynomialFeatures
+        
+        n_samples, n_features = X0.shape
+        
+        # ✅ ВИПРАВЛЕНО: include_bias=False, щоб відповідати sklearn coef_
+        poly = PolynomialFeatures(degree=self.poly_degree, include_bias=False)
+        
+        # Фітуємо на dummy даних щоб отримати powers_
+        dummy_X = np.ones((1, n_features))
+        poly.fit(dummy_X)
+        
+        # Отримуємо кількість ознак БЕЗ bias
+        n_poly_features = len(poly.powers_)
+        
+        # Ініціалізуємо градієнт
+        grad_poly = np.zeros((n_samples, n_features, n_poly_features))
+        
+        # Обчислюємо градієнт для кожної поліноміальної ознаки
+        for i, powers in enumerate(poly.powers_):
+            # powers - масив степенів для кожної оригінальної ознаки
+            for j in range(n_features):
+                if powers[j] > 0:
+                    # ∂(x₁^p₁ * x₂^p₂ * ... * xⱼ^pⱼ * ...)/∂xⱼ = pⱼ * x₁^p₁ * ... * xⱼ^(pⱼ-1) * ...
+                    grad_powers = powers.copy()
+                    grad_powers[j] -= 1
+                    
+                    # Обчислюємо значення градієнта
+                    grad_value = powers[j]  # Коефіцієнт від диференціювання
+                    
+                    for k in range(n_features):
+                        if grad_powers[k] > 0:
+                            grad_value *= (X0[:, k] ** grad_powers[k])
+                        # Якщо grad_powers[k] == 0, то x^0 = 1 (не множимо)
+                    
+                    grad_poly[:, j, i] = grad_value
+        
+        return grad_poly
+
+    def _run_random_search(self, X, Y):
+        """Пошук оптимальних гіперпараметрів"""
+        
+        if self.linear_type == "ols":
+            # OLS не має гіперпараметрів для оптимізації
+            return LinearRegression(fit_intercept=self.include_bias)
+            
+        elif self.linear_type == "ridge":
+            param_dist = {"alpha": loguniform(1e-3, 1e3)}
+            base = Ridge(fit_intercept=self.include_bias)
+            
+        elif self.linear_type == "lasso":
+            param_dist = {"alpha": loguniform(1e-4, 1e1)}
+            base = Lasso(fit_intercept=self.include_bias, max_iter=2000)
+            
+        rs = RandomizedSearchCV(
+            base,
+            param_dist,
+            n_iter=self.n_iter_random_search,
+            cv=3,
+            scoring="neg_mean_squared_error",
+            random_state=42,
+            n_jobs=-1,
+            verbose=1
+        )
+        
+        rs.fit(X, Y)
+        print(f"✅ Оптимальні параметри Linear {self.linear_type}: {rs.best_params_}")
+        
+        return rs.best_estimator_
+# ======================================================================
 #                              FACADE
 # ======================================================================
 class KernelModel:
@@ -426,6 +642,8 @@ class KernelModel:
         "krr": _KRRModel,
         "gpr": _GPRModel,
         "svr": _SVRModel,
+        "linear": _LinearModel,  # 🆕 ДОДАНО L-MPC!
+
     }
 
     def __init__(self, model_type: str = "krr", **kwargs):

@@ -1,11 +1,14 @@
 {
-    "name": "aggressive",
-    "description": "Агресивна конфігурація для швидкого відгуку (K-MPC)",
+    "name": "linear_aggressive",
+    "description": "Агресивна лінійна модель для L-MPC порівняння",
     "N_data": 3000,
     "control_pts": 300,
     "seed": 42,
-    "model_type": "svr",
-    "kernel": "rbf",
+    "model_type": "linear",
+    "linear_type": "lasso",
+    "alpha": 0.1,
+    "poly_degree": 2,
+    "include_bias": true,
     "find_optimal_params": true,
     "Np": 8,
     "Nc": 6,
@@ -18,11 +21,11 @@
     "tolerance_fe_percent": 2.5,
     "tolerance_mass_percent": 3.0,
     "adaptive_trust_region": true,
-    "initial_trust_radius": 2.0,
-    "min_trust_radius": 0.8,
-    "max_trust_radius": 5.0,
-    "trust_decay_factor": 0.8,
-    "rho_trust": 0.1,
+    "initial_trust_radius": 1.5,
+    "min_trust_radius": 0.5,
+    "max_trust_radius": 3.5,
+    "trust_decay_factor": 0.85,
+    "rho_trust": 0.2,
     "P0": 0.01,
     "Q_phys": 1200,
     "Q_dist": 1,
@@ -31,26 +34,16 @@
     "q_alpha": 0.9,
     "q_nis_threshold": 3.0,
     "enable_retraining": true,
-    "retrain_period": 30,
-    "retrain_innov_threshold": 0.2,
-    "retrain_window_size": 800,
+    "retrain_period": 20,
+    "retrain_innov_threshold": 0.15,
+    "retrain_window_size": 600,
     "use_soft_constraints": true,
     "delta_u_max": 1.2,
     "u_min": 18.0,
     "u_max": 42.0,
     "plant_model_type": "rf",
     "noise_level": "medium",
-    "enable_nonlinear": true,
-    "nonlinear_config": {
-        "concentrate_fe_percent": [
-            "pow",
-            2
-        ],
-        "concentrate_mass_flow": [
-            "pow",
-            1.5
-        ]
-    },
+    "enable_nonlinear": false,
     "anomaly_params": {
         "window": 20,
         "spike_z": 3.5,
@@ -58,5 +51,5 @@
         "freeze_len": 3,
         "enabled": true
     },
-    "run_analysis": false
+    "run_analysis": true
 }
