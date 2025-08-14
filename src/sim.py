@@ -6,6 +6,7 @@ from typing import Callable, Dict, Any, Tuple
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error
 from collections import deque
+from datetime import datetime
 
 from data_gen import StatefulDataGenerator
 from model import KernelModel
@@ -13,7 +14,6 @@ from objectives import MaxIronMassTrackingObjective
 from mpc import MPCController
 from utils import (
     run_post_simulation_analysis_enhanced, diagnose_mpc_behavior, diagnose_ekf_detailed
-    
 )
 from ekf import ExtendedKalmanFilter
 from anomaly_detector import SignalAnomalyDetector
@@ -32,6 +32,10 @@ from config_manager import (
     list_saved_results,
     get_config_info  # ✅ ДОДАНО цей імпорт
 )
+
+from evaluation_simple import evaluate_simulation
+from evaluation_storage import quick_save, quick_load  
+from evaluation_database import quick_add_to_database
 
 # =============================================================================
 # === БЛОК 1: ПІДГОТОВКА ДАНИХ ТА СКАЛЕРІВ ===
@@ -1027,6 +1031,30 @@ def simulate_mpc(
                 import traceback
                 traceback.print_exc()  # ✅ ДОДАНО для кращої діагностики
             print("="*60)
+            
+        if True: #self.auto_save:
+            # Автоматичне оцінювання та збереження
+            eval_results = evaluate_simulation(results_df, analysis_data, params)
+            
+            # Збереження у файл
+            file_path = quick_save(
+                results_df=results_df,
+                eval_results=eval_results,
+                analysis_data=analysis_data,
+                params=params,
+                description=f"Автосимуляція {datetime.now()}"
+            )
+            
+            if True: # self.database_logging:
+                # Додавання до БД
+                eval_id = quick_add_to_database(
+                    package=quick_load(file_path),
+                    series_id="production_runs",
+                    tags=["auto", "production"]
+                )
+                
+                print(f"✅ Симуляція збережена: файл {file_path}, БД ID {eval_id}")
+        
         
         # ✅ ВИПРАВО: ОВ'ЯЗКОВО повертаємо результат
         return results_df, metrics

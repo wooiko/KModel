@@ -652,7 +652,7 @@ def simulate_mpc_with_config(
     manual_overrides: Optional[Dict[str, Any]] = None,
     progress_callback: Optional[Callable] = None,
     save_results: bool = True,
-    show_evaluation_plots: bool = False,  # ✅ ДОДАЄМО НОВИЙ ПАРАМЕТР
+    show_evaluation_plots: bool = False,
     **kwargs
 ) -> Tuple[pd.DataFrame, Dict]:
     """
