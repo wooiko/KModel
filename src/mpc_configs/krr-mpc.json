@@ -1,8 +1,8 @@
 {
-    "name": "conservative",
-    "description": "Консервативна конфігурація для стабільної роботи (K-MPC)",
-    "N_data": 2000,
-    "control_pts": 200,
+    "name": "krr-mpc",
+    "description": "KRR-MPC",
+    "N_data": 5000,
+    "control_pts": 500,
     "seed": 42,
     "model_type": "krr",
     "kernel": "rbf",
@@ -10,26 +10,26 @@
     "Np": 6,
     "Nc": 4,
     "lag": 2,
-    "λ_obj": 0.2,
+    "λ_obj": 1.0,
     "w_fe": 5.0,
-    "w_mass": 1.0,
-    "ref_fe": 53.5,
-    "ref_mass": 57.0,
+    "w_mass": 2.0,
+    "ref_fe": 54.0,
+    "ref_mass": 58.0,
     "tolerance_fe_percent": 1.5,
     "tolerance_mass_percent": 2.0,
     "adaptive_trust_region": true,
-    "initial_trust_radius": 1.0,
+    "initial_trust_radius": 2.0,
     "min_trust_radius": 0.5,
-    "max_trust_radius": 3.0,
+    "max_trust_radius": 2.0,
     "trust_decay_factor": 0.9,
     "rho_trust": 0.3,
     "P0": 0.01,
-    "Q_phys": 800,
+    "Q_phys": 600,
     "Q_dist": 1,
-    "R": 0.5,
+    "R": 1.0,
     "q_adaptive_enabled": true,
-    "q_alpha": 0.95,
-    "q_nis_threshold": 2.0,
+    "q_alpha": 0.9,
+    "q_nis_threshold": 3.0,
     "enable_retraining": true,
     "retrain_period": 50,
     "retrain_innov_threshold": 0.3,
@@ -40,7 +40,17 @@
     "u_max": 40.0,
     "plant_model_type": "rf",
     "noise_level": "low",
-    "enable_nonlinear": false,
+    "enable_nonlinear": true,
+    "nonlinear_config": {
+        "concentrate_fe_percent": [
+            "pow",
+            2
+        ],
+        "concentrate_mass_flow": [
+            "pow",
+            1.5
+        ]
+    },
     "anomaly_params": {
         "window": 25,
         "spike_z": 4.0,
@@ -48,5 +58,5 @@
         "freeze_len": 5,
         "enabled": true
     },
-    "run_analysis": true
+    "run_analysis": false
 }

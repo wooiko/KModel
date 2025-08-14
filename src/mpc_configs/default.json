@@ -46,7 +46,7 @@
     "min_trust_radius": 0.5,
     "max_trust_radius": 2.0,
     "trust_decay_factor": 0.9,
-    "rho_trust": 0.5,
+    "rho_trust": 0.3,
     "linearization_check_enabled": true,
     "max_linearization_distance": 0.8,
     "retrain_linearization_threshold": 1.0,

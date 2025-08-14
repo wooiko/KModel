@@ -406,7 +406,7 @@ def create_default_configs() -> None:
             "enabled": True
         },
         
-        "run_analysis": True
+        "run_analysis": False
     }
     
     # 🆕 ПОЛІНОМІАЛЬНА КОНФІГУРАЦІЯ (L-MPC) - Ridge
@@ -556,6 +556,270 @@ def create_default_configs() -> None:
         save_config(config, config_name)
     
     print(f"✅ Створено {len(configs)} стандартних конфігурацій (включаючи L-MPC)")
+
+def create_default_configs_ext() -> None:
+    """
+    Створює стандартні конфігурації MPC з підтримкою L-MPC.
+    """
+    _ensure_config_dir_exists()
+    
+    # KRR-MPC
+    krr_mpc = {
+        "name": "krr-mpc",
+        "description": "KRR-MPC",
+        
+        # Основні параметри
+        "N_data": 5000,
+        "control_pts": 500,
+        "seed": 42,
+        
+        # Модель
+        "model_type": "krr",
+        "kernel": "rbf",
+        "find_optimal_params": True,
+        
+        # MPC параметри
+        "Np": 6,
+        "Nc": 4,
+        "lag": 2,
+        "λ_obj": 0.1,
+        
+        # Ваги та уставки
+        "w_fe": 5.0,
+        "w_mass": 2.0,
+        "ref_fe": 54.0,
+        "ref_mass": 58.0,
+        "tolerance_fe_percent": 1.5,
+        "tolerance_mass_percent": 2.0,
+        
+        # Trust region
+        "adaptive_trust_region": True,
+        "initial_trust_radius": 2.0,
+        "min_trust_radius": 0.5,
+        "max_trust_radius": 2.0,
+        "trust_decay_factor": 0.9,
+        "rho_trust": 0.3,
+        
+        # EKF параметри
+        "P0": 0.01,
+        "Q_phys": 600,
+        "Q_dist": 1,
+        "R": 1.0,
+        "q_adaptive_enabled": True,
+        "q_alpha": 0.90,
+        "q_nis_threshold": 3.0,
+        
+        # Перенавчання
+        "enable_retraining": True,
+        "retrain_period": 50,
+        "retrain_innov_threshold": 0.3,
+        "retrain_window_size": 1000,
+        
+        # Обмеження
+        "use_soft_constraints": True,
+        "delta_u_max": 0.8,
+        "u_min": 20.0,
+        "u_max": 40.0,
+        
+        # Процес
+        "plant_model_type": "rf",
+        "noise_level": "low",
+
+        # Нелінійність
+        "enable_nonlinear": True,
+        "nonlinear_config": {
+            "concentrate_fe_percent": ["pow", 2],
+            "concentrate_mass_flow": ["pow", 1.5]
+        },
+        
+        # Аномалії
+        "anomaly_params": {
+            "window": 25,
+            "spike_z": 4.0,
+            "drop_rel": 0.30,
+            "freeze_len": 5,
+            "enabled": True
+        },
+        
+        "run_analysis": False
+    }
+    
+    # SVR-MPC
+    svr_mpc = {
+        "name": "svr-mpc",
+        "description": "svr-MPC",
+        
+        # Основні параметри
+        "N_data": 5000,
+        "control_pts": 500,
+        "seed": 42,
+        
+        # Модель
+        "model_type": "svr",
+        "kernel": "rbf",
+        "find_optimal_params": True,
+        
+        # MPC параметри
+        "Np": 6,
+        "Nc": 4,
+        "lag": 2,
+        "λ_obj": 0.1,
+        
+        # Ваги та уставки
+        "w_fe": 5.0,
+        "w_mass": 2.0,
+        "ref_fe": 54.0,
+        "ref_mass": 58.0,
+        "tolerance_fe_percent": 1.5,
+        "tolerance_mass_percent": 2.0,
+        
+        # Trust region
+        "adaptive_trust_region": True,
+        "initial_trust_radius": 2.0,
+        "min_trust_radius": 0.5,
+        "max_trust_radius": 2.0,
+        "trust_decay_factor": 0.9,
+        "rho_trust": 0.3,
+        
+        # EKF параметри
+        "P0": 0.01,
+        "Q_phys": 600,
+        "Q_dist": 1,
+        "R": 1.0,
+        "q_adaptive_enabled": True,
+        "q_alpha": 0.90,
+        "q_nis_threshold": 3.0,
+        
+        # Перенавчання
+        "enable_retraining": True,
+        "retrain_period": 50,
+        "retrain_innov_threshold": 0.3,
+        "retrain_window_size": 1000,
+        
+        # Обмеження
+        "use_soft_constraints": True,
+        "delta_u_max": 0.8,
+        "u_min": 20.0,
+        "u_max": 40.0,
+        
+        # Процес
+        "plant_model_type": "rf",
+        "noise_level": "low",
+
+        # Нелінійність
+        "enable_nonlinear": True,
+        "nonlinear_config": {
+            "concentrate_fe_percent": ["pow", 2],
+            "concentrate_mass_flow": ["pow", 1.5]
+        },
+        
+        # Аномалії
+        "anomaly_params": {
+            "window": 25,
+            "spike_z": 4.0,
+            "drop_rel": 0.30,
+            "freeze_len": 5,
+            "enabled": True
+        },
+        
+        "run_analysis": False
+    }
+
+    # LIN-MPC
+    lin_mpc = {
+        "name": "lin-mpc",
+        "description": "lin-MPC",
+        
+        # Основні параметри
+        "N_data": 5000,
+        "control_pts": 500,
+        "seed": 42,
+        
+        # 🎯 ПОЛІНОМІАЛЬНА МОДЕЛЬ
+        "model_type": "linear",
+        "linear_type": "ridge",
+        "poly_degree": 2,
+        "include_bias": True,
+        "find_optimal_params": True,
+        "alpha": 1.0,  # Початкове значення для Ridge
+        
+        # MPC параметри
+        "Np": 6,
+        "Nc": 4,
+        "lag": 2,
+        "λ_obj": 0.1,
+        
+        # Ваги та уставки
+        "w_fe": 5.0,
+        "w_mass": 2.0,
+        "ref_fe": 54.0,
+        "ref_mass": 58.0,
+        "tolerance_fe_percent": 1.5,
+        "tolerance_mass_percent": 2.0,
+        
+        # Trust region
+        "adaptive_trust_region": True,
+        "initial_trust_radius": 2.0,
+        "min_trust_radius": 0.5,
+        "max_trust_radius": 2.0,
+        "trust_decay_factor": 0.9,
+        "rho_trust": 0.3,
+        
+        # EKF параметри
+        "P0": 0.01,
+        "Q_phys": 600,
+        "Q_dist": 1,
+        "R": 1.0,
+        "q_adaptive_enabled": True,
+        "q_alpha": 0.90,
+        "q_nis_threshold": 3.0,
+        
+        # Перенавчання
+        "enable_retraining": True,
+        "retrain_period": 50,
+        "retrain_innov_threshold": 0.3,
+        "retrain_window_size": 1000,
+        
+        # Обмеження
+        "use_soft_constraints": True,
+        "delta_u_max": 0.8,
+        "u_min": 20.0,
+        "u_max": 40.0,
+        
+        # Процес
+        "plant_model_type": "rf",
+        "noise_level": "low",
+
+        # Нелінійність
+        "enable_nonlinear": True,
+        "nonlinear_config": {
+            "concentrate_fe_percent": ["pow", 2],
+            "concentrate_mass_flow": ["pow", 1.5]
+        },
+        
+        # Аномалії
+        "anomaly_params": {
+            "window": 25,
+            "spike_z": 4.0,
+            "drop_rel": 0.30,
+            "freeze_len": 5,
+            "enabled": True
+        },
+        
+        "run_analysis": False
+    }
+    
+  
+    
+    # Зберігаємо конфігурації
+    configs = [krr_mpc, svr_mpc, lin_mpc]
+    
+    for config in configs:
+        config_name = config["name"]
+        save_config(config, config_name)
+    
+    print(f"✅ Створено {len(configs)} стандартних конфігурацій (включаючи L-MPC)")
+
 
 def prompt_manual_adjustments(base_config: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -972,3 +1236,7 @@ def list_saved_results() -> List[Dict[str, str]]:
         errors.append("model_type повинен бути одним з: krr, svr, linear, gpr")
     
     return len(errors) == 0, errors
+
+if __name__ == '__main__':
+    create_default_configs_ext()
+    
