@@ -831,7 +831,7 @@ def create_default_configs_ext() -> None:
         "Np": 6,
         "Nc": 4,
         "lag": 2,
-        "λ_obj": 0.1,
+        "λ_obj": 0.5,
         
         # Ваги та уставки
         "w_fe": 5.0,
@@ -843,11 +843,14 @@ def create_default_configs_ext() -> None:
         
         # Trust region
         "adaptive_trust_region": True,
-        "initial_trust_radius": 2.0,
-        "min_trust_radius": 0.5,
-        "max_trust_radius": 2.0,
-        "trust_decay_factor": 0.9,
-        "rho_trust": 0.3,
+        "initial_trust_radius": 0.6,
+        "min_trust_radius": 0.42,
+        "max_trust_radius": 1.0,
+        "trust_decay_factor": 0.96,
+        "rho_trust": 0.02,
+        "linearization_check_enabled": True,
+        "max_linearization_distance": 0.8,
+        "retrain_linearization_threshold": 1.0,
         
         # EKF параметри
         "P0": 0.01,

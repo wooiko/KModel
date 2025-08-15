@@ -217,65 +217,165 @@ class MPCController:
 
     def check_linearization_validity(self, X_current_scaled, X_predicted_scaled):
         """
-        ПОКРАЩЕНА перевірка валідності лінеаризації.
+        ПОКРАЩЕНА перевірка валідності лінеаризації з більш розумними критеріями.
         """
         if not self.linearization_check_enabled:
             return True, 0.0
             
-        # Обчислюємо евклідову відстань
-        distance = np.linalg.norm(X_predicted_scaled - X_current_scaled)
-        
-        # Також перевіряємо максимальну покомпонентну відстань
+        # Обчислюємо різні метрики відстані
+        euclidean_distance = np.linalg.norm(X_predicted_scaled - X_current_scaled)
         max_component_distance = np.max(np.abs(X_predicted_scaled - X_current_scaled))
+        mean_component_distance = np.mean(np.abs(X_predicted_scaled - X_current_scaled))
         
-        # Використовуємо більш строгий критерій
-        is_valid = (distance < self.max_linearization_distance and 
-                    max_component_distance < self.max_linearization_distance * 0.8)
+        # ПОКРАЩЕНІ критерії валідності
+        # 1. Евклідова відстань не повинна бути надто великою
+        euclidean_valid = euclidean_distance < self.max_linearization_distance
         
-        # Зберігаємо детальнішу історію
-        self.linearization_quality_history.append({
-            'euclidean_distance': distance,
+        # 2. Максимальна компонентна відстань (більш м'який критерій)
+        max_component_valid = max_component_distance < self.max_linearization_distance * 1.2
+        
+        # 3. Середня компонентна відстань для загальної оцінки
+        mean_component_valid = mean_component_distance < self.max_linearization_distance * 0.7
+        
+        # Комбіновані критерії: принаймні 2 з 3 повинні виконуватися
+        validity_score = sum([euclidean_valid, max_component_valid, mean_component_valid])
+        is_valid = validity_score >= 2
+        
+        # Зберігаємо детальнішу історію для аналізу
+        quality_record = {
+            'euclidean_distance': euclidean_distance,
             'max_component_distance': max_component_distance,
-            'is_valid': is_valid
-        })
+            'mean_component_distance': mean_component_distance,
+            'is_valid': is_valid,
+            'validity_score': validity_score,
+            'current_trust_radius': self.trust_region_radius
+        }
         
-        if len(self.linearization_quality_history) > 100:  # Обмежуємо розмір
+        self.linearization_quality_history.append(quality_record)
+        
+        # Обмежуємо розмір історії
+        if len(self.linearization_quality_history) > 100:
             self.linearization_quality_history.pop(0)
-            
-        return is_valid, distance
+        
+        # Діагностична інформація
+        if not is_valid:
+            print(f"  -> ⚠️  Лінеаризація не валідна: eucl={euclidean_distance:.3f}, "
+                  f"max_comp={max_component_distance:.3f}, mean_comp={mean_component_distance:.3f}")
+        
+        return is_valid, euclidean_distance
 
     def update_trust_region(self, predicted_cost_reduction, actual_cost_reduction):
         """
-        ВИПРАВЛЕНИЙ метод адаптивного оновлення регіону довіри.
+        Ультра-стабільна версія з максимальним згладжуванням та обмеженнями.
         """
         if not self.adaptive_trust_region:
             return
-            
-        # Уникаємо ділення на нуль та дуже малі значення
-        if abs(predicted_cost_reduction) < 1e-6:
-            return
-            
-        # Коефіцієнт якості прогнозу
-        ratio = actual_cost_reduction / predicted_cost_reduction
         
-        print(f"  -> Trust region update: ratio={ratio:.3f}, pred={predicted_cost_reduction:.4f}, actual={actual_cost_reduction:.4f}")
+        # Ініціалізація компонентів стабілізації
+        if not hasattr(self, 'radius_ema'):  # Exponential Moving Average
+            self.radius_ema = self.trust_region_radius
+            self.stability_counter = 0
+            self.last_valid_ratio = 1.0
+            self.aggressive_mode = False
         
-        # ВИПРАВЛЕНА логіка адаптації
-        if ratio > 0.75:  # Дуже хороший прогноз
-            new_radius = min(self.trust_region_radius * 1.25, self.max_trust_radius)
-            print(f"  -> Збільшуємо trust region: {self.trust_region_radius:.3f} -> {new_radius:.3f}")
-            self.trust_region_radius = new_radius
+        # Обчислення цільового радіуса
+        if abs(predicted_cost_reduction) < 1e-8:
+            target_adjustment = 1.0  # Без змін при невизначеності
+        else:
+            ratio = actual_cost_reduction / predicted_cost_reduction
+            self.last_valid_ratio = ratio
             
-        elif ratio > 0.25:  # Прийнятний прогноз - невелике зменшення
-            new_radius = max(self.trust_region_radius * 0.95, self.min_trust_radius)
-            if abs(new_radius - self.trust_region_radius) > 0.01:
-                print(f"  -> Легко зменшуємо trust region: {self.trust_region_radius:.3f} -> {new_radius:.3f}")
-            self.trust_region_radius = new_radius
+            # КОНСЕРВАТИВНІ коефіцієнти адаптації
+            if ratio > 0.95:      # Ідеальний прогноз
+                adjustment = 1.15  # +15%
+            elif ratio > 0.8:     # Відмінний прогноз  
+                adjustment = 1.08  # +8%
+            elif ratio > 0.6:     # Хороший прогноз
+                adjustment = 1.03  # +3%
+            elif ratio > 0.4:     # Прийнятний прогноз
+                adjustment = 1.0   # Без змін
+            elif ratio > 0.2:     # Слабкий прогноз
+                adjustment = 0.95  # -5%
+            elif ratio > 0.1:     # Поганий прогноз
+                adjustment = 0.9   # -10%
+            else:                 # Критично поганий
+                adjustment = 0.8   # -20%
             
-        else:  # Поганий прогноз - суттєве зменшення
-            new_radius = max(self.trust_region_radius * 0.7, self.min_trust_radius)
-            print(f"  -> Сильно зменшуємо trust region: {self.trust_region_radius:.3f} -> {new_radius:.3f}")
-            self.trust_region_radius = new_radius
+            target_adjustment = adjustment
+        
+        # Цільовий радіус з обмеженнями
+        target_radius = self.trust_region_radius * target_adjustment
+        target_radius = np.clip(target_radius, self.min_trust_radius, self.max_trust_radius)
+        
+        # ЕКСПОНЕНЦІЙНЕ ЗГЛАДЖУВАННЯ з адаптивним коефіцієнтом
+        base_alpha = 0.15  # Базовий коефіцієнт згладжування (дуже повільний)
+        
+        # Адаптивний коефіцієнт залежно від стабільності
+        if hasattr(self, 'trust_region_history') and len(self.trust_region_history) > 5:
+            recent_changes = [abs(h.get('change', 0)) for h in self.trust_region_history[-5:]]
+            instability = np.mean(recent_changes)
+            
+            if instability > 0.2:  # Висока нестабільність - ще більше згладжування
+                alpha = base_alpha * 0.5
+                self.aggressive_mode = True
+            elif instability < 0.05:  # Стабільний період - трохи швидше
+                alpha = base_alpha * 1.5
+                self.aggressive_mode = False
+            else:
+                alpha = base_alpha
+        else:
+            alpha = base_alpha
+        
+        # Експоненційне згладжування
+        self.radius_ema = alpha * target_radius + (1 - alpha) * self.radius_ema
+        
+        # ЖОРСТКЕ ОБМЕЖЕННЯ ШВИДКОСТІ ЗМІНИ
+        max_change_pct = 0.08 if self.aggressive_mode else 0.12  # 8-12% за крок
+        max_change = self.trust_region_radius * max_change_pct
+        
+        change = self.radius_ema - self.trust_region_radius
+        if abs(change) > max_change:
+            change = np.sign(change) * max_change
+        
+        # Фінальне оновлення
+        old_radius = self.trust_region_radius
+        self.trust_region_radius = old_radius + change
+        
+        # Додаткова стабілізація - уникнення дрібних коливань
+        if abs(change) < 0.01:
+            self.stability_counter += 1
+            if self.stability_counter > 5:  # 5 кроків малих змін
+                self.trust_region_radius = self.radius_ema  # Перехід до EMA
+                self.stability_counter = 0
+        else:
+            self.stability_counter = 0
+        
+        # Зберігаємо розширену історію
+        if not hasattr(self, 'trust_region_history'):
+            self.trust_region_history = []
+        
+        self.trust_region_history.append({
+            'old_radius': old_radius,
+            'target_radius': target_radius,
+            'target_adjustment': target_adjustment,
+            'ema_radius': self.radius_ema,
+            'final_radius': self.trust_region_radius,
+            'change': change,
+            'alpha_used': alpha,
+            'aggressive_mode': self.aggressive_mode,
+            'stability_counter': self.stability_counter,
+            'ratio': getattr(self, 'last_valid_ratio', None)
+        })
+        
+        # Обмеження історії
+        if len(self.trust_region_history) > 100:
+            self.trust_region_history = self.trust_region_history[-50:]
+        
+        # Логування тільки значних змін
+        if abs(change) > 0.05:
+            mode_str = " [AGGRESSIVE]" if self.aggressive_mode else ""
+            direction = "↗" if change > 0 else "↘"
+            print(f"  -> {direction} Trust region: {old_radius:.3f} -> {self.trust_region_radius:.3f}{mode_str}")
 
     def _estimate_cost_reduction(self, u_optimal, u_prev):
         """
