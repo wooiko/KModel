@@ -843,11 +843,11 @@ def create_default_configs_ext() -> None:
         
         # Trust region
         "adaptive_trust_region": True,
-        "initial_trust_radius": 0.6,
+        "initial_trust_radius": 0.5,
         "min_trust_radius": 0.42,
         "max_trust_radius": 1.0,
         "trust_decay_factor": 0.96,
-        "rho_trust": 0.02,
+        "rho_trust": 0.015,
         "linearization_check_enabled": True,
         "max_linearization_distance": 0.8,
         "retrain_linearization_threshold": 1.0,
@@ -886,10 +886,10 @@ def create_default_configs_ext() -> None:
         
         # Аномалії
         "anomaly_params": {
-            "window": 25,
-            "spike_z": 4.0,
-            "drop_rel": 0.30,
-            "freeze_len": 5,
+            "window": 15,
+            "spike_z": 2.5,
+            "drop_rel": 0.15,
+            "freeze_len": 4,
             "enabled": True
         },
         
