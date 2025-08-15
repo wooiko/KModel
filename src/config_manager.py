@@ -809,10 +809,92 @@ def create_default_configs_ext() -> None:
         "run_analysis": False
     }
     
-  
+    # KRR-MPC-TEST
+    krr_test = {
+        "name": "krr-test",
+        "description": "KRR-MPC-TEST",
+        
+        # Основні параметри
+        "N_data": 5000,
+        "control_pts": 500,
+        "seed": 42,
+        "train_size": 0.9,
+        "val_size": 0.08,
+        "test_size": 0.02,
+        
+        # Модель
+        "model_type": "krr",
+        "kernel": "rbf",
+        "find_optimal_params": True,
+        
+        # MPC параметри
+        "Np": 6,
+        "Nc": 4,
+        "lag": 2,
+        "λ_obj": 0.1,
+        
+        # Ваги та уставки
+        "w_fe": 5.0,
+        "w_mass": 2.0,
+        "ref_fe": 54.0,
+        "ref_mass": 58.0,
+        "tolerance_fe_percent": 1.5,
+        "tolerance_mass_percent": 2.0,
+        
+        # Trust region
+        "adaptive_trust_region": True,
+        "initial_trust_radius": 2.0,
+        "min_trust_radius": 0.5,
+        "max_trust_radius": 2.0,
+        "trust_decay_factor": 0.9,
+        "rho_trust": 0.3,
+        
+        # EKF параметри
+        "P0": 0.01,
+        "Q_phys": 600,
+        "Q_dist": 1,
+        "R": 1.0,
+        "q_adaptive_enabled": True,
+        "q_alpha": 0.90,
+        "q_nis_threshold": 3.0,
+        
+        # Перенавчання
+        "enable_retraining": True,
+        "retrain_period": 50,
+        "retrain_innov_threshold": 0.3,
+        "retrain_window_size": 1000,
+        
+        # Обмеження
+        "use_soft_constraints": True,
+        "delta_u_max": 0.8,
+        "u_min": 20.0,
+        "u_max": 40.0,
+        
+        # Процес
+        "plant_model_type": "rf",
+        "noise_level": "low",
+
+        # Нелінійність
+        "enable_nonlinear": True,
+        "nonlinear_config": {
+            "concentrate_fe_percent": ["pow", 2],
+            "concentrate_mass_flow": ["pow", 1.5]
+        },
+        
+        # Аномалії
+        "anomaly_params": {
+            "window": 25,
+            "spike_z": 4.0,
+            "drop_rel": 0.30,
+            "freeze_len": 5,
+            "enabled": True
+        },
+        
+        "run_analysis": False
+    }
     
     # Зберігаємо конфігурації
-    configs = [krr_mpc, svr_mpc, lin_mpc]
+    configs = [krr_mpc, svr_mpc, lin_mpc, krr_test]
     
     for config in configs:
         config_name = config["name"]

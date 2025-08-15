@@ -541,7 +541,8 @@ def calculate_ekf_metrics(analysis_data: Dict) -> Dict[str, float]:
 
 def calculate_trust_region_metrics(analysis_data: Dict) -> Dict[str, float]:
     """
-    Розраховує метрики ефективності Trust Region механізму
+    Розраховує метрики ефективності Trust Region механізму.
+    *** ВЕРСІЯ ВИПРАВЛЕНА для коректного розрахунку адаптивності. ***
     
     Args:
         analysis_data: Словник з даними симуляції включаючи Trust Region статистику
@@ -550,10 +551,8 @@ def calculate_trust_region_metrics(analysis_data: Dict) -> Dict[str, float]:
         Словник з Trust Region метриками
     """
     
-    # Витягуємо дані Trust Region
     trust_region_stats = analysis_data.get('trust_region_stats', [])
     
-    # Перевіряємо наявність даних
     if not trust_region_stats:
         print("⚠️ Trust Region дані недоступні, використовуємо нульові значення")
         return {
@@ -565,50 +564,57 @@ def calculate_trust_region_metrics(analysis_data: Dict) -> Dict[str, float]:
             'trust_stability_index': 0.0
         }
     
-    # Витягуємо радіуси з кожного кроку
     trust_radii = []
-    radius_increases = 0
-    radius_decreases = 0
-    
+    # Витягуємо лише значення радіусів з будь-якої структури даних
     for stats in trust_region_stats:
-        if isinstance(stats, dict) and 'current_radius' in stats:
-            trust_radii.append(stats['current_radius'])
-            
-            # Підрахунок змін радіуса (якщо доступно)
-            if 'radius_increased' in stats and stats['radius_increased']:
-                radius_increases += 1
-            if 'radius_decreased' in stats and stats['radius_decreased']:
-                radius_decreases += 1
+        if isinstance(stats, dict):
+            # Універсальний пошук ключа з радіусом
+            radius = stats.get('current_radius', stats.get('radius'))
+            if radius is not None:
+                trust_radii.append(float(radius))
         elif isinstance(stats, (int, float)):
-            # Якщо stats це просто число (радіус)
             trust_radii.append(float(stats))
-    
+
     if not trust_radii:
+        # Повертаємо нулі, якщо не вдалося витягти радіуси
         return {
-            'trust_radius_mean': 0.0,
-            'trust_radius_std': 0.0,
-            'trust_radius_min': 0.0,
-            'trust_radius_max': 0.0,
-            'trust_adaptivity_coeff': 0.0,
-            'trust_stability_index': 0.0
+            'trust_radius_mean': 0.0, 'trust_radius_std': 0.0,
+            'trust_radius_min': 0.0, 'trust_radius_max': 0.0,
+            'trust_adaptivity_coeff': 0.0, 'trust_stability_index': 0.0
         }
     
     trust_radii = np.array(trust_radii)
     
-    # 1. Базова статистика радіуса
+    # 1. Базова статистика радіуса (без змін)
     trust_radius_mean = float(np.mean(trust_radii))
     trust_radius_std = float(np.std(trust_radii))
     trust_radius_min = float(np.min(trust_radii))
     trust_radius_max = float(np.max(trust_radii))
     
-    # 2. Коефіцієнт адаптивності (наскільки активно змінюється радіус)
+    # --- ✅ ЗМІНЕНО: ЛОГІКА РОЗРАХУНКУ АДАПТИВНОСТІ ---
+    radius_increases = 0
+    radius_decreases = 0
+    epsilon = 1e-9 # Мала величина для порівняння float
+
+    # Проходимо по масиву радіусів і порівнюємо сусідні значення
+    for i in range(1, len(trust_radii)):
+        diff = trust_radii[i] - trust_radii[i-1]
+        if diff > epsilon:
+            radius_increases += 1
+        elif diff < -epsilon:
+            radius_decreases += 1
+            
     total_changes = radius_increases + radius_decreases
-    if len(trust_radii) > 0:
-        trust_adaptivity_coeff = total_changes / len(trust_radii)
+    
+    # 2. Коефіцієнт адаптивності (тепер буде розрахований коректно)
+    if len(trust_radii) > 1:
+        # Ділимо на (N-1), оскільки є (N-1) можливих змін
+        trust_adaptivity_coeff = total_changes / (len(trust_radii) - 1)
     else:
         trust_adaptivity_coeff = 0.0
+    # --- КІНЕЦЬ ЗМІН ---
     
-    # 3. Індекс стабільності Trust Region (обернений до коефіцієнта варіації)
+    # 3. Індекс стабільності Trust Region (без змін)
     if trust_radius_mean > 0:
         cv = trust_radius_std / trust_radius_mean
         trust_stability_index = 1 / (1 + cv)
