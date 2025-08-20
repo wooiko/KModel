@@ -9,46 +9,58 @@ class ExtendedKalmanFilter:
                  model: KernelModel,
                  x_scaler: StandardScaler,
                  y_scaler: StandardScaler,
-                 x0: np.ndarray,            # <<< ПЕРЕВІРТЕ ЦЕЙ РЯДОК: Початковий стан [x_phys_unscaled, d_scaled]
+                 x0: np.ndarray,            # ✅ ВИПРАВЛЕНО: Консистентний початковий стан
                  P0: np.ndarray,            # Початкова коваріація невизначеності
                  Q: np.ndarray,             # Коваріація шуму процесу
-                 R: np.ndarray,             # Початкова (мінімальна) коваріація шуму вимірювань для адаптивної R
+                 R: np.ndarray,             # Початкова коваріація шуму вимірювань для адаптивної R
                  lag: int,
                  beta_R: float = 0.5,
                  q_adaptive_enabled: bool = True,
                  q_alpha: float = 0.98,
-                 q_nis_threshold: float = 1.5):
-
+                 q_nis_threshold: float = 1.5,
+                 use_scaled_state: bool = True):  # ✅ НОВИЙ: Флаг масштабування
+    
         self._debug_count = 0  # Для діагностики
-
+    
         self.model = model
         self.x_scaler = x_scaler
         self.y_scaler = y_scaler
         self.L = lag
-        self.n_phys = (lag + 1) * 3  # Розмірність фізичної частини стану (L+1 блоків по 3 змінні)
-        self.n_dist = R.shape[0]     # Розмірність вектора збурень (дисторбансів)
+        self.n_phys = (lag + 1) * 3  # Розмірність фізичної частини стану
+        self.n_dist = R.shape[0]     # Розмірність вектора збурень
         self.n_aug = self.n_phys + self.n_dist # Загальна розмірність розширеного стану
-
-        # Стан та коваріація (фізичний стан зберігаємо в оригінальному масштабі, збурення - в масштабованому)
+        
+        # ✅ ВИПРАВЛЕННЯ: Флаг для відстеження масштабування
+        self.use_scaled_state = use_scaled_state
+    
+        # ✅ ВИПРАВЛЕННЯ: Стан тепер консистентно масштабований
+        # Якщо use_scaled_state=True: ВСЯ x_hat (і фізична, і збурення) масштабовані
+        # Якщо use_scaled_state=False: ВСЯ x_hat немасштабована (для зворотної сумісності)
         self.x_hat = x0.copy()
         self.P = P0.copy()
-
+        
+        if self.use_scaled_state:
+            print(f"   ✅ EKF initialized with SCALED state (all components scaled)")
+            print(f"      State range: [{self.x_hat.min():.3f}, {self.x_hat.max():.3f}]")
+        else:
+            print(f"   ⚠️  EKF initialized with UNSCALED state (legacy mode)")
+    
         # Матриці шумів
         self.Q = Q
         self._R_initial = R 
         self.R = R 
         self.beta_R = beta_R 
-
-        # --- Адаптація Q ---
+    
+        # Адаптація Q
         self.q_adaptive_enabled = q_adaptive_enabled
-        self.q_alpha = q_alpha  # Фактор "забування" для q_scale
-        self.q_nis_threshold = q_nis_threshold # Поріг для збільшення Q
-        self.q_scale = 1.0      # Початковий коефіцієнт масштабування для Q
+        self.q_alpha = q_alpha
+        self.q_nis_threshold = q_nis_threshold
+        self.q_scale = 1.0
         
         # Матриця переходу стану F
         self._build_state_transition_matrix()
         
-        # Новий атрибут для зберігання останньої інновації
+        # Атрибут для зберігання останньої інновації
         self.last_innovation = None        
 
     def _build_state_transition_matrix(self):
@@ -107,92 +119,85 @@ class ExtendedKalmanFilter:
 
 
     def update(self, z_k: np.ndarray):
-        """EKF update step з мінімальною діагностикою"""
+        """EKF update step with consistent scaling"""
         
-        # ✅ Основні обчислення (без змін)
-        x_phys_for_model = self.x_hat[self.n_phys-9:self.n_phys].reshape(1, -1)
-        d_scaled = self.x_hat[self.n_phys:]
-        x_phys_scaled = self.x_scaler.transform(x_phys_for_model)
-        
-        # ✅ МІНІМАЛЬНА діагностика - ТІЛЬКИ критичні помилки
-        if not hasattr(self, '_debug_count'):
-            self._debug_count = 0
-            self._error_count = 0
-        
-        # 🔥 ТІЛЬКИ якщо є проблеми або перші 2 кроки
-        show_debug = (
-            self._debug_count < 2 or  # Перші 2 кроки
-            np.any(x_phys_scaled < -4) or np.any(x_phys_scaled > 4)  # Екстремальна екстраполяція
-        )
-        
-        if show_debug:
-            y_pred_test = self.model.predict(x_phys_scaled)[0]
+        # ✅ ВИПРАВЛЕННЯ: Обробка стану залежно від масштабування
+        if self.use_scaled_state:
+            # Весь стан вже масштабований, просто беремо фізичну частину
+            x_phys_scaled = self.x_hat[:self.n_phys].reshape(1, -1)
+            d_scaled = self.x_hat[self.n_phys:]
             
-            # 🚨 ТІЛЬКИ критичні попередження
-            if abs(y_pred_test[0]) > 50 or abs(y_pred_test[1]) > 50:
-                print(f"❌ EKF step {self._debug_count}: Модель передбачає нереальні значення: {y_pred_test}")
-                self._error_count += 1
-            elif self._debug_count < 2:
-                print(f"✅ EKF step {self._debug_count}: Модель OK, pred={y_pred_test}")
+            # Діагностика для перших кроків
+            if not hasattr(self, '_debug_count'):
+                self._debug_count = 0
             
-            self._debug_count += 1
+            if self._debug_count < 3:
+                print(f"   📊 EKF step {self._debug_count}: Using SCALED state directly")
+                print(f"      Physical state range: [{x_phys_scaled.min():.3f}, {x_phys_scaled.max():.3f}]")
+                print(f"      Disturbances: [{d_scaled.min():.3f}, {d_scaled.max():.3f}]")
+                self._debug_count += 1
+            else:
+                self._debug_count += 1
+                
         else:
-            self._debug_count += 1
+            # Legacy режим: фізична частина немасштабована, потрібно масштабувати
+            x_phys_unscaled = self.x_hat[:self.n_phys].reshape(1, -1)
+            x_phys_scaled = self.x_scaler.transform(x_phys_unscaled)
+            d_scaled = self.x_hat[self.n_phys:]
+            
+            if not hasattr(self, '_debug_count'):
+                self._debug_count = 0
+            
+            if self._debug_count < 3:
+                print(f"   ⚠️  EKF step {self._debug_count}: Converting UNSCALED to scaled state")
+                self._debug_count += 1
+            else:
+                self._debug_count += 1
         
-        # ✅ Основні обчислення (без змін)
+        # ✅ Основні обчислення EKF (без змін)
         W_local_scaled, _ = self.model.linearize(x_phys_scaled)
         
         H_k = np.zeros((self.n_dist, self.n_aug))
-        start_idx = self.n_phys - 9
+        start_idx = self.n_phys - 9  # Останні 3 точки (9 значень)
         H_k[:, start_idx:self.n_phys] = (
             np.diag(1.0 / self.y_scaler.scale_) @ W_local_scaled.T
         )
         H_k[:, self.n_phys:] = np.eye(self.n_dist)
         
+        # Передбачення виходу
         y_pred_scaled = self.model.predict(x_phys_scaled)[0]
+        y_pred_unscaled = self.y_scaler.inverse_transform(y_pred_scaled.reshape(1, -1))[0]
         
-        # 🔥 ВИДАЛИТИ весь блок діагностики передбачень (рядки ~30-50)
-        # Він більше не потрібен після налагодження!
-        
-        y_hat_scaled = y_pred_scaled + d_scaled
+        # Масштабування вимірювань для порівняння
         z_k_scaled = self.y_scaler.transform(z_k.reshape(1, -1))[0]
-        y_tilde = z_k_scaled - y_hat_scaled
         
-        # ---- Адаптивна коваріація шуму вимірювань ----
-        # Оновлюємо R на основі квадрату інновації
-        self.R = self._R_initial + self.beta_R * np.diag(y_tilde**2 + 1e-6)
+        # Обчислення інновації (в масштабованих координатах)
+        y_k = z_k_scaled - (y_pred_scaled + d_scaled)
+        self.last_innovation = y_k.copy()
         
-        # ---- Коваріація інновації та Калманівський коефіцієнт підсилення ----
-        S_k = H_k @ self.P @ H_k.T + self.R  # Коваріація інновації
-        K_k = self.P @ H_k.T @ np.linalg.inv(S_k)  # Калманівський коефіцієнт підсилення
+        # Коваріація інновації та оновлення адаптивної R
+        S_k = H_k @ self.P @ H_k.T + self.R
         
-        # ---- Корекція стану та коваріації ----
-        self.x_hat = self.x_hat + K_k @ y_tilde  # Оновлення стану
-        I = np.eye(self.n_aug)
-        # ✅ ВИПРАВЛЕНА форма Джозефа для численної стійкості:
-        self.P = (I - K_k @ H_k) @ self.P @ (I - K_k @ H_k).T + K_k @ self.R @ K_k.T
+        if hasattr(self, 'beta_R') and self.beta_R > 0:
+            innovation_cov = np.outer(y_k, y_k)
+            self.R = (1 - self.beta_R) * self.R + self.beta_R * innovation_cov
+            self.R = np.maximum(self.R, self._R_initial * 0.1)
         
-        # ---- Адаптивне налаштування Q на основі NIS ----
+        # Підсилення Калмана
+        try:
+            K_k = self.P @ H_k.T @ np.linalg.inv(S_k)
+        except np.linalg.LinAlgError:
+            K_k = self.P @ H_k.T @ np.linalg.pinv(S_k)
+        
+        # Оновлення стану та коваріації
+        self.x_hat = self.x_hat + K_k @ y_k
+        I_KH = np.eye(self.n_aug) - K_k @ H_k
+        self.P = I_KH @ self.P @ I_KH.T + K_k @ self.R @ K_k.T
+        
+        # Адаптація Q на основі NIS
         if self.q_adaptive_enabled:
-            try:
-                S_k_inv = np.linalg.inv(S_k)
-                nis = y_tilde.T @ S_k_inv @ y_tilde  # Normalized Innovation Squared
-                
-                target = self.n_dist  # Очікуване значення NIS
-                upper_bound = target * self.q_nis_threshold
-                lower_bound = target / self.q_nis_threshold
-                
-                # Адаптація коефіцієнта масштабування Q
-                if nis > upper_bound:
-                    # Збільшуємо Q, якщо інновації занадто великі
-                    self.q_scale = min(self.q_scale * 1.02, 10.0)
-                elif nis < lower_bound:
-                    # Зменшуємо Q, якщо інновації занадто малі
-                    self.q_scale = max(self.q_scale * 0.99, 0.1)
-                    
-            except np.linalg.LinAlgError:
-                # Ігноруємо помилки обернення матриці
-                pass
-        
-        # Зберігаємо інновацію для діагностики
-        self.last_innovation = y_tilde.copy()
+            nis = y_k.T @ np.linalg.inv(S_k) @ y_k
+            if nis > self.q_nis_threshold:
+                self.q_scale = min(self.q_scale * 1.1, 5.0)
+            else:
+                self.q_scale = max(self.q_scale * self.q_alpha, 0.1)

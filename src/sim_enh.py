@@ -321,17 +321,26 @@ class EKFFactory:
         lag: int,
         params: Dict[str, Any]
     ) -> ExtendedKalmanFilter:
-        """Create and configure EKF with intelligent initialization"""
-        print("Step 4: Initializing Kalman Filter (EKF)...")
+        """Create and configure EKF with consistent scaling"""
+        print("Step 4: Initializing Kalman Filter (EKF) with consistent scaling...")
         
         x_scaler, y_scaler = scalers
         n_phys, n_dist = (lag + 1) * 3, 2
         
-        # Intelligent disturbance initialization
+        # ✅ ВИПРАВЛЕННЯ: Масштабуємо фізичний початковий стан
+        hist0_scaled = x_scaler.transform(hist0_unscaled.reshape(1, -1))[0]
+        print(f"   📊 Scaled initial physical state range: [{hist0_scaled.min():.3f}, {hist0_scaled.max():.3f}]")
+        
+        # Intelligent disturbance initialization (вже масштабовані)
         initial_disturbances = EKFFactory._estimate_initial_disturbances(Y_train_scaled)
         
-        # Form augmented initial state
-        x0_aug = np.hstack([hist0_unscaled.flatten(), initial_disturbances])
+        # ✅ ВИПРАВЛЕННЯ: Формуємо консистентний розширений початковий стан (ВСЕ МАСШТАБОВАНЕ)
+        x0_aug = np.hstack([hist0_scaled, initial_disturbances])
+        
+        print(f"   🔧 Augmented state size: {len(x0_aug)} (phys: {n_phys}, dist: {n_dist})")
+        print(f"   📈 Initial state scaling check:")
+        print(f"      Physical part range: [{hist0_scaled.min():.3f}, {hist0_scaled.max():.3f}]")
+        print(f"      Disturbance part: [{initial_disturbances.min():.3f}, {initial_disturbances.max():.3f}]")
         
         # Configure covariance matrices
         P0, Q, R = EKFFactory._configure_covariance_matrices(
@@ -343,7 +352,9 @@ class EKFFactory:
             beta_R=params.get('beta_R', 0.1),
             q_adaptive_enabled=params.get('q_adaptive_enabled', True),
             q_alpha=params.get('q_alpha', 0.995),
-            q_nis_threshold=params.get('q_nis_threshold', 1.8)
+            q_nis_threshold=params.get('q_nis_threshold', 1.8),
+            # ✅ НОВИЙ ПАРАМЕТР: Позначаємо, що EKF працює з масштабованими даними
+            use_scaled_state=True
         )
     
     @staticmethod
@@ -894,12 +905,50 @@ class SimulationLoop:
             ekf.predict(simulation_state['u_prev'], measurements)
             self._update_mpc_with_ekf(mpc, ekf)
             
-            current_state = ekf.x_hat[:ekf.n_phys].reshape(self.params['lag'] + 1, 3)
-            current_state_flat = current_state.flatten().reshape(1, -1)
-            current_state_scaled = x_scaler.transform(current_state_flat)
-            y_pred_scaled = mpc.model.predict(current_state_scaled)[0]
-            y_pred_unscaled = y_scaler.inverse_transform(y_pred_scaled.reshape(1, -1))[0]
+            # ✅ ВИПРАВЛЕННЯ: Правильна обробка стану EKF для передбачення
+            # Замінити цей блок в основному циклі симуляції:
             
+            # СТАРИЙ КОД (НЕПРАВИЛЬНИЙ):
+            # current_state = ekf.x_hat[:ekf.n_phys].reshape(self.params['lag'] + 1, 3)
+            # current_state_flat = current_state.flatten().reshape(1, -1)
+            # current_state_scaled = x_scaler.transform(current_state_flat)
+            # y_pred_scaled = mpc.model.predict(current_state_scaled)[0]
+            # y_pred_unscaled = y_scaler.inverse_transform(y_pred_scaled.reshape(1, -1))[0]
+            
+            # НОВИЙ КОД (ПРАВИЛЬНИЙ):
+            if ekf.use_scaled_state:
+                # EKF стан вже масштабований, використовуємо безпосередньо
+                current_state_scaled = ekf.x_hat[:ekf.n_phys].reshape(1, -1)
+                
+                # Діагностика для перших кроків
+                if not hasattr(self, '_prediction_debug_count'):
+                    self._prediction_debug_count = 0
+                
+                if self._prediction_debug_count < 3:
+                    print(f"   🎯 Prediction {self._prediction_debug_count}: Using scaled EKF state directly")
+                    print(f"      State range: [{current_state_scaled.min():.3f}, {current_state_scaled.max():.3f}]")
+                    self._prediction_debug_count += 1
+                else:
+                    self._prediction_debug_count += 1
+                    
+            else:
+                # Legacy режим: EKF стан немасштабований, потрібно масштабувати
+                current_state = ekf.x_hat[:ekf.n_phys].reshape(self.params['lag'] + 1, 3)
+                current_state_flat = current_state.flatten().reshape(1, -1)
+                current_state_scaled = x_scaler.transform(current_state_flat)
+                
+                if not hasattr(self, '_prediction_debug_count'):
+                    self._prediction_debug_count = 0
+                
+                if self._prediction_debug_count < 3:
+                    print(f"   ⚠️  Prediction {self._prediction_debug_count}: Converting unscaled EKF state to scaled")
+                    self._prediction_debug_count += 1
+                else:
+                    self._prediction_debug_count += 1
+            
+            # Передбачення (однакове для обох режимів)
+            y_pred_scaled = mpc.model.predict(current_state_scaled)[0]
+            y_pred_unscaled = y_scaler.inverse_transform(y_pred_scaled.reshape(1, -1))[0]            
             u_cur, prediction_time = self._optimize_control(mpc, measurements, simulation_state['u_prev'])
             timing_metrics['prediction_times'].append(prediction_time)
             
@@ -1134,11 +1183,48 @@ class SimulationLoop:
         ])
     
     def _update_mpc_with_ekf(self, mpc, ekf):
-        """Update MPC controller with EKF estimates"""
-        x_est_phys_unscaled = ekf.x_hat[:ekf.n_phys].reshape(self.params['lag'] + 1, 3)
-        mpc.reset_history(x_est_phys_unscaled)
-        mpc.d_hat = ekf.x_hat[ekf.n_phys:]
-    
+        """Update MPC controller with EKF estimates - FIXED scaling"""
+        
+        if ekf.use_scaled_state:
+            # ✅ НОВИЙ РЕЖИМ: EKF стан масштабований, потрібно демасштабувати для MPC
+            x_est_phys_scaled = ekf.x_hat[:ekf.n_phys].reshape(1, -1)
+            x_est_phys_unscaled = ekf.x_scaler.inverse_transform(x_est_phys_scaled)[0]
+            x_est_phys_unscaled = x_est_phys_unscaled.reshape(self.params['lag'] + 1, 3)
+            
+            # Збурення залишаються в масштабованому вигляді для MPC
+            d_scaled = ekf.x_hat[ekf.n_phys:]
+            
+            # Оновлюємо MPC
+            mpc.reset_history(x_est_phys_unscaled)
+            mpc.d_hat = d_scaled.copy()
+            
+            # Діагностика для перших кроків
+            if not hasattr(self, '_mpc_update_debug_count'):
+                self._mpc_update_debug_count = 0
+            
+            if self._mpc_update_debug_count < 3:
+                print(f"   🔄 MPC Update {self._mpc_update_debug_count}: Converting scaled EKF state to unscaled MPC history")
+                print(f"      EKF scaled range: [{x_est_phys_scaled.min():.3f}, {x_est_phys_scaled.max():.3f}]")
+                print(f"      MPC unscaled range: [{x_est_phys_unscaled.min():.3f}, {x_est_phys_unscaled.max():.3f}]")
+                print(f"      Disturbances (scaled): [{d_scaled.min():.3f}, {d_scaled.max():.3f}]")
+                self._mpc_update_debug_count += 1
+            else:
+                self._mpc_update_debug_count += 1
+                
+        else:
+            # ✅ LEGACY РЕЖИМ: EKF стан немасштабований (стара логіка)
+            x_est_phys_unscaled = ekf.x_hat[:ekf.n_phys].reshape(self.params['lag'] + 1, 3)
+            mpc.reset_history(x_est_phys_unscaled)
+            mpc.d_hat = ekf.x_hat[ekf.n_phys:]
+            
+            if not hasattr(self, '_mpc_update_debug_count'):
+                self._mpc_update_debug_count = 0
+            
+            if self._mpc_update_debug_count < 3:
+                print(f"   ⚠️  MPC Update {self._mpc_update_debug_count}: Using legacy unscaled EKF state")
+                self._mpc_update_debug_count += 1
+            else:
+                self._mpc_update_debug_count += 1    
     def _optimize_control(
         self,
         mpc,
@@ -1381,7 +1467,7 @@ class SimulationLoop:
                 del analysis_data[key]
     
     def _initialize_simulation_state(self, df_true, data, true_gen, mpc):
-        """Initialize simulation state variables"""
+        """Initialize simulation state variables with consistent scaling"""
         n_total = len(df_true) - self.params['lag'] - 1
         n_train = int(self.params['train_size'] * n_total)
         n_val = int(self.params['val_size'] * n_total)
@@ -1391,13 +1477,23 @@ class SimulationLoop:
             test_idx_start - (self.params['lag'] + 1): test_idx_start
         ].values
         
+        # ✅ ВИПРАВЛЕННЯ: MPC завжди працює з немасштабованими даними в своїй історії
+        # Це нормально, бо MPC внутрішньо масштабує дані при потребі
         mpc.reset_history(hist0_unscaled)
         true_gen.reset_state(hist0_unscaled)
+        
+        print(f"   📊 Initial simulation state:")
+        print(f"      Test start index: {test_idx_start}")
+        print(f"      Initial history shape: {hist0_unscaled.shape}")
+        print(f"      History range: [{hist0_unscaled.min():.3f}, {hist0_unscaled.max():.3f}]")
         
         df_run = df_true.iloc[test_idx_start:]
         d_all = df_run[['feed_fe_percent', 'ore_mass_flow']].values
         T_sim = len(df_run) - (self.params['lag'] + 1)
         u_prev = float(hist0_unscaled[-1, 2])
+        
+        print(f"      Simulation steps: {T_sim}")
+        print(f"      Initial control: {u_prev:.3f}")
         
         return {
             'test_idx_start': test_idx_start,
