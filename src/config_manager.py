@@ -831,7 +831,7 @@ def create_default_configs_ext() -> None:
         "Np": 6,
         "Nc": 4,
         "lag": 2,
-        "λ_obj": 0.5,
+        "λ_obj": 2.0,
         
         # Ваги та уставки
         "w_fe": 5.0,
@@ -861,11 +861,38 @@ def create_default_configs_ext() -> None:
         "q_alpha": 0.90,
         "q_nis_threshold": 3.0,
         
-        # Перенавчання
+
+        # Базове перенавчання
         "enable_retraining": True,
+        "retraining_strategy": "sliding_window",
+        "window_policy": "adaptive",
+        
+        # Стандартні параметри
+        "retrain_window_size": 1000,
         "retrain_period": 50,
         "retrain_innov_threshold": 0.3,
-        "retrain_window_size": 1000,
+        "min_retrain_samples": 100,
+        "max_retrain_samples": 2000,
+        
+        # ROBUST специфічні параметри
+        "stability_buffer_size": 250,            # Розмір буферу стабільних даних
+        "regime_change_detection": True,         # Детекція зміни режимів
+        "conservative_retrain_factor": 0.75,     # Консервативність перенавчання (0-1)
+        
+        # Multi-threshold система
+        "soft_innovation_threshold": 0.2,        # Поріг для soft retraining
+        "hard_innovation_threshold": 0.5,        # Поріг для hard retraining  
+        "regime_change_threshold": 2.0,          # Поріг для emergency retraining
+        
+        # Управління змішуванням даних
+        "min_stable_ratio": 0.35,                # Мінімальна частка стабільних даних
+        "max_recent_ratio": 0.65,                # Максимальна частка нових даних
+        "stability_lookback": 100,               # Період оцінки стабільності
+        
+        # Gradient smoothing і ensemble
+        "gradient_smoothing": True,              # Згладжування градієнтів
+        "ensemble_voting": True,                 # Використання ensemble для рішень
+        "prediction_ensemble_size": 3,           # Розмір ensemble для прогнозів
         
         # Обмеження
         "use_soft_constraints": True,
@@ -896,8 +923,117 @@ def create_default_configs_ext() -> None:
         "run_analysis": False
     }
     
+    improved_config = {
+    "name": "krr-optimized",
+    "description": "Оптимізована KRR-MPC конфігурація на основі аналізу результатів",
+    
+    # Основні параметри (без змін - працюють добре)
+    "N_data": 5000,
+    "control_pts": 500,
+    "seed": 42,
+    "train_size": 0.9,
+    "val_size": 0.08,
+    "test_size": 0.02,
+    
+    # Модель (без змін)
+    "model_type": "krr",
+    "kernel": "rbf", 
+    "find_optimal_params": True,
+    
+    # MPC параметри (покращені)
+    "Np": 6,
+    "Nc": 4,
+    "lag": 2,
+    "λ_obj": 2.0,
+    
+    # ПОКРАЩЕНІ ваги (більша вага для Mass)
+    "w_fe": 5.0,
+    "w_mass": 3.0,              # Збільшено з 2.0
+    "ref_fe": 54.0,
+    "ref_mass": 58.0,
+    "tolerance_fe_percent": 1.5,
+    "tolerance_mass_percent": 2.0,
+    
+    # ПОКРАЩЕНИЙ trust region
+    "adaptive_trust_region": True,
+    "initial_trust_radius": 0.6,    # Збільшено з 0.5
+    "min_trust_radius": 0.5,        # Збільшено з 0.42
+    "max_trust_radius": 1.2,        # Збільшено з 1.0
+    "trust_decay_factor": 0.94,     # Зменшено з 0.96 для швидшої адаптації
+    "rho_trust": 0.015,
+    "linearization_check_enabled": True,
+    "max_linearization_distance": 1.0,  # Збільшено з 0.8
+    "retrain_linearization_threshold": 1.2,  # Збільшено з 1.0
+    
+    # ПОКРАЩЕНІ EKF параметри
+    "P0": 0.01,
+    "Q_phys": 400,               # Зменшено з 600
+    "Q_dist": 2,                 # Збільшено з 1
+    "R": 0.5,                    # Зменшено з 1.0
+    "q_adaptive_enabled": True,
+    "q_alpha": 0.92,             # Збільшено з 0.90
+    "q_nis_threshold": 2.5,      # Зменшено з 3.0
+    
+    # Robust retraining (ефективні - зберігаємо)
+    "enable_retraining": True,
+    "retraining_strategy": "sliding_window",
+    "window_policy": "adaptive",
+    
+    "retrain_window_size": 1000,
+    "retrain_period": 50,
+    "retrain_innov_threshold": 0.3,
+    "min_retrain_samples": 100,
+    "max_retrain_samples": 2000,
+    
+    # ROBUST параметри (зберігаємо - працюють відмінно)
+    "stability_buffer_size": 250,
+    "regime_change_detection": True,
+    "conservative_retrain_factor": 0.75,
+    
+    # Multi-threshold (зберігаємо)
+    "soft_innovation_threshold": 0.2,
+    "hard_innovation_threshold": 0.5,
+    "regime_change_threshold": 2.0,
+    
+    # Data mixing (зберігаємо)
+    "min_stable_ratio": 0.35,
+    "max_recent_ratio": 0.65,
+    "stability_lookback": 100,
+    
+    # Ensemble (зберігаємо)
+    "gradient_smoothing": True,
+    "ensemble_voting": True,
+    "prediction_ensemble_size": 3,
+    
+    # ПОКРАЩЕНІ обмеження
+    "use_soft_constraints": True,
+    "delta_u_max": 0.6,          # Зменшено з 0.8 для гладшого керування
+    "u_min": 20.0,
+    "u_max": 40.0,
+    
+    # Процес (без змін)
+    "plant_model_type": "rf",
+    "noise_level": "low",
+    "enable_nonlinear": True,
+    "nonlinear_config": {
+        "concentrate_fe_percent": ["pow", 2],
+        "concentrate_mass_flow": ["pow", 1.5]
+    },
+    
+    # ПОКРАЩЕНА anomaly detection
+    "anomaly_params": {
+        "window": 20,            # Збільшено з 15
+        "spike_z": 3.0,          # Збільшено з 2.5
+        "drop_rel": 0.2,         # Збільшено з 0.15
+        "freeze_len": 6,         # Збільшено з 4
+        "enabled": True
+    },
+    
+    "run_analysis": False
+}
+    
     # Зберігаємо конфігурації
-    configs = [krr_mpc, svr_mpc, lin_mpc, krr_test]
+    configs = [krr_mpc, svr_mpc, lin_mpc, krr_test, improved_config]
     
     for config in configs:
         config_name = config["name"]

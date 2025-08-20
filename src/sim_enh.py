@@ -19,6 +19,7 @@ from mpc import MPCController
 from ekf import ExtendedKalmanFilter
 from anomaly_detector import SignalAnomalyDetector
 from maf import MovingAverageFilter
+# from retraining_fixes import update_params_for_robust_retraining
 
 # Analysis and utilities
 from utils import (
@@ -466,15 +467,305 @@ class ModelTrainer:
 
 
 class SimulationLoop:
-    """Handles the main simulation loop execution"""
-    
     def __init__(self, params: Dict[str, Any]):
         self.params = params
         self.setup_filters()
-        self.setup_retraining_components()
+        self.setup_robust_retraining_strategy()  # ← ЗМІНЕНО: використовує robust
         
+        # Enhanced tracking
+        self.prediction_errors = []
+        self.innovation_norms = []
+        self.retraining_events = []
+    
+    def setup_robust_retraining_strategy(self):
+        """
+        НОВА МЕТОД: Налаштування robust retraining strategy
+        
+        ЗАМІНЮЄ: setup_retraining_strategy()
+        """
+        if not self.params.get('enable_retraining', False):
+            self.retraining_manager = None
+            self.robust_strategy = None
+            print("❌ Retraining disabled")
+            return
+        
+        # Спроба імпорту RobustRetrainingStrategy
+        try:
+            from retraining_fixes import RobustRetrainingStrategy
+            self.use_robust_strategy = True
+            print("🛡️ Loading RobustRetrainingStrategy...")
+        except ImportError:
+            print("⚠️ RobustRetrainingStrategy not found, using enhanced legacy")
+            self.use_robust_strategy = False
+            self.setup_enhanced_legacy_retraining()
+            return
+        
+        # РЕАЛЬНЕ СТВОРЕННЯ RobustRetrainingStrategy
+        self.robust_strategy = RobustRetrainingStrategy(
+            window_size=self.params.get('retrain_window_size', 1000),
+            retrain_period=self.params.get('retrain_period', 50),
+            innovation_threshold=self.params.get('retrain_innov_threshold', 0.3),
+            
+            # Robust parameters для запобігання catastrophic forgetting
+            stability_buffer_size=self.params.get('stability_buffer_size', 250),
+            regime_change_detection=self.params.get('regime_change_detection', True),
+            conservative_retrain_factor=self.params.get('conservative_retrain_factor', 0.75),
+            
+            # Multi-threshold system
+            soft_innovation_threshold=self.params.get('soft_innovation_threshold', 0.2),
+            hard_innovation_threshold=self.params.get('hard_innovation_threshold', 0.5),
+            regime_change_threshold=self.params.get('regime_change_threshold', 2.0),
+            
+            # Adaptive window management
+            min_stable_ratio=self.params.get('min_stable_ratio', 0.35),
+            max_recent_ratio=self.params.get('max_recent_ratio', 0.65),
+        )
+        
+        print("✅ RobustRetrainingStrategy initialized successfully")
+        print(f"   • Window policy: ROBUST with catastrophic forgetting protection")
+        print(f"   • Stability buffer: {self.params.get('stability_buffer_size', 250)}")
+        print(f"   • Multi-threshold: {self.params.get('soft_innovation_threshold', 0.2)} < {self.params.get('retrain_innov_threshold', 0.3)} < {self.params.get('hard_innovation_threshold', 0.5)}")
+    
+    def setup_enhanced_legacy_retraining(self):
+        """Fallback для випадку, коли RobustRetrainingStrategy недоступний"""
+        print("🔄 Setting up enhanced legacy retraining...")
+        
+        self.retraining_buffer = deque(maxlen=self.params['retrain_window_size'])
+        self.innovation_monitor = deque(maxlen=self.params['retrain_period'])
+        self.retrain_cooldown_timer = 0
+        
+        # Додаємо базовий захист від catastrophic forgetting
+        self.stability_buffer = deque(maxlen=200)
+        self.performance_monitor = deque(maxlen=50)
+        self.consecutive_failures = 0
+        
+        print(f"   • Enhanced legacy configured with basic protection")
+    
+
+    
+    def _setup_robust_strategy_with_mpc(self, mpc, scalers, data):
+        """
+        НОВА МЕТОД: Налаштування robust strategy з MPC controller
+        """
+        x_scaler, y_scaler = scalers
+        
+        # Додаємо початкові тренувальні дані до robust strategy
+        initial_data_count = min(100, len(data['X_train_scaled']))
+        
+        for i in range(initial_data_count):
+            x_scaled = data['X_train_scaled'][i]
+            y_scaled = data['Y_train_scaled'][i]
+            
+            # Конвертуємо назад в оригінальний масштаб для robust strategy
+            x_unscaled = x_scaler.inverse_transform(x_scaled.reshape(1, -1))[0]
+            y_unscaled = y_scaler.inverse_transform(y_scaled.reshape(1, -1))[0]
+            
+            # Створюємо штучні метрики для початкових даних
+            metrics = {
+                'innovation_norm': 0.1,
+                'prediction_error': 0.05,
+                'ekf_uncertainty': 0.1,
+                'measurement_variability': 0.05
+            }
+            
+            # РЕАЛЬНО ДОДАЄМО дані до RobustRetrainingStrategy
+            self.robust_strategy.add_data_point(x_unscaled, y_unscaled, metrics)
+        
+        print(f"   • Added {initial_data_count} initial samples to RobustRetrainingStrategy")
+        print(f"   • Stability buffer initialized: {len(self.robust_strategy.stability_buffer)} samples")
+    
+    def _handle_actual_robust_retraining(
+        self, 
+        ekf, 
+        y_meas: np.ndarray, 
+        y_pred_unscaled: np.ndarray, 
+        measurements: np.ndarray, 
+        t: int,
+        x_unscaled: np.ndarray,
+        step_metrics: list,
+        retraining_log: list,
+        mpc,
+        timing_metrics: Dict[str, list]
+    ) -> bool:
+        """
+        НОВА МЕТОД: РЕАЛЬНЕ використання RobustRetrainingStrategy
+        
+        ЦЯ МЕТОД ДІЙСНО ВИКЛИКАЄ RobustRetrainingStrategy методи!
+        """
+        
+        # Обчислюємо комплексні метрики
+        metrics = self._calculate_comprehensive_metrics(ekf, y_meas, y_pred_unscaled, measurements, t)
+        step_metrics.append(metrics)
+        
+        # ↓ РЕАЛЬНИЙ ВИКЛИК RobustRetrainingStrategy.add_data_point() ↓
+        self.robust_strategy.add_data_point(x_unscaled, y_meas, metrics)
+        
+        # ↓ РЕАЛЬНИЙ ВИКЛИК RobustRetrainingStrategy.should_retrain() ↓
+        retrain_type = self.robust_strategy.should_retrain(t, metrics)
+        
+        if retrain_type != 'none':
+            print(f"\n🛡️ ROBUST RETRAINING ACTIVATED: {retrain_type.upper()} at step {t}")
+            
+            # ↓ РЕАЛЬНИЙ ВИКЛИК RobustRetrainingStrategy.get_training_data() ↓
+            X_train, Y_train = self.robust_strategy.get_training_data(retrain_type)
+            
+            if len(X_train) == 0:
+                print("⚠️ RobustRetrainingStrategy returned no training data")
+                return False
+            
+            # Конвертуємо дані в потрібний масштаб для MPC
+            x_scaler, y_scaler = self._get_scalers_from_mpc(mpc)
+            
+            if x_scaler is not None and y_scaler is not None:
+                X_train_scaled = x_scaler.transform(X_train)
+                Y_train_scaled = y_scaler.transform(Y_train)
+            else:
+                # Припускаємо, що дані вже в потрібному масштабі
+                X_train_scaled = X_train
+                Y_train_scaled = Y_train
+            
+            # Виконуємо перенавчання з timing
+            start_time = time.time()
+            
+            try:
+                if retrain_type == 'soft':
+                    print("🔄 Performing SOFT robust retraining...")
+                    # Для soft retraining можна додати регуляризацію
+                    mpc.fit(X_train_scaled, Y_train_scaled)
+                else:
+                    print(f"🚨 Performing {retrain_type.upper()} robust retraining...")
+                    mpc.fit(X_train_scaled, Y_train_scaled)
+                
+                retrain_time = time.time() - start_time
+                
+                # Оцінюємо нову продуктивність
+                if len(Y_train_scaled) > 10:
+                    y_pred_test = mpc.model.predict(X_train_scaled[-10:])
+                    new_performance = np.mean(np.linalg.norm(Y_train_scaled[-10:] - y_pred_test, axis=1))
+                else:
+                    new_performance = 0.0
+                
+                # ↓ РЕАЛЬНИЙ ВИКЛИК RobustRetrainingStrategy.update_after_retraining() ↓
+                self.robust_strategy.update_after_retraining(t, retrain_time, new_performance, retrain_type)
+                
+                # Логуємо подію перенавчання
+                retraining_event = {
+                    'step': t,
+                    'type': retrain_type,
+                    'metrics': metrics.copy(),
+                    'training_samples': len(X_train),
+                    'performance': new_performance,
+                    'robust_strategy': True  # Відмічаємо, що використовувався robust strategy
+                }
+                retraining_log.append(retraining_event)
+                
+                # Зберігаємо timing
+                timing_metrics['retraining_times'].append(retrain_time)
+                
+                # Скидаємо trust region
+                if hasattr(mpc, 'reset_trust_region'):
+                    mpc.reset_trust_region()
+                
+                print(f"   ✅ Robust retraining completed in {retrain_time:.3f}s with performance {new_performance:.4f}")
+                return True
+                
+            except Exception as e:
+                print(f"   ❌ Robust retraining failed: {e}")
+                return False
+        
+        return False
+    
+    def _get_scalers_from_mpc(self, mpc):
+        """Отримати scalers з MPC controller"""
+        try:
+            return mpc.x_scaler, mpc.y_scaler
+        except AttributeError:
+            print("⚠️ MPC controller doesn't have scalers")
+            return None, None
+    
+    def _compile_robust_retraining_statistics(
+        self, 
+        step_metrics: list, 
+        retraining_log: list, 
+        timing_metrics: Dict[str, list]
+    ) -> Dict[str, Any]:
+        """
+        НОВА МЕТОД: Компіляція статистики з RobustRetrainingStrategy
+        """
+        
+        # Базова статистика
+        stats = {
+            'total_steps': len(step_metrics),
+            'retraining_events': len(retraining_log),
+            'retraining_frequency': len(retraining_log) / len(step_metrics) if step_metrics else 0.0,
+        }
+        
+        # Timing статистика
+        if timing_metrics.get('retraining_times'):
+            stats['avg_retrain_time'] = np.mean(timing_metrics['retraining_times'])
+            stats['max_retrain_time'] = np.max(timing_metrics['retraining_times'])
+            stats['total_retrain_time'] = np.sum(timing_metrics['retraining_times'])
+        
+        # Метрики продуктивності
+        if step_metrics:
+            innovation_norms = [m.get('innovation_norm', 0.0) for m in step_metrics]
+            prediction_errors = [m.get('prediction_error', 0.0) for m in step_metrics]
+            
+            stats['avg_innovation_norm'] = np.mean(innovation_norms)
+            stats['max_innovation_norm'] = np.max(innovation_norms)
+            stats['avg_prediction_error'] = np.mean(prediction_errors)
+            stats['max_prediction_error'] = np.max(prediction_errors)
+        
+        # ↓ РЕАЛЬНИЙ ВИКЛИК RobustRetrainingStrategy.get_enhanced_statistics() ↓
+        if self.use_robust_strategy and hasattr(self, 'robust_strategy'):
+            try:
+                robust_stats = self.robust_strategy.get_enhanced_statistics()
+                # Додаємо robust статистику з префіксом
+                for key, value in robust_stats.items():
+                    stats[f'robust_{key}'] = value
+                
+                print(f"   📊 Added robust strategy statistics: {len(robust_stats)} metrics")
+            except Exception as e:
+                print(f"   ⚠️ Failed to get robust statistics: {e}")
+        
+        # Аналіз типів перенавчання
+        if retraining_log:
+            retraining_types = [event.get('type', 'unknown') for event in retraining_log]
+            for retrain_type in ['soft', 'hard', 'emergency']:
+                count = retraining_types.count(retrain_type)
+                stats[f'{retrain_type}_retrainings'] = count
+        
+        return stats
+    
+    def _print_robust_diagnostic_info(self, step: int, step_metrics: list, retraining_log: list):
+        """НОВА МЕТОД: Діагностична інформація з robust strategy"""
+        if not step_metrics:
+            return
+        
+        recent_metrics = step_metrics[-min(10, len(step_metrics)):]
+        avg_innovation = np.mean([m.get('innovation_norm', 0.0) for m in recent_metrics])
+        avg_error = np.mean([m.get('prediction_error', 0.0) for m in recent_metrics])
+        
+        recent_retrains = len([r for r in retraining_log if r['step'] > step - 50])
+        robust_retrains = len([r for r in retraining_log if r.get('robust_strategy', False) and r['step'] > step - 50])
+        
+        print(f"📊 Step {step}: Innovation={avg_innovation:.3f}, Error={avg_error:.3f}")
+        print(f"   Retraining: {recent_retrains} total ({robust_retrains} robust) in last 50 steps")
+        
+        # ↓ РЕАЛЬНИЙ ВИКЛИК RobustRetrainingStrategy статистики ↓
+        if self.use_robust_strategy and hasattr(self, 'robust_strategy'):
+            try:
+                stability_score = self.robust_strategy._calculate_stability_score()
+                buffer_sizes = f"stable={len(self.robust_strategy.stability_buffer)}, recent={len(self.robust_strategy.recent_buffer)}"
+                print(f"   Robust: stability={stability_score:.3f}, buffers=({buffer_sizes})")
+            except Exception as e:
+                print(f"   Robust diagnostics failed: {e}")
+                
     def setup_filters(self):
         """Initialize filters for online processing"""
+        from maf import MovingAverageFilter
+        from anomaly_detector import SignalAnomalyDetector
+        
         window_size = 4
         self.filt_feed = MovingAverageFilter(window_size)
         self.filt_ore = MovingAverageFilter(window_size)
@@ -484,86 +775,612 @@ class SimulationLoop:
         self.ad_feed_fe = SignalAnomalyDetector(**ad_config)
         self.ad_ore_flow = SignalAnomalyDetector(**ad_config)
     
-    def setup_retraining_components(self):
-        """Initialize components for dynamic retraining"""
+    # def setup_retraining_strategy(self):
+    #     """Setup advanced retraining strategy based on parameters"""
+    #     if not self.params.get('enable_retraining', False):
+    #         self.retraining_manager = None
+    #         print("❌ Retraining disabled")
+    #         return
+        
+    #     # Import sliding window components
+    #     try:
+    #         from sliding_window_retraining import SlidingWindowRetraining, TimeBasedRetraining, RetrainingManager
+    #     except ImportError:
+    #         print("⚠️ Sliding window retraining not available, using legacy approach")
+    #         self.setup_legacy_retraining()
+    #         return
+        
+    #     # Get strategy configuration
+    #     strategy_type = self.params.get('retraining_strategy', 'sliding_window')
+        
+    #     print(f"🔄 Setting up {strategy_type} retraining strategy...")
+        
+    #     if strategy_type == 'sliding_window':
+    #         # Create sliding window strategy with enhanced parameters
+    #         strategy = SlidingWindowRetraining(
+    #             window_size=self.params.get('retrain_window_size', 1000),
+    #             retrain_period=self.params.get('retrain_period', 50),
+    #             innovation_threshold=self.params.get('retrain_innov_threshold', 0.3),
+    #             quality_threshold=self.params.get('retrain_quality_threshold', 1.5),
+    #             window_policy=self.params.get('window_policy', 'adaptive'),
+    #             min_retrain_samples=self.params.get('min_retrain_samples', 100),
+    #             max_retrain_samples=self.params.get('max_retrain_samples', 2000),
+    #             performance_lookback=self.params.get('performance_lookback', 10)
+    #         )
+            
+    #         print(f"   ✅ Sliding window strategy configured:")
+    #         print(f"      • Policy: {self.params.get('window_policy', 'adaptive')}")
+    #         print(f"      • Window size: {self.params.get('retrain_window_size', 1000)}")
+    #         print(f"      • Innovation threshold: {self.params.get('retrain_innov_threshold', 0.3)}")
+            
+    #     elif strategy_type == 'time_based':
+    #         strategy = TimeBasedRetraining(
+    #             retrain_interval=self.params.get('retrain_period', 100),
+    #             window_size=self.params.get('retrain_window_size', 500)
+    #         )
+    #         print(f"   ✅ Time-based strategy configured with interval {self.params.get('retrain_period', 100)}")
+            
+    #     else:
+    #         print(f"⚠️ Unknown strategy '{strategy_type}', falling back to legacy")
+    #         self.setup_legacy_retraining()
+    #         return
+        
+    #     # Store strategy for later manager creation
+    #     self.retraining_strategy = strategy
+        
+    def setup_legacy_retraining(self):
+        """Setup legacy retraining for backward compatibility"""
         if self.params['enable_retraining']:
+            print(f"🔄 Setting up legacy retraining...")
+            print(f"   • Window: {self.params['retrain_window_size']}")
+            print(f"   • Period: {self.params['retrain_period']}")
+            
             self.retraining_buffer = deque(maxlen=self.params['retrain_window_size'])
             self.innovation_monitor = deque(maxlen=self.params['retrain_period'])
             self.retrain_cooldown_timer = 0
+            
+            # Add initial training data to buffer
+            self.legacy_retraining = True
+        else:
+            self.legacy_retraining = False
     
     def run(
         self,
-        true_gen: StatefulDataGenerator,
-        mpc: MPCController,
-        ekf: ExtendedKalmanFilter,
-        df_true: pd.DataFrame,
+        true_gen,
+        mpc,
+        ekf,
+        df_true,
         data: Dict[str, np.ndarray],
-        scalers: Tuple[StandardScaler, StandardScaler],
+        scalers: Tuple,
         timing_metrics: Dict[str, list],
         progress_callback: Optional[Callable] = None
-    ) -> Tuple[pd.DataFrame, Dict]:
-        """Execute main simulation loop"""
-        print("Step 5: Starting enhanced simulation loop...")
+    ) -> Tuple:
+        """
+        Основний цикл симуляції з РЕАЛЬНОЮ інтеграцією RobustRetrainingStrategy
+        """
+        print("🚀 Starting simulation with ROBUST retraining integration...")
         
-        # Initialize simulation
+        # Ініціалізація (без змін)
         x_scaler, y_scaler = scalers
         simulation_state = self._initialize_simulation_state(df_true, data, true_gen, mpc)
         
-        # Storage for results
+        # ↓ КРИТИЧНА ЗМІНА: Ініціалізація robust strategy з MPC ↓
+        if self.use_robust_strategy and hasattr(self, 'robust_strategy'):
+            # ЗАРАЗ robust_strategy готовий до використання
+            print("✅ Using RobustRetrainingStrategy for simulation")
+            self._setup_robust_strategy_with_mpc(mpc, scalers, data)
+        elif hasattr(self, 'retraining_buffer'):
+            # Fallback на legacy
+            print("✅ Using enhanced legacy retraining")
+            self._setup_legacy_training_data(data, scalers)
+        else:
+            print("❌ No retraining strategy available")
+        
+        # Storage для результатів
         records = []
         analysis_data = self._initialize_analysis_storage()
+        step_metrics = []
+        retraining_log = []
         
-        # Main simulation loop
+        print(f"📊 Starting {simulation_state['T_sim']} simulation steps...")
+        
+        # ↓ ГОЛОВНИЙ ЦИКЛ З ROBUST RETRAINING ↓
         for t in range(simulation_state['T_sim']):
             if progress_callback:
-                progress_callback(t, simulation_state['T_sim'], f"Simulation step {t + 1}/{simulation_state['T_sim']}")
+                progress_callback(t, simulation_state['T_sim'], f"Robust step {t + 1}/{simulation_state['T_sim']}")
             
-            # Process measurements
+            # Кроки 1-7: Стандартна обробка (без змін)
             measurements = self._process_measurements(simulation_state['d_all'][t, :])
-            
-            # EKF prediction step
             ekf.predict(simulation_state['u_prev'], measurements)
-            
-            # Update MPC with EKF estimates
             self._update_mpc_with_ekf(mpc, ekf)
             
-            # MPC optimization with timing
+            current_state = ekf.x_hat[:ekf.n_phys].reshape(self.params['lag'] + 1, 3)
+            current_state_flat = current_state.flatten().reshape(1, -1)
+            current_state_scaled = x_scaler.transform(current_state_flat)
+            y_pred_scaled = mpc.model.predict(current_state_scaled)[0]
+            y_pred_unscaled = y_scaler.inverse_transform(y_pred_scaled.reshape(1, -1))[0]
+            
             u_cur, prediction_time = self._optimize_control(mpc, measurements, simulation_state['u_prev'])
             timing_metrics['prediction_times'].append(prediction_time)
             
-            # Process step
             y_full = true_gen.step(simulation_state['d_all'][t, 0], simulation_state['d_all'][t, 1], u_cur)
-            
-            # EKF correction step
             y_meas = y_full[['concentrate_fe_percent', 'concentrate_mass_flow']].values.flatten()
+            
             ekf.update(y_meas)
             
-            # Store data for analysis
-            self._store_analysis_data(analysis_data, ekf, mpc, y_meas, t, u_cur)
+            # ↓ КРОК 8: РЕАЛЬНЕ ВИКОРИСТАННЯ RobustRetrainingStrategy ↓
+            if self.use_robust_strategy and hasattr(self, 'robust_strategy'):
+                retrained = self._handle_actual_robust_retraining(
+                    ekf, y_meas, y_pred_unscaled, measurements, t, 
+                    current_state_flat[0], step_metrics, retraining_log, mpc, timing_metrics
+                )
+            elif hasattr(self, 'retraining_buffer'):
+                retrained = self._handle_enhanced_legacy_retraining(
+                    mpc, ekf, scalers, current_state_flat[0], y_meas, t, timing_metrics
+                )
+            else:
+                retrained = False
             
-            # Handle retraining if enabled
-            if self.params['enable_retraining']:
-                self._handle_retraining(mpc, ekf, data, scalers, t, timing_metrics)
+            # Кроки 9-13: Стандартне завершення (без змін)
+            self._store_enhanced_analysis_data(
+                analysis_data, ekf, mpc, y_meas, y_pred_unscaled, t, u_cur, 
+                step_metrics[-1] if step_metrics else {}
+            )
             
-            # Store simulation record
             records.append(self._create_simulation_record(y_full.iloc[0], u_cur))
-            
-            # Update for next iteration
             simulation_state['u_prev'] = u_cur
-            self._update_cooldown_timer()
+            
+            if hasattr(self, 'retrain_cooldown_timer') and self.retrain_cooldown_timer > 0:
+                self.retrain_cooldown_timer -= 1
+            
+            # Diagnostic output
+            if t % 50 == 0 and t > 0:
+                self._print_robust_diagnostic_info(t, step_metrics, retraining_log)
         
-        # Finalize analysis data
-        self._finalize_analysis_data(analysis_data, timing_metrics)
+        print(f"\n🏁 Robust simulation completed: {simulation_state['T_sim']} steps")
+        
+        # Фіналізація з robust статистикою
+        analysis_data['retraining_statistics'] = self._compile_robust_retraining_statistics(
+            step_metrics, retraining_log, timing_metrics
+        )
+        
+        self._finalize_enhanced_analysis_data(analysis_data, timing_metrics, step_metrics)
         
         return pd.DataFrame(records), analysis_data
     
-    def _initialize_simulation_state(
+    def _handle_advanced_retraining(
+        self, 
+        ekf, 
+        y_meas: np.ndarray, 
+        y_pred_unscaled: np.ndarray, 
+        measurements: np.ndarray, 
+        t: int,
+        x_unscaled: np.ndarray,
+        step_metrics: list,
+        retraining_log: list
+    ) -> bool:
+        """Handle advanced sliding window retraining"""
+        
+        # Calculate comprehensive metrics for retraining decision
+        metrics = self._calculate_comprehensive_metrics(
+            ekf, y_meas, y_pred_unscaled, measurements, t
+        )
+        
+        # Store metrics for analysis
+        step_metrics.append(metrics)
+        
+        # Add data point to retraining strategy
+        y_unscaled = y_meas
+        self.retraining_manager.add_data_point(x_unscaled, y_unscaled, metrics)
+        
+        # Check and perform retraining if needed
+        retrained = self.retraining_manager.check_and_retrain(t, metrics)
+        
+        if retrained:
+            retraining_event = {
+                'step': t,
+                'metrics': metrics.copy(),
+                'window_size': getattr(self.retraining_manager.strategy, 'adaptive_window_size', 'N/A'),
+                'strategy': self.params.get('window_policy', 'unknown')
+            }
+            retraining_log.append(retraining_event)
+            print(f"📊 Advanced retraining event logged at step {t}")
+        
+        # Update strategy state
+        self.retraining_manager.step()
+        
+        return retrained
+    
+    def _handle_legacy_retraining(
         self,
-        df_true: pd.DataFrame,
-        data: Dict[str, np.ndarray],
-        true_gen: StatefulDataGenerator,
-        mpc: MPCController
+        mpc,
+        ekf,
+        scalers: Tuple,
+        x_unscaled: np.ndarray,
+        y_meas: np.ndarray,
+        t: int,
+        timing_metrics: Dict[str, list]
+    ) -> bool:
+        """Handle legacy retraining for backward compatibility"""
+        
+        x_scaler, y_scaler = scalers
+        
+        # Add new data to buffer
+        new_x_unscaled = x_unscaled.reshape(1, -1)
+        new_y_unscaled = y_meas.reshape(1, -1)
+        
+        new_x_scaled = x_scaler.transform(new_x_unscaled)
+        new_y_scaled = y_scaler.transform(new_y_unscaled)
+        
+        self.retraining_buffer.append((new_x_scaled[0], new_y_scaled[0]))
+        
+        # Monitor innovation
+        if ekf.last_innovation is not None:
+            innov_norm = np.linalg.norm(ekf.last_innovation)
+            self.innovation_monitor.append(innov_norm)
+        
+        # Check retraining conditions (legacy logic)
+        if (t > 0 and
+            t % self.params['retrain_period'] == 0 and
+            len(self.innovation_monitor) == self.params['retrain_period'] and
+            self.retrain_cooldown_timer == 0):
+
+            avg_innov = float(np.mean(self.innovation_monitor))
+
+            if avg_innov > self.params['retrain_innov_threshold']:
+                print(f"\n---> LEGACY RETRAINING TRIGGER at step {t}! "
+                      f"Avg innovation: {avg_innov:.4f} > {self.params['retrain_innov_threshold']:.4f}")
+
+                retrain_data = list(self.retraining_buffer)
+                X_retrain = np.array([p[0] for p in retrain_data])
+                Y_retrain = np.array([p[1] for p in retrain_data])
+
+                print(f"--> Legacy mpc.fit() on {len(X_retrain)} samples...")
+                
+                start_time = time.time()
+                mpc.fit(X_retrain, Y_retrain)
+                retrain_time = time.time() - start_time
+                timing_metrics['retraining_times'].append(retrain_time)
+                
+                print(f"--> Legacy retraining completed in {retrain_time:.3f} sec.")
+                
+                # Reset trust region if available
+                if hasattr(mpc, 'reset_trust_region'):
+                    mpc.reset_trust_region()
+                
+                self.innovation_monitor.clear()
+                self.retrain_cooldown_timer = self.params['retrain_period'] * 2
+                
+                return True
+        
+        return False
+    
+    def _setup_legacy_training_data(self, data: Dict[str, np.ndarray], scalers: Tuple):
+        """Setup initial training data for legacy retraining"""
+        x_scaler, y_scaler = scalers
+        
+        # Add initial training data to buffer
+        initial_train_data = list(zip(data['X_train_scaled'], data['Y_train_scaled']))
+        self.retraining_buffer.extend(initial_train_data)
+        
+        print(f"   • Added {len(initial_train_data)} initial training samples to legacy buffer")
+    
+    def _calculate_comprehensive_metrics(
+        self, 
+        ekf, 
+        y_true: np.ndarray, 
+        y_pred: np.ndarray, 
+        measurements: np.ndarray, 
+        step: int
+    ) -> Dict[str, float]:
+        """Calculate comprehensive metrics for retraining decisions"""
+        
+        metrics = {}
+        
+        # Innovation-based metrics
+        if ekf.last_innovation is not None:
+            metrics['innovation_norm'] = float(np.linalg.norm(ekf.last_innovation))
+            metrics['innovation_fe'] = float(abs(ekf.last_innovation[0])) if len(ekf.last_innovation) > 0 else 0.0
+            metrics['innovation_mass'] = float(abs(ekf.last_innovation[1])) if len(ekf.last_innovation) > 1 else 0.0
+        else:
+            metrics['innovation_norm'] = 0.0
+            metrics['innovation_fe'] = 0.0
+            metrics['innovation_mass'] = 0.0
+        
+        # Prediction error metrics
+        prediction_error = np.linalg.norm(y_true - y_pred)
+        metrics['prediction_error'] = float(prediction_error)
+        metrics['prediction_error_fe'] = float(abs(y_true[0] - y_pred[0]))
+        metrics['prediction_error_mass'] = float(abs(y_true[1] - y_pred[1]))
+        
+        # Relative errors
+        if y_true[0] != 0:
+            metrics['relative_error_fe'] = float(abs(y_true[0] - y_pred[0]) / abs(y_true[0]))
+        else:
+            metrics['relative_error_fe'] = 0.0
+            
+        if y_true[1] != 0:
+            metrics['relative_error_mass'] = float(abs(y_true[1] - y_pred[1]) / abs(y_true[1]))
+        else:
+            metrics['relative_error_mass'] = 0.0
+        
+        # Measurement variability
+        metrics['measurement_variability'] = float(np.std(measurements))
+        
+        # EKF confidence (trace of covariance matrix)
+        if hasattr(ekf, 'P'):
+            metrics['ekf_uncertainty'] = float(np.trace(ekf.P))
+        else:
+            metrics['ekf_uncertainty'] = 0.0
+        
+        # Step information
+        metrics['step'] = step
+        metrics['timestamp'] = time.time()
+        
+        return metrics
+    
+    def _process_measurements(self, raw_measurements: np.ndarray) -> np.ndarray:
+        """Process raw measurements through filters"""
+        feed_fe_raw, ore_flow_raw = raw_measurements
+        
+        # Online anomaly filtering
+        feed_fe_filt = self.ad_feed_fe.update(feed_fe_raw)
+        ore_flow_filt = self.ad_ore_flow.update(ore_flow_raw)
+        
+        # Moving average filtering
+        return np.array([
+            self.filt_feed.update(feed_fe_filt),
+            self.filt_ore.update(ore_flow_filt)
+        ])
+    
+    def _update_mpc_with_ekf(self, mpc, ekf):
+        """Update MPC controller with EKF estimates"""
+        x_est_phys_unscaled = ekf.x_hat[:ekf.n_phys].reshape(self.params['lag'] + 1, 3)
+        mpc.reset_history(x_est_phys_unscaled)
+        mpc.d_hat = ekf.x_hat[ekf.n_phys:]
+    
+    def _optimize_control(
+        self,
+        mpc,
+        measurements: np.ndarray,
+        u_prev: float
+    ) -> Tuple[float, float]:
+        """Optimize control action with timing measurement"""
+        start_time = time.time()
+        
+        d_seq = np.repeat(measurements.reshape(1, -1), self.params['Np'], axis=0)
+        u_seq = mpc.optimize(d_seq, u_prev)
+        u_cur = u_prev if u_seq is None else float(u_seq[0])
+        
+        prediction_time = time.time() - start_time
+        return u_cur, prediction_time
+    
+    def _store_enhanced_analysis_data(
+        self, 
+        analysis_data: Dict, 
+        ekf, 
+        mpc, 
+        y_meas: np.ndarray, 
+        y_pred: np.ndarray,
+        t: int, 
+        u_cur: float,
+        step_metrics: Dict[str, float]
+    ):
+        """Store enhanced analysis data including predictions and metrics"""
+        
+        # Original data storage
+        analysis_data['y_true_hist'].append(y_meas.copy())
+        analysis_data['x_hat_hist'].append(ekf.x_hat.copy())
+        analysis_data['P_hist'].append(ekf.P.copy())
+        analysis_data['R_hist'].append(ekf.R.copy())
+        
+        # Enhanced data storage
+        analysis_data['y_pred_seq'].append(y_pred.copy())
+        analysis_data['step_metrics'].append(step_metrics.copy())
+        
+        # Innovation handling
+        innovation = ekf.last_innovation.copy() if ekf.last_innovation is not None else np.zeros(ekf.n_dist)
+        analysis_data['innov_hist'].append(innovation)
+        
+        if ekf.last_innovation is not None and ekf.last_innovation.shape[0] >= 2:
+            analysis_data['innovation_seq'].append(ekf.last_innovation[:2].copy())
+        else:
+            analysis_data['innovation_seq'].append(np.zeros(2))
+        
+        # Trust region and quality data
+        trust_stats = self._get_trust_region_stats(mpc, t)
+        trust_stats['step_metrics'] = step_metrics
+        analysis_data['trust_region_stats_hist'].append(trust_stats)
+        
+        # Store MPC control sequences
+        u_seq = getattr(mpc, 'last_u_sequence', None)
+        if u_seq is not None:
+            try:
+                plan_data = {
+                    'plan': u_seq.copy(),
+                    'step': t,
+                    'horizon_length': len(u_seq),
+                    'first_action': float(u_seq[0]) if len(u_seq) > 0 else None
+                }
+                analysis_data['u_seq_hist'].append(plan_data)
+            except Exception:
+                analysis_data['u_seq_hist'].append({
+                    'plan': None,
+                    'step': t,
+                    'optimization_failed': True
+                })
+        else:
+            analysis_data['u_seq_hist'].append({
+                'plan': None,
+                'step': t,
+                'optimization_failed': True
+            })
+        
+        # Store disturbance estimates
+        if mpc.d_hat is not None:
+            try:
+                analysis_data['d_hat_hist'].append(mpc.d_hat.copy())
+            except Exception:
+                analysis_data['d_hat_hist'].append(np.zeros(2))
+        else:
+            analysis_data['d_hat_hist'].append(np.zeros(2))
+        
+        # Linearization quality
+        if hasattr(mpc, 'linearization_quality_history') and mpc.linearization_quality_history:
+            quality = mpc.linearization_quality_history[-1]
+            if isinstance(quality, dict):
+                analysis_data['linearization_quality_hist'].append(quality['euclidean_distance'])
+            else:
+                analysis_data['linearization_quality_hist'].append(quality)
+        else:
+            analysis_data['linearization_quality_hist'].append(0.0)
+    
+    def _get_trust_region_stats(self, mpc, t: int) -> Dict:
+        """Get trust region statistics with fallback"""
+        try:
+            if hasattr(mpc, 'get_trust_region_stats'):
+                return mpc.get_trust_region_stats()
+        except Exception:
+            pass
+        
+        # Fallback implementation
+        return {
+            'current_radius': getattr(mpc, 'current_trust_radius', 
+                                    getattr(mpc, 'trust_radius', 1.0)),
+            'radius_increased': False,
+            'radius_decreased': False,
+            'step': t,
+            'optimization_success': True
+        }
+    
+    def _create_simulation_record(self, y_meas, u_cur: float) -> Dict[str, float]:
+        """Create simulation record for current timestep"""
+        return {
+            'feed_fe_percent': y_meas.feed_fe_percent,
+            'ore_mass_flow': y_meas.ore_mass_flow,
+            'solid_feed_percent': u_cur,
+            'conc_fe': y_meas.concentrate_fe_percent,
+            'tail_fe': y_meas.tailings_fe_percent,
+            'conc_mass': y_meas.concentrate_mass_flow,
+            'tail_mass': y_meas.tailings_mass_flow,
+            'mass_pull_pct': y_meas.mass_pull_percent,
+            'fe_recovery_percent': y_meas.fe_recovery_percent,
+        }
+    
+    def _compile_retraining_statistics(
+        self, 
+        step_metrics: list, 
+        retraining_log: list, 
+        timing_metrics: Dict[str, list]
     ) -> Dict[str, Any]:
+        """Compile comprehensive retraining statistics"""
+        
+        stats = {
+            'total_steps': len(step_metrics),
+            'retraining_events': len(retraining_log),
+            'retraining_frequency': len(retraining_log) / len(step_metrics) if step_metrics else 0.0,
+        }
+        
+        # Timing statistics
+        if timing_metrics.get('retraining_times'):
+            stats['avg_retrain_time'] = np.mean(timing_metrics['retraining_times'])
+            stats['max_retrain_time'] = np.max(timing_metrics['retraining_times'])
+            stats['total_retrain_time'] = np.sum(timing_metrics['retraining_times'])
+            stats['retrain_time_std'] = np.std(timing_metrics['retraining_times'])
+        
+        # Performance metrics over time
+        if step_metrics:
+            innovation_norms = [m.get('innovation_norm', 0.0) for m in step_metrics]
+            prediction_errors = [m.get('prediction_error', 0.0) for m in step_metrics]
+            
+            stats['avg_innovation_norm'] = np.mean(innovation_norms)
+            stats['max_innovation_norm'] = np.max(innovation_norms)
+            stats['avg_prediction_error'] = np.mean(prediction_errors)
+            stats['max_prediction_error'] = np.max(prediction_errors)
+            
+            # Performance trends (last 25% vs first 25%)
+            quarter_size = len(step_metrics) // 4
+            if quarter_size > 10:
+                early_innovation = np.mean(innovation_norms[:quarter_size])
+                late_innovation = np.mean(innovation_norms[-quarter_size:])
+                stats['innovation_trend'] = (late_innovation - early_innovation) / early_innovation if early_innovation > 0 else 0.0
+                
+                early_error = np.mean(prediction_errors[:quarter_size])
+                late_error = np.mean(prediction_errors[-quarter_size:])
+                stats['error_trend'] = (late_error - early_error) / early_error if early_error > 0 else 0.0
+        
+        # Retraining event analysis
+        if retraining_log:
+            retrain_steps = [event['step'] for event in retraining_log]
+            retrain_intervals = np.diff(retrain_steps) if len(retrain_steps) > 1 else []
+            
+            if len(retrain_intervals) > 0:
+                stats['avg_retrain_interval'] = np.mean(retrain_intervals)
+                stats['min_retrain_interval'] = np.min(retrain_intervals)
+                stats['max_retrain_interval'] = np.max(retrain_intervals)
+        
+        # Strategy-specific statistics
+        if hasattr(self, 'retraining_manager') and self.retraining_manager:
+            strategy_stats = self.retraining_manager.get_statistics()
+            stats.update({'strategy_' + k: v for k, v in strategy_stats.items()})
+        
+        return stats
+    
+    def _print_diagnostic_info(self, step: int, step_metrics: list, retraining_log: list):
+        """Print diagnostic information during simulation"""
+        if not step_metrics:
+            return
+        
+        recent_metrics = step_metrics[-min(10, len(step_metrics)):]
+        avg_innovation = np.mean([m.get('innovation_norm', 0.0) for m in recent_metrics])
+        avg_error = np.mean([m.get('prediction_error', 0.0) for m in recent_metrics])
+        
+        recent_retrains = len([r for r in retraining_log if r['step'] > step - 50])
+        
+        print(f"📊 Step {step}: Innovation={avg_innovation:.3f}, Error={avg_error:.3f}, "
+              f"Recent retrains={recent_retrains}")
+    
+    def _finalize_enhanced_analysis_data(
+        self, 
+        analysis_data: Dict, 
+        timing_metrics: Dict[str, list],
+        step_metrics: list
+    ):
+        """Finalize enhanced analysis data structure"""
+        
+        # Convert lists to arrays
+        analysis_data.update({
+            "y_true": np.vstack(analysis_data['y_true_hist']),
+            "x_hat": np.vstack(analysis_data['x_hat_hist']),
+            "P": np.stack(analysis_data['P_hist']),
+            "innov": np.vstack(analysis_data['innov_hist']),
+            "R": np.stack(analysis_data['R_hist']),
+            "u_seq": analysis_data['u_seq_hist'],
+            "d_hat": np.vstack(analysis_data['d_hat_hist']) if analysis_data['d_hat_hist'] else np.array([]),
+            "trust_region_stats": analysis_data['trust_region_stats_hist'],
+            "linearization_quality": analysis_data['linearization_quality_hist'],
+            "y_true_seq": analysis_data['y_true_seq'],
+            "x_est_seq": analysis_data['x_est_seq'],
+            "innovation_seq": analysis_data['innovation_seq'],
+            "timing_metrics": timing_metrics
+        })
+        
+        # Add enhanced arrays
+        if analysis_data.get('y_pred_seq'):
+            analysis_data["y_pred"] = np.vstack(analysis_data['y_pred_seq'])
+        
+        if step_metrics:
+            analysis_data["step_metrics_array"] = step_metrics
+        
+        # Clean up temporary storage
+        temp_keys = ['y_true_hist', 'x_hat_hist', 'P_hist', 'innov_hist', 'R_hist', 
+                    'u_seq_hist', 'd_hat_hist', 'trust_region_stats_hist', 
+                    'linearization_quality_hist', 'y_pred_seq', 'step_metrics']
+        for key in temp_keys:
+            if key in analysis_data:
+                del analysis_data[key]
+    
+    def _initialize_simulation_state(self, df_true, data, true_gen, mpc):
         """Initialize simulation state variables"""
         n_total = len(df_true) - self.params['lag'] - 1
         n_train = int(self.params['train_size'] * n_total)
@@ -589,7 +1406,7 @@ class SimulationLoop:
             'u_prev': u_prev
         }
     
-    def _initialize_analysis_storage(self) -> Dict:
+    def _initialize_analysis_storage(self):
         """Initialize storage for analysis data"""
         return {
             'y_true_hist': [],
@@ -604,211 +1421,10 @@ class SimulationLoop:
             'y_true_seq': [],
             'y_pred_seq': [],
             'x_est_seq': [],
-            'innovation_seq': []
+            'innovation_seq': [],
+            'step_metrics': []
         }
     
-    def _process_measurements(self, raw_measurements: np.ndarray) -> np.ndarray:
-        """Process raw measurements through filters"""
-        feed_fe_raw, ore_flow_raw = raw_measurements
-        
-        # Online anomaly filtering
-        feed_fe_filt = self.ad_feed_fe.update(feed_fe_raw)
-        ore_flow_filt = self.ad_ore_flow.update(ore_flow_raw)
-        
-        # Moving average filtering
-        return np.array([
-            self.filt_feed.update(feed_fe_filt),
-            self.filt_ore.update(ore_flow_filt)
-        ])
-    
-    def _update_mpc_with_ekf(self, mpc: MPCController, ekf: ExtendedKalmanFilter):
-        """Update MPC controller with EKF estimates"""
-        x_est_phys_unscaled = ekf.x_hat[:ekf.n_phys].reshape(self.params['lag'] + 1, 3)
-        mpc.reset_history(x_est_phys_unscaled)
-        mpc.d_hat = ekf.x_hat[ekf.n_phys:]
-    
-    def _optimize_control(
-        self,
-        mpc: MPCController,
-        measurements: np.ndarray,
-        u_prev: float
-    ) -> Tuple[float, float]:
-        """Optimize control action with timing measurement"""
-        start_time = time.time()
-        
-        d_seq = np.repeat(measurements.reshape(1, -1), self.params['Np'], axis=0)
-        u_seq = mpc.optimize(d_seq, u_prev)
-        u_cur = u_prev if u_seq is None else float(u_seq[0])
-        
-        prediction_time = time.time() - start_time
-        return u_cur, prediction_time
-    
-    def _store_analysis_data(
-        self,
-        analysis_data: Dict,
-        ekf: ExtendedKalmanFilter,
-        mpc: MPCController,
-        y_meas: np.ndarray,
-        t: int,
-        u_cur: float
-    ):
-        """Store data for post-simulation analysis"""
-        # Store EKF data
-        analysis_data['y_true_hist'].append(y_meas.copy())
-        analysis_data['x_hat_hist'].append(ekf.x_hat.copy())
-        analysis_data['P_hist'].append(ekf.P.copy())
-        analysis_data['R_hist'].append(ekf.R.copy())
-        
-        # Store innovation data
-        innovation = ekf.last_innovation.copy() if ekf.last_innovation is not None else np.zeros(ekf.n_dist)
-        analysis_data['innov_hist'].append(innovation)
-        
-        # Process innovation for sequences
-        if hasattr(ekf, 'last_innovation') and ekf.last_innovation is not None:
-            if ekf.last_innovation.shape[0] >= 2:
-                analysis_data['innovation_seq'].append(ekf.last_innovation[:2])
-            else:
-                analysis_data['innovation_seq'].append(np.zeros(2))
-        else:
-            analysis_data['innovation_seq'].append(np.zeros(2))
-        
-        # Store trust region statistics
-        trust_stats = self._get_trust_region_stats(mpc, t)
-        analysis_data['trust_region_stats_hist'].append(trust_stats)
-        
-        # Store linearization quality if available
-        if hasattr(mpc, 'linearization_quality_history') and mpc.linearization_quality_history:
-            quality = mpc.linearization_quality_history[-1]
-            if isinstance(quality, dict):
-                analysis_data['linearization_quality_hist'].append(quality['euclidean_distance'])
-            else:
-                analysis_data['linearization_quality_hist'].append(quality)
-    
-    def _get_trust_region_stats(self, mpc: MPCController, t: int) -> Dict:
-        """Get trust region statistics with fallback"""
-        try:
-            if hasattr(mpc, 'get_trust_region_stats'):
-                return mpc.get_trust_region_stats()
-        except Exception:
-            pass
-        
-        # Fallback implementation
-        return {
-            'current_radius': getattr(mpc, 'current_trust_radius', 
-                                    getattr(mpc, 'trust_radius', 1.0)),
-            'radius_increased': False,
-            'radius_decreased': False,
-            'step': t,
-            'optimization_success': True
-        }
-    
-    def _handle_retraining(
-        self,
-        mpc: MPCController,
-        ekf: ExtendedKalmanFilter,
-        data: Dict[str, np.ndarray],
-        scalers: Tuple[StandardScaler, StandardScaler],
-        t: int,
-        timing_metrics: Dict[str, list]
-    ):
-        """Handle dynamic model retraining"""
-        x_scaler, y_scaler = scalers
-        
-        # Add new data to buffer
-        new_x_unscaled = mpc.x_hist.flatten().reshape(1, -1)
-        new_y_unscaled = ekf.last_innovation.reshape(1, -1) if ekf.last_innovation is not None else np.zeros((1, 2))
-        
-        new_x_scaled = x_scaler.transform(new_x_unscaled)
-        new_y_scaled = y_scaler.transform(new_y_unscaled)
-        
-        self.retraining_buffer.append((new_x_scaled[0], new_y_scaled[0]))
-        
-        # Monitor innovation
-        if ekf.last_innovation is not None:
-            innov_norm = np.linalg.norm(ekf.last_innovation)
-            self.innovation_monitor.append(innov_norm)
-        
-        # Check retraining conditions
-        if self._should_retrain(t):
-            self._perform_retraining(mpc, timing_metrics)
-    
-    def _should_retrain(self, t: int) -> bool:
-        """Determine if retraining should be performed"""
-        if (t <= 0 or 
-            t % self.params['retrain_period'] != 0 or 
-            len(self.innovation_monitor) != self.params['retrain_period'] or 
-            self.retrain_cooldown_timer > 0):
-            return False
-        
-        avg_innov = float(np.mean(self.innovation_monitor))
-        return avg_innov > self.params['retrain_innov_threshold']
-    
-    def _perform_retraining(self, mpc: MPCController, timing_metrics: Dict[str, list]):
-        """Perform model retraining"""
-        print(f"\n---> RETRAINING TRIGGER at step {len(timing_metrics['prediction_times'])}!")
-        
-        retrain_data = list(self.retraining_buffer)
-        X_retrain = np.array([p[0] for p in retrain_data])
-        Y_retrain = np.array([p[1] for p in retrain_data])
-        
-        start_time = time.time()
-        mpc.fit(X_retrain, Y_retrain)
-        retrain_time = time.time() - start_time
-        
-        timing_metrics['retraining_times'].append(retrain_time)
-        print(f"--> Retraining completed in {retrain_time:.3f} sec.")
-        
-        # Reset trust region after retraining
-        if hasattr(mpc, 'reset_trust_region'):
-            mpc.reset_trust_region()
-        
-        self.innovation_monitor.clear()
-        self.retrain_cooldown_timer = self.params['retrain_period'] * 2
-    
-    def _create_simulation_record(self, y_meas: pd.Series, u_cur: float) -> Dict[str, float]:
-        """Create simulation record for current timestep"""
-        return {
-            'feed_fe_percent': y_meas.feed_fe_percent,
-            'ore_mass_flow': y_meas.ore_mass_flow,
-            'solid_feed_percent': u_cur,
-            'conc_fe': y_meas.concentrate_fe_percent,
-            'tail_fe': y_meas.tailings_fe_percent,
-            'conc_mass': y_meas.concentrate_mass_flow,
-            'tail_mass': y_meas.tailings_mass_flow,
-            'mass_pull_pct': y_meas.mass_pull_percent,
-            'fe_recovery_percent': y_meas.fe_recovery_percent,
-        }
-    
-    def _update_cooldown_timer(self):
-        """Update retraining cooldown timer"""
-        if hasattr(self, 'retrain_cooldown_timer') and self.retrain_cooldown_timer > 0:
-            self.retrain_cooldown_timer -= 1
-    
-    def _finalize_analysis_data(self, analysis_data: Dict, timing_metrics: Dict[str, list]):
-        """Finalize analysis data structure"""
-        # Convert lists to arrays
-        analysis_data.update({
-            "y_true": np.vstack(analysis_data['y_true_hist']),
-            "x_hat": np.vstack(analysis_data['x_hat_hist']),
-            "P": np.stack(analysis_data['P_hist']),
-            "innov": np.vstack(analysis_data['innov_hist']),
-            "R": np.stack(analysis_data['R_hist']),
-            "u_seq": analysis_data['u_seq_hist'],
-            "d_hat": np.vstack(analysis_data['d_hat_hist']) if analysis_data['d_hat_hist'] else np.array([]),
-            "trust_region_stats": analysis_data['trust_region_stats_hist'],
-            "linearization_quality": analysis_data['linearization_quality_hist'],
-            "y_true_seq": analysis_data['y_true_seq'],
-            "y_pred_seq": analysis_data['y_pred_seq'],
-            "x_est_seq": analysis_data['x_est_seq'],
-            "innovation_seq": analysis_data['innovation_seq'],
-            "timing_metrics": timing_metrics
-        })
-        
-        # Clean up temporary storage
-        for key in ['y_true_hist', 'x_hat_hist', 'P_hist', 'innov_hist', 'R_hist',
-                   'u_seq_hist', 'd_hat_hist', 'trust_region_stats_hist', 'linearization_quality_hist']:
-            del analysis_data[key]
-
 
 class SimulationOrchestrator:
     """Main orchestrator for MPC simulation"""
