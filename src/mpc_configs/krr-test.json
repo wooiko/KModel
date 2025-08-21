@@ -1,8 +1,8 @@
 {
     "name": "krr-test",
     "description": "KRR-MPC-TEST",
-    "N_data": 5000,
-    "control_pts": 500,
+    "N_data": 1000,
+    "control_pts": 100,
     "seed": 42,
     "train_size": 0.9,
     "val_size": 0.08,
