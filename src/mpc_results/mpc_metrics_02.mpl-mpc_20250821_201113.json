@@ -1,0 +1,5 @@
+{
+    "test_mse_total": 0.21190242056683575,
+    "test_rmse_conc_fe": 0.1691157000790259,
+    "test_rmse_conc_mass": 0.628653100780114
+}

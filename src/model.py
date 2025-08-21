@@ -676,7 +676,7 @@ class _NeuralNetworkModel(_BaseKernelModel):
         solver: str = 'adam',                  # Оптимізатор
         alpha: float = 0.001,                  # L2 регуляризація
         learning_rate_init: float = 0.001,     # Початкова швидкість навчання
-        max_iter: int = 1000,                  # Максимальна кількість епох
+        max_iter: int = 2000,                  # Максимальна кількість епох
         early_stopping: bool = True,           # Рання зупинка
         validation_fraction: float = 0.1,      # Частка валідації для ранньої зупинки
         n_iter_no_change: int = 20,           # Терпіння для ранньої зупинки
@@ -823,46 +823,37 @@ class _NeuralNetworkModel(_BaseKernelModel):
     def _run_random_search(self, X: np.ndarray, Y: np.ndarray, config_params: dict = None) -> MLPRegressor:
         """
         Випадковий пошук оптимальних гіперпараметрів для нейронної мережі.
-        Може використовувати обмежений простір пошуку з конфігурації або дефолтний простір.
-        
-        Args:
-            X: Тренувальні дані (ознаки)
-            Y: Тренувальні цілі 
-            config_params: Словник з конфігураційними параметрами, включаючи можливий param_search_space
-        
-        Returns:
-            Найкращу навчену модель MLPRegressor
+        Спрощена версія без непотрібних функцій.
         """
         
         print(f"🎯 Випадковий пошук серед {self.n_iter_random_search} конфігурацій...")
         
-        # Перевіряємо, чи є обмежений простір пошуку в конфігурації
+        # Визначаємо простір пошуку
         if config_params and 'param_search_space' in config_params:
             print(f"📋 Використовуємо обмежений простір пошуку з конфігурації")
             custom_space = config_params['param_search_space']
             
-            # Створюємо простір пошуку на основі конфігурації
             param_dist = {}
             
-            # Архітектура мережі - з конфігурації або дефолт
+            # Архітектура
             if 'hidden_layer_sizes' in custom_space:
                 param_dist['hidden_layer_sizes'] = custom_space['hidden_layer_sizes']
             else:
                 param_dist['hidden_layer_sizes'] = [(50,), (100,), (50, 25), (100, 50)]
                 
-            # Функції активації - з конфігурації або дефолт
+            # Функції активації  
             if 'activation' in custom_space:
                 param_dist['activation'] = custom_space['activation']
             else:
                 param_dist['activation'] = ['relu', 'tanh']
                 
-            # Оптимізатори - з конфігурації або дефолт
+            # Оптимізатори - тільки надійні
             if 'solver' in custom_space:
                 param_dist['solver'] = custom_space['solver']
             else:
-                param_dist['solver'] = ['adam', 'lbfgs']
+                param_dist['solver'] = ['adam']  # Тільки Adam для стабільності
                 
-            # Регуляризація - з конфігурації або розподіл
+            # Регуляризація
             if 'alpha' in custom_space:
                 if isinstance(custom_space['alpha'], list):
                     param_dist['alpha'] = custom_space['alpha']
@@ -871,7 +862,7 @@ class _NeuralNetworkModel(_BaseKernelModel):
             else:
                 param_dist['alpha'] = loguniform(1e-5, 1e-1)
                 
-            # Швидкість навчання - з конфігурації або розподіл  
+            # Швидкість навчання
             if 'learning_rate_init' in custom_space:
                 if isinstance(custom_space['learning_rate_init'], list):
                     param_dist['learning_rate_init'] = custom_space['learning_rate_init']
@@ -880,57 +871,83 @@ class _NeuralNetworkModel(_BaseKernelModel):
             else:
                 param_dist['learning_rate_init'] = loguniform(1e-4, 1e-1)
                 
-            print(f"   📊 Простір пошуку:")
-            for param, values in param_dist.items():
-                if isinstance(values, list):
-                    print(f"      • {param}: {len(values)} варіантів")
-                else:
-                    print(f"      • {param}: continuous distribution")
-                    
         else:
             print(f"📋 Використовуємо стандартний простір пошуку")
-            # Стандартний (широкий) простір пошуку гіперпараметрів
+            # Спрощений стандартний простір пошуку
             param_dist = {
                 'hidden_layer_sizes': [
-                    (50,), (100,), (50, 25), (100, 50), (100, 50, 25),
-                    (200,), (150, 75), (200, 100), (200, 100, 50)
+                    (50,), (100,), (50, 25), (100, 50), (100, 50, 25), (150, 75)
                 ],
                 'activation': ['relu', 'tanh'],
-                'solver': ['adam', 'lbfgs'],
+                'solver': ['adam'],  # Тільки надійний Adam
                 'alpha': loguniform(1e-5, 1e-1),
-                'learning_rate_init': loguniform(1e-4, 1e-1)
+                'learning_rate_init': loguniform(1e-4, 1e-2)
             }
         
-        # Базова модель для пошуку
+        # Базова модель з оптимальними параметрами для Adam
         base_model = MLPRegressor(
-            max_iter=self.max_iter,
-            early_stopping=self.early_stopping,
-            validation_fraction=self.validation_fraction,
-            n_iter_no_change=self.n_iter_no_change,
+            max_iter=2000,                    # Достатньо для збіжності Adam
+            early_stopping=True,              # Adam добре працює з early stopping
+            validation_fraction=0.15,         # Трохи більше даних для валідації
+            n_iter_no_change=25,             # Більше терпіння
             random_state=self.random_state
         )
         
-        # Випадковий пошук
-        random_search = RandomizedSearchCV(
-            base_model,
-            param_dist,
-            n_iter=self.n_iter_random_search,
-            cv=3,  # 3-fold cross-validation
-            scoring='neg_mean_squared_error',
-            random_state=self.random_state,
-            n_jobs=-1,
-            verbose=1
-        )
+        # Пригнічуємо попередження про збіжність під час пошуку
+        import warnings
+        from sklearn.exceptions import ConvergenceWarning
         
-        print(f"🔍 Запуск пошуку...")
-        random_search.fit(X, Y)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=ConvergenceWarning)
+            
+            random_search = RandomizedSearchCV(
+                base_model,
+                param_dist,
+                n_iter=self.n_iter_random_search,
+                cv=3,
+                scoring='neg_mean_squared_error',
+                random_state=self.random_state,
+                n_jobs=-1,
+                verbose=0
+            )
+            
+            print(f"🔍 Запуск пошуку...")
+            random_search.fit(X, Y)
         
         print(f"✅ Знайдено оптимальні параметри:")
         for param, value in random_search.best_params_.items():
             print(f"   • {param}: {value}")
         print(f"   • Найкращий результат CV: {-random_search.best_score_:.6f}")
         
-        return random_search.best_estimator_
+        # Повертаємо найкращу модель
+        best_model = random_search.best_estimator_
+        
+        # Якщо модель все ще має проблеми зі збіжністю, даємо їй ще один шанс
+        if hasattr(best_model, 'n_iter_') and best_model.n_iter_ >= best_model.max_iter - 10:
+            print(f"🔄 Модель близька до ліміту ітерацій. Перенавчаємо з більшим max_iter...")
+            
+            # Створюємо копію з збільшеними параметрами
+            final_model = MLPRegressor(
+                hidden_layer_sizes=best_model.hidden_layer_sizes,
+                activation=best_model.activation,
+                solver=best_model.solver,
+                alpha=best_model.alpha,
+                learning_rate_init=getattr(best_model, 'learning_rate_init', 0.001),
+                max_iter=4000,                # Подвоюємо кількість ітерацій
+                early_stopping=True,
+                validation_fraction=0.15,
+                n_iter_no_change=30,         # Ще більше терпіння
+                random_state=self.random_state
+            )
+            
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=ConvergenceWarning)
+                final_model.fit(X, Y)
+                
+            print(f"✅ Перенавчання завершено за {getattr(final_model, 'n_iter_', 'невідомо')} ітерацій")
+            return final_model
+        
+        return best_model    
     
     def get_model_info(self) -> dict:
         """Повертає інформацію про навчену модель."""
