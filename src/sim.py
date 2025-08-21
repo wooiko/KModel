@@ -2,6 +2,7 @@
 
 import numpy as np
 import pandas as pd
+import sys
 from typing import Callable, Dict, Any, Tuple, Optional
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error
@@ -1022,7 +1023,7 @@ if __name__ == '__main__':
         print("Data loaded successfully")
     except FileNotFoundError:
         print("Error: file 'processed.parquet' not found.")
-        exit(1)
+        sys.exit(1)
     
     # Create default configs if they don't exist
     available_configs = list_configs()
@@ -1094,7 +1095,7 @@ if __name__ == '__main__':
         print(f"   • Auto parameter search: {base_config.get('find_optimal_params', True)}")
     
     # Show current key parameters
-    key_params = ['Np', 'Nc', 'ref_fe', 'ref_mass', 'w_fe', 'w_mass', 'λ_obj', 'N_data', 'control_pts']
+    key_params = ['Np', 'Nc', 'ref_fe', 'ref_mass', 'w_fe', 'w_mass', 'λ_obj', 'lag', 'N_data', 'control_pts']
     print(f"\nKEY PARAMETERS:")
     for param in key_params:
         if param in base_config:

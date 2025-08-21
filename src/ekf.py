@@ -78,14 +78,14 @@ class ExtendedKalmanFilter:
         """
         Крок прогнозу (prediction step) EKF.
         Обчислює a priori оцінку стану та коваріації.
-
+    
         Args:
             u_prev (float): Попереднє значення керованої змінної.
             d_measured (np.ndarray): Вектор з двох виміряних дисторбансів (d_fe, d_mass).
         """
         x_phys_prev = self.x_hat[:self.n_phys]  # Попередня оцінка фізичного стану
         d_prev = self.x_hat[self.n_phys:]       # Попередня оцінка збурень
-
+    
         # ---- 1. Прогноз стану x_hat_k|k-1 = f(x_hat_{k-1|k-1}, u_{k-1})
         # Модель переходу для фізичної частини (зсувний регістр):
         # Зсуваємо всі елементи фізичного стану на 3 позиції назад (викидаємо найстаріші 3 елементи)
@@ -104,14 +104,27 @@ class ExtendedKalmanFilter:
         # Застосовуємо адаптивний коефіцієнт до Q
         self.P = self.F @ self.P @ self.F.T + (self.Q * self.q_scale)
         
-
-
     def update(self, z_k: np.ndarray):
-        """EKF update step з мінімальною діагностикою"""
+        """EKF update step з мінімальною діагностикою та динамічною розмірністю"""
         
-        # ✅ Основні обчислення (без змін)
-        x_phys_for_model = self.x_hat[self.n_phys-9:self.n_phys].reshape(1, -1)
+        # ✅ ВИПРАВЛЕНО: Динамічне визначення розмірності для моделі на основі lag
+        n_model_inputs = (self.L + 1) * 3  # Розмірність входів для моделі залежить від lag
+        
+        # ✅ ВИПРАВЛЕНО: Використовуємо динамічну розмірність замість жорстко закодованої -9
+        x_phys_for_model = self.x_hat[self.n_phys-n_model_inputs:self.n_phys].reshape(1, -1)
         d_scaled = self.x_hat[self.n_phys:]
+        
+        # ✅ Перевірка розмірності перед трансформацією
+        expected_features = self.x_scaler.n_features_in_
+        actual_features = x_phys_for_model.shape[1]
+        
+        if actual_features != expected_features:
+            raise ValueError(
+                f"Несумісність розмірностей: StandardScaler очікує {expected_features} ознак, "
+                f"але отримав {actual_features}. При lag={self.L} очікується {n_model_inputs} ознак. "
+                f"Перевірте, чи модель та скейлери навчені з правильним lag."
+            )
+        
         x_phys_scaled = self.x_scaler.transform(x_phys_for_model)
         
         # ✅ МІНІМАЛЬНА діагностика - ТІЛЬКИ критичні помилки
@@ -133,17 +146,18 @@ class ExtendedKalmanFilter:
                 print(f"❌ EKF step {self._debug_count}: Модель передбачає нереальні значення: {y_pred_test}")
                 self._error_count += 1
             elif self._debug_count < 2:
-                print(f"✅ EKF step {self._debug_count}: Модель OK, pred={y_pred_test}")
+                print(f"✅ EKF step {self._debug_count}: Модель OK, pred={y_pred_test}, lag={self.L}")
             
             self._debug_count += 1
         else:
             self._debug_count += 1
         
-        # ✅ Основні обчислення (без змін)
+        # ✅ Основні обчислення
         W_local_scaled, _ = self.model.linearize(x_phys_scaled)
         
+        # ✅ ВИПРАВЛЕНО: Динамічна розмірність для матриці H_k
         H_k = np.zeros((self.n_dist, self.n_aug))
-        start_idx = self.n_phys - 9
+        start_idx = self.n_phys - n_model_inputs  # ВИПРАВЛЕНО: динамічний індекс
         H_k[:, start_idx:self.n_phys] = (
             np.diag(1.0 / self.y_scaler.scale_) @ W_local_scaled.T
         )
@@ -151,48 +165,40 @@ class ExtendedKalmanFilter:
         
         y_pred_scaled = self.model.predict(x_phys_scaled)[0]
         
-        # 🔥 ВИДАЛИТИ весь блок діагностики передбачень (рядки ~30-50)
-        # Він більше не потрібен після налагодження!
-        
         y_hat_scaled = y_pred_scaled + d_scaled
         z_k_scaled = self.y_scaler.transform(z_k.reshape(1, -1))[0]
         y_tilde = z_k_scaled - y_hat_scaled
         
         # ---- Адаптивна коваріація шуму вимірювань ----
-        # Оновлюємо R на основі квадрату інновації
         self.R = self._R_initial + self.beta_R * np.diag(y_tilde**2 + 1e-6)
         
         # ---- Коваріація інновації та Калманівський коефіцієнт підсилення ----
-        S_k = H_k @ self.P @ H_k.T + self.R  # Коваріація інновації
-        K_k = self.P @ H_k.T @ np.linalg.inv(S_k)  # Калманівський коефіцієнт підсилення
+        S_k = H_k @ self.P @ H_k.T + self.R
+        K_k = self.P @ H_k.T @ np.linalg.inv(S_k)
         
         # ---- Корекція стану та коваріації ----
-        self.x_hat = self.x_hat + K_k @ y_tilde  # Оновлення стану
+        self.x_hat = self.x_hat + K_k @ y_tilde
         I = np.eye(self.n_aug)
-        # ✅ ВИПРАВЛЕНА форма Джозефа для численної стійкості:
         self.P = (I - K_k @ H_k) @ self.P @ (I - K_k @ H_k).T + K_k @ self.R @ K_k.T
         
         # ---- Адаптивне налаштування Q на основі NIS ----
         if self.q_adaptive_enabled:
             try:
                 S_k_inv = np.linalg.inv(S_k)
-                nis = y_tilde.T @ S_k_inv @ y_tilde  # Normalized Innovation Squared
+                nis = y_tilde.T @ S_k_inv @ y_tilde
                 
-                target = self.n_dist  # Очікуване значення NIS
+                target = self.n_dist
                 upper_bound = target * self.q_nis_threshold
                 lower_bound = target / self.q_nis_threshold
                 
-                # Адаптація коефіцієнта масштабування Q
                 if nis > upper_bound:
-                    # Збільшуємо Q, якщо інновації занадто великі
                     self.q_scale = min(self.q_scale * 1.02, 10.0)
                 elif nis < lower_bound:
-                    # Зменшуємо Q, якщо інновації занадто малі
                     self.q_scale = max(self.q_scale * 0.99, 0.1)
                     
             except np.linalg.LinAlgError:
-                # Ігноруємо помилки обернення матриці
                 pass
         
         # Зберігаємо інновацію для діагностики
         self.last_innovation = y_tilde.copy()
+

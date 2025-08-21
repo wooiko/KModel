@@ -986,7 +986,8 @@ def prompt_manual_adjustments(base_config: Dict[str, Any]) -> Dict[str, Any]:
         "🎯 MPC": [
             ("Np", "Горизонт прогнозування", int),
             ("Nc", "Горизонт керування", int),
-            ("λ_obj", "Коефіцієнт згладжування", float)
+            ("λ_obj", "Коефіцієнт згладжування", float),
+            ("lag", "Кількість попередніх кроків ", int)
         ],
         "📍 Уставки": [
             ("ref_fe", "Уставка Fe %", float),
@@ -1123,7 +1124,7 @@ def simulate_mpc_with_config(
         
         # 5. Показуємо фінальну конфігурацію
         print(f"\n✅ Фінальна конфігурація для запуску:")
-        key_params = ['model_type', 'Np', 'Nc', 'ref_fe', 'ref_mass', 'w_fe', 'w_mass', 'λ_obj']
+        key_params = ['model_type', 'Np', 'Nc', 'ref_fe', 'ref_mass', 'w_fe', 'w_mass', 'λ_obj', 'lag']
         for param in key_params:
             if param in params:
                 print(f"   • {param}: {params[param]}")

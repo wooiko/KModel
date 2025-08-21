@@ -112,14 +112,17 @@ class MPCController:
             'eps_y_lower': eps_y_lower
         }
     
+        # ✅ ВИПРАВЛЕНО: Динамічне визначення розмірності для моделі
+        n_model_inputs = (self.L + 1) * 3  # Розмірність входів для моделі залежить від lag
+    
         # 2. Параметри, що будуть оновлюватись на кожному кроці
-        W_param = cp.Parameter((9, self.n_targets), name="W_local")  # ✅ ВИПРАВЛЕНО: точна розмірність 9x2
+        W_param = cp.Parameter((n_model_inputs, self.n_targets), name="W_local")  # ✅ ВИПРАВЛЕНО: динамічна розмірність
         b_param = cp.Parameter(self.n_targets, name="b_local")
         x_hist_param = cp.Parameter(self.n_inputs, name="x_hist_flat")  # Повна історія (lag+1)*3
         u_prev_param = cp.Parameter(name="u_prev")
         d_hat_param = cp.Parameter(self.n_targets, name="d_hat")
         d_seq_param = cp.Parameter((self.Np, 2), name="d_seq")
-        x0_scaled_param = cp.Parameter(9, name="x0_scaled")  # ✅ ВИПРАВЛЕНО: тільки 9 змінних для моделі
+        x0_scaled_param = cp.Parameter(n_model_inputs, name="x0_scaled")  # ✅ ВИПРАВЛЕНО: динамічна розмірність
         trust_radius_param = cp.Parameter(nonneg=True, name="trust_radius")
         
         self.parameters = {
@@ -128,11 +131,11 @@ class MPCController:
             'x0_scaled': x0_scaled_param, 'trust_radius': trust_radius_param
         }
     
-        # ✅ ВИПРАВЛЕНО: Константи для масштабування ТІЛЬКИ останніх 9 змінних
-        # Витягуємо скалери для останніх 9 змінних (які подаються в модель)
-        model_input_indices = slice(-9, None)  # Останні 9 позицій
-        mean_c_model = cp.Constant(self.x_scaler.mean_[model_input_indices])  # (9,)
-        scale_c_model = cp.Constant(self.x_scaler.scale_[model_input_indices])  # (9,)
+        # ✅ ВИПРАВЛЕНО: Константи для масштабування ТІЛЬКИ останніх n_model_inputs змінних
+        # Витягуємо скалери для останніх змінних (які подаються в модель)
+        model_input_indices = slice(-n_model_inputs, None)  # ✅ ВИПРАВЛЕНО: динамічні індекси
+        mean_c_model = cp.Constant(self.x_scaler.mean_[model_input_indices])  # (n_model_inputs,)
+        scale_c_model = cp.Constant(self.x_scaler.scale_[model_input_indices])  # (n_model_inputs,)
     
         # 3. Побудова прогнозу на горизонті Np з правильним масштабуванням
         pred_fe, pred_mass = [], []
@@ -147,14 +150,14 @@ class MPCController:
             # ✅ ПРАВИЛЬНО: Формуємо повний вектор стану для збереження історії
             Xk_unscaled_full = cp.hstack(xk_unscaled_list)  # Повна історія: (lag+1)*3
             
-            # ✅ ПРАВИЛЬНО: Витягуємо тільки останні 9 змінних для передачі в модель
-            Xk_for_model = Xk_unscaled_full[-9:]  # Останні 9 змінних
+            # ✅ ВИПРАВЛЕНО: Витягуємо тільки останні n_model_inputs змінних для передачі в модель
+            Xk_for_model = Xk_unscaled_full[-n_model_inputs:]  # ✅ ВИПРАВЛЕНО: динамічна розмірність
             
             # ✅ ПРАВИЛЬНО: Масштабуємо тільки змінні моделі правильними скалерами
-            Xk_scaled = (Xk_for_model - mean_c_model) / scale_c_model  # (9,)
+            Xk_scaled = (Xk_for_model - mean_c_model) / scale_c_model  # (n_model_inputs,)
             
             # ✅ ПРАВИЛЬНО: Прогноз за локальною лінійною моделлю з правильними розмірностями
-            yk = Xk_scaled @ W_param + b_param + d_hat_param  # (9,) @ (9,2) + (2,) + (2,) = (2,)
+            yk = Xk_scaled @ W_param + b_param + d_hat_param  # (n_model_inputs,) @ (n_model_inputs,2) + (2,) + (2,) = (2,)
             pred_fe.append(yk[0])
             pred_mass.append(yk[1])
     
@@ -164,7 +167,7 @@ class MPCController:
                 weight = self.rho_trust * (self.trust_decay_factor ** k)
                 
                 # ✅ ПРАВИЛЬНО: Нормована відстань для змінних моделі
-                model_state_deviation = Xk_scaled - x0_scaled_param  # (9,) - (9,) = (9,)
+                model_state_deviation = Xk_scaled - x0_scaled_param  # (n_model_inputs,) - (n_model_inputs,) = (n_model_inputs,)
                 trust_region_cost += weight * cp.sum_squares(model_state_deviation) / trust_radius_param
     
             # Оновлюємо стан для наступного кроку
@@ -213,7 +216,6 @@ class MPCController:
         
         # 6. Створення об'єкту задачі
         self.problem = cp.Problem(cp.Minimize(total_cost), cons)
-
 
     def check_linearization_validity(self, X_current_scaled, X_predicted_scaled):
         """
@@ -409,13 +411,28 @@ class MPCController:
 
 
     def optimize(self, d_seq: np.ndarray, u_prev: float) -> np.ndarray:
-        """СТАБІЛІЗОВАНИЙ MPC з розумним trust region"""
+        """СТАБІЛІЗОВАНИЙ MPC з розумним trust region та динамічною розмірністю"""
         
         if self.x_hist is None:
             raise RuntimeError("Історія стану не ініціалізована.")
         
-        # ВИПРАВЛЕННЯ: витягуємо останні 9 змінних для моделі
-        X0_for_model = self.x_hist.flatten()[-9:].reshape(1, -1)  # (1, 9)
+        # ✅ ВИПРАВЛЕНО: Динамічне визначення розмірності на основі lag
+        n_model_inputs = (self.L + 1) * 3  # Розмірність входів для моделі
+        
+        # ✅ ВИПРАВЛЕНО: Використовуємо динамічну розмірність замість жорстко закодованої -9
+        X0_for_model = self.x_hist.flatten()[-n_model_inputs:].reshape(1, -1)
+        
+        # ✅ Додаткова перевірка розмірності
+        expected_features = self.x_scaler.n_features_in_
+        actual_features = X0_for_model.shape[1]
+        
+        if actual_features != expected_features:
+            raise ValueError(
+                f"Несумісність розмірностей в MPC: StandardScaler очікує {expected_features} ознак, "
+                f"але отримав {actual_features}. При lag={self.L} очікується {n_model_inputs} ознак. "
+                f"Перевірте, чи модель та скейлери навчені з правильним lag."
+            )
+        
         X0_current_scaled = self.x_scaler.transform(X0_for_model)
         
         # Лінеаризація
@@ -473,7 +490,7 @@ class MPCController:
             self.previous_cost = current_cost
         
         return u_optimal
-
+    
     def get_trust_region_stats(self):
         """
         Повертає статистику про роботу адаптивного trust region.
