@@ -843,7 +843,7 @@ def simulate_mpc(reference_df: pd.DataFrame, **kwargs) -> Tuple[Optional[pd.Data
     # Collect all parameters into dictionary
     params = dict(kwargs)
     
-    # FIXED: Only set defaults for missing parameters, don't overwrite config values
+    # Встановлюємо дефолтні значення ТІЛЬКИ для відсутніх параметрів
     defaults = {
         'N_data': 5000, 'control_pts': 1000, 'time_step_s': 5,
         'dead_times_s': {'concentrate_fe_percent': 20.0, 'tailings_fe_percent': 25.0,
@@ -869,22 +869,22 @@ def simulate_mpc(reference_df: pd.DataFrame, **kwargs) -> Tuple[Optional[pd.Data
         'nonlinear_config': {'concentrate_fe_percent': ('pow', 2), 'concentrate_mass_flow': ('pow', 1.5)}
     }
     
-    # CRITICAL FIX: Only set defaults for missing keys, preserve config values
+    # КРИТИЧНЕ ВИПРАВЛЕННЯ: Встановлюємо дефолти ТІЛЬКИ для відсутніх ключів
     for key, default_value in defaults.items():
         if key not in params:
             params[key] = default_value
 
-    # Print received configuration for debugging
+    # Показуємо отримані параметри конфігурації для діагностики
     config_params = ['N_data', 'model_type', 'Np', 'Nc', 'λ_obj', 'initial_trust_radius', 'retrain_period']
-    print(f"📋 RECEIVED CONFIGURATION PARAMETERS:")
+    print(f"📋 ОТРИМАНІ ПАРАМЕТРИ КОНФІГУРАЦІЇ:")
     for param in config_params:
         if param in params:
             print(f"   • {param}: {params[param]}")
 
-    # Validate linear model parameters
+    # Валідація параметрів лінійної моделі
     model_type = params['model_type'].lower()
     if model_type == 'linear':
-        print(f"🔧 Setting up L-MPC (Linear model)")
+        print(f"🔧 Налаштування L-MPC (Linear model)")
         print(f"   • Type: {params['linear_type']}")
         print(f"   • Polynomial degree: {params['poly_degree']}")
         print(f"   • Bias: {params['include_bias']}")
@@ -901,22 +901,22 @@ def simulate_mpc(reference_df: pd.DataFrame, **kwargs) -> Tuple[Optional[pd.Data
             print(f"⚠️ Invalid alpha {params['alpha']}, using 1.0")
             params['alpha'] = 1.0
     else:
-        print(f"🧠 Setting up K-MPC (Kernel model: {params['model_type']})")
+        print(f"🧠 Налаштування K-MPC (Kernel model: {params['model_type']})")
         print(f"   • Kernel: {params.get('kernel', 'rbf')}")
         print(f"   • Auto parameter search: {params.get('find_optimal_params', True)}")
     
     try:
-        # Data preparation
+        # Підготовка даних
         true_gen, df_true, X, Y = prepare_simulation_data(reference_df, params)
         data, x_scaler, y_scaler = split_and_scale_data(X, Y, params)
 
-        # Initialize enhanced MPC
+        # Ініціалізація розширеного MPC
         mpc = initialize_mpc_controller(params, x_scaler, y_scaler)
         
-        # Train and evaluate model
+        # Навчання та оцінка моделі
         metrics, timing_metrics = train_and_evaluate_model(mpc, data, y_scaler)
         
-        # Initialize EKF
+        # Ініціалізація EKF
         n_train_pts = len(data['X_train'])
         n_val_pts = len(data['X_val'])
         test_idx_start = params['lag'] + 1 + n_train_pts + n_val_pts
@@ -926,18 +926,18 @@ def simulate_mpc(reference_df: pd.DataFrame, **kwargs) -> Tuple[Optional[pd.Data
         
         ekf = initialize_ekf(mpc, (x_scaler, y_scaler), hist0_unscaled, data['Y_train_scaled'], params['lag'], params)
 
-        # Run simulation
+        # Запуск симуляції
         results_df, analysis_data = run_simulation_loop(
             true_gen, mpc, ekf, df_true, data, (x_scaler, y_scaler), params, 
             timing_metrics, params.get('progress_callback')
         )
         
-        # Check if simulation was successful
+        # Перевірка чи симуляція була успішною
         if results_df is None or len(results_df) == 0:
             print("ERROR: Simulation failed to produce results")
             return None, None
         
-        # Extended analysis
+        # Розширений аналіз
         if params.get('run_analysis', True):
             try:
                 run_post_simulation_analysis_enhanced(results_df, analysis_data, params)
@@ -945,17 +945,17 @@ def simulate_mpc(reference_df: pd.DataFrame, **kwargs) -> Tuple[Optional[pd.Data
                 print(f"Warning: Post-simulation analysis failed: {analysis_error}")
                 print("Continuing without detailed analysis...")
         
-        # Performance evaluation
+        # Оцінка ефективності
         if params.get('run_evaluation', True):
             print("\n" + "="*60)
-            print("🎯 EVALUATING MPC SYSTEM EFFECTIVENESS")
+            print("🎯 ОЦІНКА ЕФЕКТИВНОСТІ MPC СИСТЕМИ")
             print("="*60)
             try:
                 eval_results = evaluate_simulation(results_df, analysis_data, params)
                 simulation_steps = len(results_df)
                 print_evaluation_report(eval_results, detailed=True, simulation_steps=simulation_steps)
                 
-                # Visualization
+                # Візуалізація
                 if params.get('show_evaluation_plots', False):
                     print("\n📊 Creating evaluation plots...")
                     try:
@@ -971,11 +971,11 @@ def simulate_mpc(reference_df: pd.DataFrame, **kwargs) -> Tuple[Optional[pd.Data
                 traceback.print_exc()
             print("="*60)
             
-        # Automatic evaluation and saving
+        # Автоматичне оцінювання та збереження
         try:
             eval_results = evaluate_simulation(results_df, analysis_data, params)
             
-            # Save to file
+            # Збереження у файл
             file_path = quick_save(
                 results_df=results_df,
                 eval_results=eval_results,
@@ -984,7 +984,7 @@ def simulate_mpc(reference_df: pd.DataFrame, **kwargs) -> Tuple[Optional[pd.Data
                 description=f"Auto-simulation {datetime.now()}"
             )
             
-            # Add to database
+            # Додавання до бази даних
             eval_id = quick_add_to_database(
                 package=quick_load(file_path),
                 series_id="production_runs",
@@ -994,12 +994,12 @@ def simulate_mpc(reference_df: pd.DataFrame, **kwargs) -> Tuple[Optional[pd.Data
             print(f"✅ Simulation saved: file {file_path}, DB ID {eval_id}")
         except Exception as save_error:
             print(f"Warning: Could not save results: {save_error}")
-            # Continue without saving instead of failing
+            # Продовжуємо без збереження замість падіння
         
         return results_df, metrics
         
     except Exception as e:
-        print(f"❌ Critical error in simulate_mpc: {e}")
+        print(f"⌛ Critical error in simulate_mpc: {e}")
         import traceback
         traceback.print_exc()
         return None, None

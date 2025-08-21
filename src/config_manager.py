@@ -41,15 +41,59 @@ def _filter_for_simulate_mpc(config: Dict[str, Any]) -> Dict[str, Any]:
     """
     Фільтрує конфігурацію, залишаючи тільки валідні параметри для simulate_mpc з підтримкою L-MPC.
     """
-    # Імпортуємо тут щоб уникнути циклічних імпортів
-    from sim import simulate_mpc
+    # Визначаємо всі валідні параметри для simulate_mpc
+    # Оскільки simulate_mpc використовує **kwargs, потрібно явно перелічити всі допустимі параметри
+    valid_params = {
+        # Основні параметри
+        'N_data', 'control_pts', 'time_step_s', 'seed', 'n_neighbors',
+        'train_size', 'val_size', 'test_size',
+        
+        # Модель
+        'model_type', 'kernel', 'find_optimal_params',
+        'linear_type', 'poly_degree', 'include_bias', 'alpha',
+        
+        # MPC параметри
+        'Np', 'Nc', 'lag', 'λ_obj', 'K_I',
+        
+        # Ваги та уставки
+        'w_fe', 'w_mass', 'ref_fe', 'ref_mass',
+        'tolerance_fe_percent', 'tolerance_mass_percent',
+        
+        # Trust region
+        'adaptive_trust_region', 'initial_trust_radius', 'min_trust_radius',
+        'max_trust_radius', 'trust_decay_factor', 'rho_trust',
+        'linearization_check_enabled', 'max_linearization_distance',
+        'retrain_linearization_threshold',
+        
+        # EKF параметри
+        'P0', 'Q_phys', 'Q_dist', 'R', 'beta_R',
+        'q_adaptive_enabled', 'q_alpha', 'q_nis_threshold',
+        
+        # Перенавчання
+        'enable_retraining', 'retrain_period', 'retrain_innov_threshold',
+        'retrain_window_size',
+        
+        # Обмеження
+        'use_soft_constraints', 'delta_u_max', 'u_min', 'u_max',
+        'use_disturbance_estimator', 'y_max_fe', 'y_max_mass',
+        
+        # Процес
+        'plant_model_type', 'noise_level', 'enable_nonlinear',
+        
+        # Час та константи
+        'dead_times_s', 'time_constants_s',
+        
+        # Аномалії та нелінійність
+        'anomaly_params', 'nonlinear_config',
+        
+        # Аналіз та оцінка
+        'run_analysis', 'run_evaluation', 'show_evaluation_plots',
+        
+        # Колбеки
+        'progress_callback'
+    }
     
-    # Отримуємо валідні параметри через інспекцію
-    sig = inspect.signature(simulate_mpc)
-    valid_params = set(sig.parameters.keys())
-    valid_params.discard('reference_df')  # Передається окремо
-    
-    # Фільтруємо
+    # Фільтруємо конфігурацію
     filtered_config = {}
     invalid_params = []
     
@@ -60,10 +104,10 @@ def _filter_for_simulate_mpc(config: Dict[str, Any]) -> Dict[str, Any]:
             # Пропускаємо службові поля без повідомлення
             continue
         elif key.startswith('_') and key.endswith('_'):
-            # Пропускаємо роздільники секцій (_SIMULATION_, _MODEL_, etc.)
+            # Пропускаємо розділники секцій (_SIMULATION_, _MODEL_, etc.)
             continue
         elif isinstance(value, str) and value.startswith('='):
-            # Пропускаємо значення-роздільники ("======")
+            # Пропускаємо значення-розділники ("======")
             continue
         else:
             invalid_params.append(key)
@@ -99,12 +143,11 @@ def _filter_for_simulate_mpc(config: Dict[str, Any]) -> Dict[str, Any]:
             filtered_config['kernel'] = 'rbf'
             print(f"ℹ️ Додано kernel за замовчуванням для K-MPC: rbf")
     
+    # Показуємо невалідні параметри тільки якщо вони є
     if invalid_params:
         print(f"ℹ️ Пропущено невалідні параметри: {', '.join(invalid_params)}")
     
     return filtered_config
-
-
 # =============================================================================
 # === ПУБЛІЧНІ ФУНКЦІЇ ===
 # =============================================================================
