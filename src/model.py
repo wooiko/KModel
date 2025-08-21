@@ -79,7 +79,16 @@ class _KRRModel(_BaseKernelModel):
         self.intercept_: np.ndarray | None = None
 
     # ------------------------------------------------------------------
-    def fit(self, X: np.ndarray, Y: np.ndarray) -> None:
+    def fit(self, X: np.ndarray, Y: np.ndarray, config_params: dict = None) -> None:
+        """
+        Навчання KRR моделі.
+        
+        Args:
+            X: Тренувальні ознаки
+            Y: Тренувальні цілі
+            config_params: Конфігураційні параметри (не використовуються KRR, але потрібні для сумісності)
+        """
+        # Вся існуюча логіка методу залишається без змін
         if self.find_optimal_params:
             self.model = self._run_random_search(X, Y)
         else:
@@ -94,7 +103,7 @@ class _KRRModel(_BaseKernelModel):
             )
             self.model = KernelRidge(alpha=self.alpha, kernel=self.kernel, gamma=gamma_eff)
             self.model.fit(X, Y)
-
+    
         self.X_train_ = X.copy()
         self.dual_coef_ = self.model.dual_coef_
         if self.kernel == "linear":
@@ -103,7 +112,7 @@ class _KRRModel(_BaseKernelModel):
         else:
             self.coef_ = None
             self.intercept_ = np.zeros(Y.shape[1])
-
+            
     def predict(self, X: np.ndarray) -> np.ndarray:
         if self.model is None:
             raise RuntimeError("Модель KRR не навчена.")
@@ -166,7 +175,16 @@ class _GPRModel(_BaseKernelModel):
         super().__init__()
         self.models: list[GaussianProcessRegressor] = []
 
-    def fit(self, X: np.ndarray, Y: np.ndarray) -> None:
+    def fit(self, X: np.ndarray, Y: np.ndarray, config_params: dict = None) -> None:
+        """
+        Навчання GPR моделі.
+        
+        Args:
+            X: Тренувальні ознаки
+            Y: Тренувальні цілі
+            config_params: Конфігураційні параметри (не використовуються GPR, але потрібні для сумісності)
+        """
+        # Вся існуюча логіка методу залишається без змін
         k_base = (
             C(1.0, (1e-3, 1e3))
             * RBF(1.0, (0.1, 20.0))
@@ -246,7 +264,16 @@ class _SVRModel(_BaseKernelModel):
         self.n_iter_random_search = n_iter_random_search
         self.models: list[SVR] = []
 
-    def fit(self, X: np.ndarray, Y: np.ndarray) -> None:
+    def fit(self, X: np.ndarray, Y: np.ndarray, config_params: dict = None) -> None:
+        """
+        Навчання SVR моделі.
+        
+        Args:
+            X: Тренувальні ознаки
+            Y: Тренувальні цілі
+            config_params: Конфігураційні параметри (не використовуються SVR, але потрібні для сумісності)
+        """
+        # Вся існуюча логіка методу залишається без змін
         n_targets = Y.shape[1]
         self.models.clear()
         self.X_train_ = X.copy()
@@ -257,12 +284,11 @@ class _SVRModel(_BaseKernelModel):
             if self.find_optimal_params:
                 mdl = self._run_random_search(X, y)
             else:
-                # ✅ ВИПРАВЛЕНА логіка gamma
+                # Всі існуючі обчислення gamma_eff та створення моделі
                 if self.kernel == "rbf":
                     if self.gamma is not None:
                         gamma_eff = self.gamma
                     else:
-                        # ✅ ПРАВИЛЬНА sklearn формула для "scale"
                         gamma_eff = 1.0 / (X.shape[1] * X.var())
                 else:
                     gamma_eff = self.gamma
@@ -275,8 +301,6 @@ class _SVRModel(_BaseKernelModel):
                     degree=self.degree,
                 )
                 mdl.fit(X, y)
-                
-                # ✅ Зберігаємо точне gamma для linearize()
                 mdl._actual_gamma = gamma_eff if gamma_eff is not None else 'scale'
     
             self.models.append(mdl)
@@ -458,21 +482,30 @@ class _LinearModel(_BaseKernelModel):
         # Для compatibility з kernel моделями
         self._kernel = "linear"  # Позначаємо як лінійну
 
-    def fit(self, X: np.ndarray, Y: np.ndarray) -> None:
-        """Навчання лінійної моделі"""
+    def fit(self, X: np.ndarray, Y: np.ndarray, config_params: dict = None) -> None:
+        """
+        Навчання лінійної моделі.
         
-        # 🔧 Створення поліноміальних ознак якщо потрібно
+        Args:
+            X: Тренувальні ознаки
+            Y: Тренувальні цілі
+            config_params: Конфігураційні параметри (не використовуються Linear, але потрібні для сумісності)
+        """
+        # Вся існуюча логіка методу залишається без змін
+        print(f"🔧 Навчання Linear Model: {self.linear_type}, poly_degree={self.poly_degree}")
+        
+        # Створення поліноміальних ознак якщо потрібно
         if self.poly_degree > 1:
             self.poly_features = PolynomialFeatures(
                 degree=self.poly_degree,
-                include_bias=False  # bias додамо в модель
+                include_bias=False
             )
             X_features = self.poly_features.fit_transform(X)
         else:
             self.poly_features = None
             X_features = X
             
-        # 🎯 Вибір та налаштування моделі
+        # Вибір та налаштування моделі
         if self.find_optimal_params:
             self.model = self._run_random_search(X_features, Y)
         else:
@@ -483,10 +516,10 @@ class _LinearModel(_BaseKernelModel):
             elif self.linear_type == "lasso":
                 self.model = Lasso(alpha=self.alpha, fit_intercept=self.include_bias, max_iter=2000)
         
-        # 🚀 Навчання
+        # Навчання
         self.model.fit(X_features, Y)
         
-        # 📊 Зберігаємо коефіцієнти для швидкого доступу
+        # Збереження коефіцієнтів для швидкого доступу
         self.coef_ = self.model.coef_.T if Y.ndim > 1 else self.model.coef_.reshape(-1, 1)
         self.intercept_ = (
             self.model.intercept_ if hasattr(self.model, 'intercept_') 
@@ -495,7 +528,7 @@ class _LinearModel(_BaseKernelModel):
         
         print(f"✅ Linear Model навчена: {self.linear_type}, poly_degree={self.poly_degree}")
         print(f"   Коефіцієнти shape: {self.coef_.shape}, Intercept: {self.intercept_.shape}")
-
+    
     def predict(self, X: np.ndarray) -> np.ndarray:
         """Передбачення лінійної моделі"""
         if self.model is None:
@@ -673,8 +706,15 @@ class _NeuralNetworkModel(_BaseKernelModel):
         # Для сумісності з kernel interface
         self._kernel = "neural_network"
 
-    def fit(self, X: np.ndarray, Y: np.ndarray) -> None:
-        """Навчання нейронної мережі на тренувальних даних."""
+    def fit(self, X: np.ndarray, Y: np.ndarray, config_params: dict = None) -> None:
+        """
+        Навчання нейронної мережі на тренувальних даних з підтримкою конфігураційних параметрів.
+        
+        Args:
+            X: Тренувальні ознаки
+            Y: Тренувальні цілі
+            config_params: Додаткові параметри з конфігурації (включаючи param_search_space)
+        """
         print(f"🧠 Навчання Neural Network...")
         print(f"   Архітектура: {self.hidden_layer_sizes}")
         print(f"   Активація: {self.activation}, Solver: {self.solver}")
@@ -684,9 +724,10 @@ class _NeuralNetworkModel(_BaseKernelModel):
         
         if self.find_optimal_params:
             print(f"🔍 Автоматичний пошук оптимальних гіперпараметрів...")
-            self.model = self._run_random_search(X, Y)
+            # Передаємо конфігураційні параметри до методу пошуку
+            self.model = self._run_random_search(X, Y, config_params)
         else:
-            # Створення моделі з заданими параметрами
+            # Створення моделі з заданими параметрами (без змін)
             self.model = MLPRegressor(
                 hidden_layer_sizes=self.hidden_layer_sizes,
                 activation=self.activation,
@@ -703,14 +744,14 @@ class _NeuralNetworkModel(_BaseKernelModel):
             print(f"📚 Навчання на {X.shape[0]} зразках...")
             self.model.fit(X, Y)
         
-        # Перевірка конвергенції
+        # Перевірка конвергенції (без змін)
         if hasattr(self.model, 'n_iter_'):
             print(f"✅ Навчання завершено за {self.model.n_iter_} епох")
             if self.model.n_iter_ >= self.max_iter:
                 print(f"⚠️  Досягнуто максимальну кількість епох. Можливо потрібно збільшити max_iter")
         
         print(f"   Фінальна функція втрат: {getattr(self.model, 'loss_', 'невідома'):.6f}")
-
+        
     def predict(self, X: np.ndarray) -> np.ndarray:
         """Передбачення за допомогою навченої нейронної мережі."""
         if self.model is None:
@@ -779,24 +820,88 @@ class _NeuralNetworkModel(_BaseKernelModel):
         
         return W, b
 
-    def _run_random_search(self, X: np.ndarray, Y: np.ndarray) -> MLPRegressor:
-        """Випадковий пошук оптимальних гіперпараметрів для нейронної мережі."""
+    def _run_random_search(self, X: np.ndarray, Y: np.ndarray, config_params: dict = None) -> MLPRegressor:
+        """
+        Випадковий пошук оптимальних гіперпараметрів для нейронної мережі.
+        Може використовувати обмежений простір пошуку з конфігурації або дефолтний простір.
+        
+        Args:
+            X: Тренувальні дані (ознаки)
+            Y: Тренувальні цілі 
+            config_params: Словник з конфігураційними параметрами, включаючи можливий param_search_space
+        
+        Returns:
+            Найкращу навчену модель MLPRegressor
+        """
         
         print(f"🎯 Випадковий пошук серед {self.n_iter_random_search} конфігурацій...")
         
-        # Простір пошуку гіперпараметрів
-        param_dist = {
-            'hidden_layer_sizes': [
-                (50,), (100,), (50, 25), (100, 50), (100, 50, 25),
-                (200,), (150, 75), (200, 100), (200, 100, 50)
-            ],
-            'activation': ['relu', 'tanh'],
-            'solver': ['adam', 'lbfgs'],
-            'alpha': loguniform(1e-5, 1e-1),
-            'learning_rate_init': loguniform(1e-4, 1e-1)
-        }
+        # Перевіряємо, чи є обмежений простір пошуку в конфігурації
+        if config_params and 'param_search_space' in config_params:
+            print(f"📋 Використовуємо обмежений простір пошуку з конфігурації")
+            custom_space = config_params['param_search_space']
+            
+            # Створюємо простір пошуку на основі конфігурації
+            param_dist = {}
+            
+            # Архітектура мережі - з конфігурації або дефолт
+            if 'hidden_layer_sizes' in custom_space:
+                param_dist['hidden_layer_sizes'] = custom_space['hidden_layer_sizes']
+            else:
+                param_dist['hidden_layer_sizes'] = [(50,), (100,), (50, 25), (100, 50)]
+                
+            # Функції активації - з конфігурації або дефолт
+            if 'activation' in custom_space:
+                param_dist['activation'] = custom_space['activation']
+            else:
+                param_dist['activation'] = ['relu', 'tanh']
+                
+            # Оптимізатори - з конфігурації або дефолт
+            if 'solver' in custom_space:
+                param_dist['solver'] = custom_space['solver']
+            else:
+                param_dist['solver'] = ['adam', 'lbfgs']
+                
+            # Регуляризація - з конфігурації або розподіл
+            if 'alpha' in custom_space:
+                if isinstance(custom_space['alpha'], list):
+                    param_dist['alpha'] = custom_space['alpha']
+                else:
+                    param_dist['alpha'] = loguniform(1e-5, 1e-1)
+            else:
+                param_dist['alpha'] = loguniform(1e-5, 1e-1)
+                
+            # Швидкість навчання - з конфігурації або розподіл  
+            if 'learning_rate_init' in custom_space:
+                if isinstance(custom_space['learning_rate_init'], list):
+                    param_dist['learning_rate_init'] = custom_space['learning_rate_init']
+                else:
+                    param_dist['learning_rate_init'] = loguniform(1e-4, 1e-1)
+            else:
+                param_dist['learning_rate_init'] = loguniform(1e-4, 1e-1)
+                
+            print(f"   📊 Простір пошуку:")
+            for param, values in param_dist.items():
+                if isinstance(values, list):
+                    print(f"      • {param}: {len(values)} варіантів")
+                else:
+                    print(f"      • {param}: continuous distribution")
+                    
+        else:
+            print(f"📋 Використовуємо стандартний простір пошуку")
+            # Стандартний (широкий) простір пошуку гіперпараметрів
+            param_dist = {
+                'hidden_layer_sizes': [
+                    (50,), (100,), (50, 25), (100, 50), (100, 50, 25),
+                    (200,), (150, 75), (200, 100), (200, 100, 50)
+                ],
+                'activation': ['relu', 'tanh'],
+                'solver': ['adam', 'lbfgs'],
+                'alpha': loguniform(1e-5, 1e-1),
+                'learning_rate_init': loguniform(1e-4, 1e-1)
+            }
         
-        # Базова модель
+        # Базова модель для пошуку
         base_model = MLPRegressor(
             max_iter=self.max_iter,
             early_stopping=self.early_stopping,
@@ -817,6 +922,7 @@ class _NeuralNetworkModel(_BaseKernelModel):
             verbose=1
         )
         
+        print(f"🔍 Запуск пошуку...")
         random_search.fit(X, Y)
         
         print(f"✅ Знайдено оптимальні параметри:")
@@ -825,7 +931,7 @@ class _NeuralNetworkModel(_BaseKernelModel):
         print(f"   • Найкращий результат CV: {-random_search.best_score_:.6f}")
         
         return random_search.best_estimator_
-
+    
     def get_model_info(self) -> dict:
         """Повертає інформацію про навчену модель."""
         if self.model is None:
@@ -880,9 +986,16 @@ class KernelModel:
         impl_kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
         self._impl = impl_cls(**impl_kwargs)
 
-    # API – просто делегуємо
-    def fit(self, X: np.ndarray, Y: np.ndarray) -> None:
-        return self._impl.fit(X, Y)
+    def fit(self, X: np.ndarray, Y: np.ndarray, config_params: dict = None) -> None:
+        """
+        Навчання моделі з передачею конфігураційних параметрів.
+        
+        Args:
+            X: Тренувальні ознаки
+            Y: Тренувальні цілі  
+            config_params: Параметри конфігурації для передачі до внутрішньої моделі
+        """
+        return self._impl.fit(X, Y, config_params)
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         return self._impl.predict(X)

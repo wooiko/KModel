@@ -550,16 +550,24 @@ class MPCController:
     def fit(self,
             X_train: np.ndarray,
             Y_train: np.ndarray,
-            x0_hist: np.ndarray = None):
+            x0_hist: np.ndarray = None,
+            config_params: dict = None):
         """
         Навчає KernelModel та опціонально ініціалізує історію і оцінювач збурень.
+        
+        Args:
+            X_train: Тренувальні ознаки
+            Y_train: Тренувальні цілі
+            x0_hist: Початкова історія для ініціалізації  
+            config_params: Параметри конфігурації для передачі до моделі
         """
-        self.model.fit(X_train, Y_train)
+        # Передаємо конфігураційні параметри до моделі
+        self.model.fit(X_train, Y_train, config_params)
         
         # Перевіряємо, чи була надана історія, перед тим як її встановлювати
         if x0_hist is not None:
             self.reset_history(x0_hist)
-
+    
         # Ініціалізація оцінювача збурень
         if self.use_disturbance_estimator:
             self.n_targets = Y_train.shape[1]

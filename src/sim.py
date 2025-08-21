@@ -359,25 +359,61 @@ def initialize_ekf(mpc: MPCController, scalers: Tuple[StandardScaler, StandardSc
 
 
 def train_and_evaluate_model(mpc: MPCController, data: Dict[str, np.ndarray], 
-                           y_scaler: StandardScaler) -> Tuple[Dict[str, float], Dict[str, list]]:
-    """Train process model and evaluate its quality with timing measurements."""
+                           y_scaler: StandardScaler, params: Dict[str, Any]) -> Tuple[Dict[str, float], Dict[str, list]]:
+    """
+    Навчити процесну модель та оцінити її якість з урахуванням конфігураційних параметрів.
+    
+    Args:
+        mpc: MPC контролер з моделлю для навчання
+        data: Словник з тренувальними та тестовими даними
+        y_scaler: Скейлер для зворотного перетворення передбачень
+        params: Конфігураційні параметри з JSON або kwargs
+    
+    Returns:
+        Tuple[Dict[str, float], Dict[str, list]]: Метрики моделі та метрики часу
+    """
     print("Step 3: Training and evaluating process model...")
     
-    # Measure training time
-    start_time = time.time()
-    mpc.fit(data['X_train_scaled'], data['Y_train_scaled'])
-    training_time = time.time() - start_time
+    # Виділяємо параметри, потрібні для моделі
+    model_config_params = {}
     
+    # Якщо є спеціальний простір пошуку для нейронної мережі
+    if 'param_search_space' in params:
+        model_config_params['param_search_space'] = params['param_search_space']
+    
+    # Додаємо всі інші релевантні параметри моделі
+    model_specific_keys = [
+        'find_optimal_params', 'n_iter_random_search', 'random_state',
+        'max_iter', 'early_stopping', 'validation_fraction', 'n_iter_no_change'
+    ]
+    
+    for key in model_specific_keys:
+        if key in params:
+            model_config_params[key] = params[key]
+    
+    print(f"🔧 Передача конфігураційних параметрів до моделі:")
+    if 'param_search_space' in model_config_params:
+        print(f"   ✓ Обмежений простір пошуку: увімкнено")
+    else:
+        print(f"   • Обмежений простір пошуку: відсутній")
+    
+    # Вимірюємо час навчання
+    start_time = time.time()
+    
+    # 🔑 КЛЮЧОВА ЗМІНА: передаємо конфігураційні параметри до методу fit
+    mpc.fit(data['X_train_scaled'], data['Y_train_scaled'], config_params=model_config_params)
+    
+    training_time = time.time() - start_time
     print(f"Model training time: {training_time:.2f} sec")
 
-    # Evaluate model performance
+    # Оцінка продуктивності моделі (без змін)
     y_pred_scaled = mpc.model.predict(data['X_test_scaled'])
     y_pred_orig = y_scaler.inverse_transform(y_pred_scaled)
     
     test_mse = mean_squared_error(data['Y_test'], y_pred_orig)
     print(f"Total model error on test data (MSE): {test_mse:.4f}")
     
-    # Calculate detailed metrics
+    # Розрахунок детальних метрик (без змін)
     metrics = {'test_mse_total': test_mse}
     output_columns = ['conc_fe', 'conc_mass']
     for i, col in enumerate(output_columns):
@@ -385,7 +421,7 @@ def train_and_evaluate_model(mpc: MPCController, data: Dict[str, np.ndarray],
         metrics[f'test_rmse_{col}'] = rmse
         print(f"RMSE for {col}: {rmse:.3f}")
     
-    # Initialize timing metrics
+    # Ініціалізація метрик часу (без змін)
     timing_metrics = {
         'initial_training_time': training_time,
         'retraining_times': [],
@@ -393,7 +429,6 @@ def train_and_evaluate_model(mpc: MPCController, data: Dict[str, np.ndarray],
     }
         
     return metrics, timing_metrics
-
 
 # =============================================================================
 # Simulation Loop Functions
@@ -861,15 +896,12 @@ def run_simulation_loop(true_gen: StatefulDataGenerator, mpc: MPCController,
 
 def simulate_mpc(reference_df: pd.DataFrame, **kwargs) -> Tuple[Optional[pd.DataFrame], Optional[Dict[str, float]]]:
     """
-    Enhanced version of main orchestrator function with Neural Network support and timing metrics.
-    
-    Returns:
-        Tuple of (results_df, metrics) or (None, None) in case of error
+    Enhanced version of main orchestrator function with full Neural Network support.
     """
     # Collect all parameters into dictionary
     params = dict(kwargs)
     
-    # 🆕 ПОВНИЙ НАБІР ДЕФОЛТНИХ ЗНАЧЕНЬ З ПІДТРИМКОЮ НЕЙРОННОЇ МЕРЕЖІ
+    # 🆕 ПОВНИЙ НАБІР ДЕФОЛТНИХ ЗНАЧЕНЬ З ПРАВИЛЬНОЮ ПІДТРИМКОЮ НЕЙРОННОЇ МЕРЕЖІ
     defaults = {
         # === ОСНОВНІ ПАРАМЕТРИ СИМУЛЯЦІЇ ===
         'N_data': 5000, 
@@ -897,27 +929,45 @@ def simulate_mpc(reference_df: pd.DataFrame, **kwargs) -> Tuple[Optional[pd.Data
         # === ПАРАМЕТРИ МОДЕЛЕЙ ===
         'model_type': 'krr',  # 'linear', 'krr', 'svr', 'gpr', 'nn', 'neural'
         
-        # Лінійна модель (L-MPC)
+        # Лінійна модель (L-MPC) - параметри без змін
         'linear_type': 'ols',  # 'ols', 'ridge', 'lasso'
         'poly_degree': 1,
         'include_bias': True,
-        'alpha': 1.0,  # Для лінійних моделей - регуляризація Ridge/Lasso
         
-        # Kernel моделі (K-MPC)
+        # Kernel моделі (K-MPC) - параметри без змін
         'kernel': 'rbf', 
-        'find_optimal_params': True,
         
-        # 🆕 НЕЙРОННА МЕРЕЖА (N-MPC) - НОВІ ПАРАМЕТРИ
-        'hidden_layer_sizes': (50, 25),    # Архітектура нейронної мережі
-        'activation': 'relu',               # Функція активації: 'relu', 'tanh', 'logistic'
-        'solver': 'adam',                   # Оптимізатор: 'adam', 'lbfgs', 'sgd'
-        'learning_rate_init': 0.001,        # Початкова швидкість навчання
-        'max_iter': 1000,                   # Максимальна кількість епох навчання
-        'early_stopping': True,             # Рання зупинка навчання
-        'validation_fraction': 0.1,         # Частка даних для валідації
+        # 🔧 ОНОВЛЕНО: Універсальний параметр для автопошуку
+        'find_optimal_params': True,  # ✅ За замовчуванням увімкнено для справедливого порівняння
+        
+        # 🆕 НЕЙРОННА МЕРЕЖА (N-MPC) - ПРАВИЛЬНІ ДЕФОЛТНІ ПАРАМЕТРИ
+        'hidden_layer_sizes': (100, 50),    # Середня архітектура для початкових експериментів
+        'activation': 'relu',               # Найпопулярніша функція активації
+        'solver': 'adam',                   # Найнадійніший оптимізатор для більшості задач
+        'alpha': 0.001,                     # Помірна L2 регуляризація для нейронної мережі
+        'learning_rate_init': 0.001,        # Консервативна початкова швидкість навчання
+        'max_iter': 1000,                   # Достатньо епох для збіжності без затягування
+        'early_stopping': True,             # Запобігання перенавчанню
+        'validation_fraction': 0.1,         # Стандартна частка для валідації
         'n_iter_no_change': 20,            # Терпіння для ранньої зупинки
-        'n_iter_random_search': 30,        # Кількість ітерацій для автопошуку параметрів
-        'random_state': 42,                 # Фіксація випадковості для відтворюваності
+        'n_iter_random_search': 20,        # Розумна кількість спроб для автопошуку
+        'random_state': 42,                 # Фіксована випадковість для відтворюваності
+        
+        # 🔑 КЛЮЧОВИЙ ДОДАТОК: обмежений простір пошуку для нейронної мережі
+        'param_search_space': {
+            'hidden_layer_sizes': [
+                (50,),           # Проста архітектура - 1 шар
+                (100,),          # Трохи більша проста архітектура 
+                (50, 25),        # Класична пірамідальна структура (мала)
+                (100, 50),       # Класична пірамідальна структура (середня)
+                (150, 75),       # Більша пірамідальна структура
+                (100, 50, 25)    # Глибша мережа для складних залежностей
+            ],
+            'activation': ['relu', 'tanh'],      # Дві найкращі функції активації для регресії
+            'solver': ['adam', 'lbfgs'],         # Adam для великих даних, L-BFGS для точності
+            'alpha': [0.0001, 0.001, 0.01],    # Логарифмічна шкала регуляризації
+            'learning_rate_init': [0.0005, 0.001, 0.002]  # Консервативні швидкості навчання
+        },
         
         # === MPC ПАРАМЕТРИ ===
         'λ_obj': 0.1, 
@@ -937,12 +987,12 @@ def simulate_mpc(reference_df: pd.DataFrame, **kwargs) -> Tuple[Optional[pd.Data
         'y_max_mass': 58.0, 
         'rho_trust': 0.1, 
         
-        # === ADAPTIVE TRUST REGION ПАРАМЕТРИ ===
+        # === ADAPTIVE TRUST REGION - ДИФЕРЕНЦІЙОВАНІ ЗА ТИПОМ МОДЕЛІ ===
         'adaptive_trust_region': True, 
-        'initial_trust_radius': 1.0, 
-        'min_trust_radius': 0.5,
-        'max_trust_radius': 5.0, 
-        'trust_decay_factor': 0.8, 
+        'initial_trust_radius': 1.0,     # Буде адаптовано залежно від model_type
+        'min_trust_radius': 0.5,         # Буде адаптовано залежно від model_type
+        'max_trust_radius': 5.0,         # Буде адаптовано залежно від model_type
+        'trust_decay_factor': 0.8,       # Буде адаптовано залежно від model_type
         'linearization_check_enabled': True, 
         'max_linearization_distance': 2.0,
         'retrain_linearization_threshold': 1.5, 
@@ -956,11 +1006,11 @@ def simulate_mpc(reference_df: pd.DataFrame, **kwargs) -> Tuple[Optional[pd.Data
             'concentrate_mass_flow': ('pow', 1.5)
         },
         
-        # === RETRAINING ПАРАМЕТРИ ===
+        # === RETRAINING ПАРАМЕТРИ - ДИФЕРЕНЦІЙОВАНІ ЗА ТИПОМ МОДЕЛІ ===
         'enable_retraining': True, 
-        'retrain_period': 50, 
-        'retrain_window_size': 1000,
-        'retrain_innov_threshold': 0.3, 
+        'retrain_period': 50,            # Буде адаптовано для нейронної мережі
+        'retrain_window_size': 1000,     # Буде адаптовано для нейронної мережі
+        'retrain_innov_threshold': 0.3,  # Буде адаптовано для нейронної мережі
         
         # === АНАЛІЗ ТА ОЦІНКА ===
         'run_analysis': True,
@@ -1116,7 +1166,7 @@ def simulate_mpc(reference_df: pd.DataFrame, **kwargs) -> Tuple[Optional[pd.Data
         mpc = initialize_mpc_controller(params, x_scaler, y_scaler)
         
         # === КРОК 3: НАВЧАННЯ ТА ОЦІНКА МОДЕЛІ ===
-        metrics, timing_metrics = train_and_evaluate_model(mpc, data, y_scaler)
+        metrics, timing_metrics = train_and_evaluate_model(mpc, data, y_scaler, params)
         
         # === КРОК 4: ІНІЦІАЛІЗАЦІЯ EKF ===
         n_train_pts = len(data['X_train'])
@@ -1358,18 +1408,18 @@ if __name__ == '__main__':
         
         if result is None:
             print("simulate_mpc_with_config returned None")
-            exit(1)
+            sys.exit(1)
         
         results_df, metrics = result
         
         # Check if results are valid
         if results_df is None or metrics is None:
             print("ERROR: Invalid simulation results")
-            exit(1)
+            sys.exit(1)
         
         if len(results_df) == 0:
             print("ERROR: No simulation data generated")
-            exit(1)
+            sys.exit(1)
         
         # Display results
         print("\nSIMULATION RESULTS:")

@@ -31,6 +31,9 @@
         "learning_rate_init": [0.0005, 0.001, 0.002]
     },
     "random_state": 42,
+    "train_size": 0.88, 
+    "val_size": 0.08, 
+    "test_size": 0.04,
     "Np": 6,
     "Nc": 4,
     "lag": 2,
