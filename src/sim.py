@@ -843,7 +843,7 @@ def simulate_mpc(reference_df: pd.DataFrame, **kwargs) -> Tuple[Optional[pd.Data
     # Collect all parameters into dictionary
     params = dict(kwargs)
     
-    # Set default values
+    # FIXED: Only set defaults for missing parameters, don't overwrite config values
     defaults = {
         'N_data': 5000, 'control_pts': 1000, 'time_step_s': 5,
         'dead_times_s': {'concentrate_fe_percent': 20.0, 'tailings_fe_percent': 25.0,
@@ -869,30 +869,39 @@ def simulate_mpc(reference_df: pd.DataFrame, **kwargs) -> Tuple[Optional[pd.Data
         'nonlinear_config': {'concentrate_fe_percent': ('pow', 2), 'concentrate_mass_flow': ('pow', 1.5)}
     }
     
-    for key, value in defaults.items():
-        params.setdefault(key, value)
+    # CRITICAL FIX: Only set defaults for missing keys, preserve config values
+    for key, default_value in defaults.items():
+        if key not in params:
+            params[key] = default_value
+
+    # Print received configuration for debugging
+    config_params = ['N_data', 'model_type', 'Np', 'Nc', 'λ_obj', 'initial_trust_radius', 'retrain_period']
+    print(f"📋 RECEIVED CONFIGURATION PARAMETERS:")
+    for param in config_params:
+        if param in params:
+            print(f"   • {param}: {params[param]}")
 
     # Validate linear model parameters
     model_type = params['model_type'].lower()
     if model_type == 'linear':
-        print(f"Setting up L-MPC (Linear model)")
+        print(f"🔧 Setting up L-MPC (Linear model)")
         print(f"   • Type: {params['linear_type']}")
         print(f"   • Polynomial degree: {params['poly_degree']}")
         print(f"   • Bias: {params['include_bias']}")
         
         if params['linear_type'] not in ['ols', 'ridge', 'lasso']:
-            print(f"Invalid linear_type '{params['linear_type']}', using 'ols'")
+            print(f"⚠️ Invalid linear_type '{params['linear_type']}', using 'ols'")
             params['linear_type'] = 'ols'
             
         if not (1 <= params['poly_degree'] <= 3):
-            print(f"Invalid poly_degree {params['poly_degree']}, using 1")
+            print(f"⚠️ Invalid poly_degree {params['poly_degree']}, using 1")
             params['poly_degree'] = 1
             
         if params['linear_type'] in ['ridge', 'lasso'] and params['alpha'] <= 0:
-            print(f"Invalid alpha {params['alpha']}, using 1.0")
+            print(f"⚠️ Invalid alpha {params['alpha']}, using 1.0")
             params['alpha'] = 1.0
     else:
-        print(f"Setting up K-MPC (Kernel model: {params['model_type']})")
+        print(f"🧠 Setting up K-MPC (Kernel model: {params['model_type']})")
         print(f"   • Kernel: {params.get('kernel', 'rbf')}")
         print(f"   • Auto parameter search: {params.get('find_optimal_params', True)}")
     
@@ -939,7 +948,7 @@ def simulate_mpc(reference_df: pd.DataFrame, **kwargs) -> Tuple[Optional[pd.Data
         # Performance evaluation
         if params.get('run_evaluation', True):
             print("\n" + "="*60)
-            print("EVALUATING MPC SYSTEM EFFECTIVENESS")
+            print("🎯 EVALUATING MPC SYSTEM EFFECTIVENESS")
             print("="*60)
             try:
                 eval_results = evaluate_simulation(results_df, analysis_data, params)
@@ -948,15 +957,15 @@ def simulate_mpc(reference_df: pd.DataFrame, **kwargs) -> Tuple[Optional[pd.Data
                 
                 # Visualization
                 if params.get('show_evaluation_plots', False):
-                    print("\nCreating evaluation plots...")
+                    print("\n📊 Creating evaluation plots...")
                     try:
                         from evaluation_simple import create_evaluation_plots
                         create_evaluation_plots(results_df, eval_results, params)
                     except Exception as plot_error:
-                        print(f"Error creating plots: {plot_error}")
+                        print(f"⚠️ Error creating plots: {plot_error}")
                         
             except Exception as e:
-                print(f"Error during evaluation: {e}")
+                print(f"⚠️ Error during evaluation: {e}")
                 print("Continuing without evaluation...")
                 import traceback
                 traceback.print_exc()
@@ -982,7 +991,7 @@ def simulate_mpc(reference_df: pd.DataFrame, **kwargs) -> Tuple[Optional[pd.Data
                 tags=["auto", "production"]
             )
             
-            print(f"Simulation saved: file {file_path}, DB ID {eval_id}")
+            print(f"✅ Simulation saved: file {file_path}, DB ID {eval_id}")
         except Exception as save_error:
             print(f"Warning: Could not save results: {save_error}")
             # Continue without saving instead of failing
@@ -990,7 +999,7 @@ def simulate_mpc(reference_df: pd.DataFrame, **kwargs) -> Tuple[Optional[pd.Data
         return results_df, metrics
         
     except Exception as e:
-        print(f"Critical error in simulate_mpc: {e}")
+        print(f"❌ Critical error in simulate_mpc: {e}")
         import traceback
         traceback.print_exc()
         return None, None
