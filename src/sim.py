@@ -157,17 +157,32 @@ def create_kernel_model(params: Dict[str, Any]) -> KernelModel:
             alpha=params.get('alpha', 1.0),
             find_optimal_params=params.get('find_optimal_params', False)
         )
+    elif model_type in ['nn', 'neural']:
+        # 🆕 НЕЙРОННА МЕРЕЖА - спеціальна обробка параметрів
+        return KernelModel(
+            model_type=model_type,
+            hidden_layer_sizes=params.get('hidden_layer_sizes', (50, 25)),
+            activation=params.get('activation', 'relu'),
+            solver=params.get('solver', 'adam'),
+            alpha=params.get('alpha', 0.001),  # Для нейронки це L2 регуляризація
+            learning_rate_init=params.get('learning_rate_init', 0.001),
+            max_iter=params.get('max_iter', 1000),
+            early_stopping=params.get('early_stopping', True),
+            find_optimal_params=params.get('find_optimal_params', False),
+            random_state=params.get('random_state', 42)
+        )
     else:
+        # Kernel моделі (KRR, SVR, GPR)
         return KernelModel(
             model_type=model_type,
             kernel=params.get('kernel', 'rbf'),
             find_optimal_params=params.get('find_optimal_params', True)
         )
 
-
 def configure_trust_region_params(model_type: str, params: Dict[str, Any]) -> Dict[str, Any]:
     """Configure trust region parameters based on model type."""
     if model_type == 'linear':
+        # Лінійні моделі - консервативні налаштування
         return {
             'adaptive_trust_region': params.get('adaptive_trust_region', False),
             'initial_trust_radius': params.get('initial_trust_radius', 1.2),
@@ -175,7 +190,17 @@ def configure_trust_region_params(model_type: str, params: Dict[str, Any]) -> Di
             'max_trust_radius': params.get('max_trust_radius', 3.0),
             'trust_decay_factor': params.get('trust_decay_factor', 0.9)
         }
+    elif model_type in ['nn', 'neural']:
+        # 🆕 НЕЙРОННІ МЕРЕЖІ - середні налаштування між лінійними та kernel
+        return {
+            'adaptive_trust_region': params.get('adaptive_trust_region', True),
+            'initial_trust_radius': params.get('initial_trust_radius', 1.5),
+            'min_trust_radius': params.get('min_trust_radius', 0.3),
+            'max_trust_radius': params.get('max_trust_radius', 4.0),
+            'trust_decay_factor': params.get('trust_decay_factor', 0.85)
+        }
     else:
+        # Kernel моделі - агресивні налаштування
         return {
             'adaptive_trust_region': params.get('adaptive_trust_region', True),
             'initial_trust_radius': params.get('initial_trust_radius', 1.0),
@@ -836,7 +861,7 @@ def run_simulation_loop(true_gen: StatefulDataGenerator, mpc: MPCController,
 
 def simulate_mpc(reference_df: pd.DataFrame, **kwargs) -> Tuple[Optional[pd.DataFrame], Optional[Dict[str, float]]]:
     """
-    Enhanced version of main orchestrator function with linear model support and timing metrics.
+    Enhanced version of main orchestrator function with Neural Network support and timing metrics.
     
     Returns:
         Tuple of (results_df, metrics) or (None, None) in case of error
@@ -844,52 +869,147 @@ def simulate_mpc(reference_df: pd.DataFrame, **kwargs) -> Tuple[Optional[pd.Data
     # Collect all parameters into dictionary
     params = dict(kwargs)
     
-    # Встановлюємо дефолтні значення ТІЛЬКИ для відсутніх параметрів
+    # 🆕 ПОВНИЙ НАБІР ДЕФОЛТНИХ ЗНАЧЕНЬ З ПІДТРИМКОЮ НЕЙРОННОЇ МЕРЕЖІ
     defaults = {
-        'N_data': 5000, 'control_pts': 1000, 'time_step_s': 5,
-        'dead_times_s': {'concentrate_fe_percent': 20.0, 'tailings_fe_percent': 25.0,
-                        'concentrate_mass_flow': 20.0, 'tailings_mass_flow': 25.0},
-        'time_constants_s': {'concentrate_fe_percent': 8.0, 'tailings_fe_percent': 10.0,
-                            'concentrate_mass_flow': 5.0, 'tailings_mass_flow': 7.0},
-        'lag': 2, 'Np': 6, 'Nc': 4, 'n_neighbors': 5, 'seed': 0, 'noise_level': 'none',
-        'model_type': 'krr', 'kernel': 'rbf', 'find_optimal_params': True,
-        'linear_type': 'ols', 'poly_degree': 1, 'include_bias': True, 'alpha': 1.0,
-        'λ_obj': 0.1, 'K_I': 0.01, 'w_fe': 7.0, 'w_mass': 1.0,
-        'ref_fe': 53.5, 'ref_mass': 57.0, 'train_size': 0.7, 'val_size': 0.15, 'test_size': 0.15,
-        'u_min': 20.0, 'u_max': 40.0, 'delta_u_max': 1.0, 'use_disturbance_estimator': True,
-        'y_max_fe': 54.5, 'y_max_mass': 58.0, 'rho_trust': 0.1, 'max_trust_radius': 5.0,
-        'adaptive_trust_region': True, 'initial_trust_radius': 1.0, 'min_trust_radius': 0.5,
-        'trust_decay_factor': 0.8, 'linearization_check_enabled': True, 'max_linearization_distance': 2.0,
-        'retrain_linearization_threshold': 1.5, 'use_soft_constraints': True, 'plant_model_type': 'rf',
-        'enable_retraining': True, 'retrain_period': 50, 'retrain_window_size': 1000,
-        'retrain_innov_threshold': 0.3, 'enable_nonlinear': False, 'run_analysis': True,
-        'run_evaluation': True, 'show_evaluation_plots': False, 'tolerance_fe_percent': 2.0,
-        'tolerance_mass_percent': 2.0, 'P0': 1e-2, 'Q_phys': 1500, 'Q_dist': 1, 'R': 0.01,
-        'q_adaptive_enabled': True, 'q_alpha': 0.99, 'q_nis_threshold': 1.5,
-        'anomaly_params': {'window': 25, 'spike_z': 4.0, 'drop_rel': 0.30, 'freeze_len': 5, 'enabled': True},
-        'nonlinear_config': {'concentrate_fe_percent': ('pow', 2), 'concentrate_mass_flow': ('pow', 1.5)}
+        # === ОСНОВНІ ПАРАМЕТРИ СИМУЛЯЦІЇ ===
+        'N_data': 5000, 
+        'control_pts': 1000, 
+        'time_step_s': 5,
+        'dead_times_s': {
+            'concentrate_fe_percent': 20.0, 
+            'tailings_fe_percent': 25.0,
+            'concentrate_mass_flow': 20.0, 
+            'tailings_mass_flow': 25.0
+        },
+        'time_constants_s': {
+            'concentrate_fe_percent': 8.0, 
+            'tailings_fe_percent': 10.0,
+            'concentrate_mass_flow': 5.0, 
+            'tailings_mass_flow': 7.0
+        },
+        'lag': 2, 
+        'Np': 6, 
+        'Nc': 4, 
+        'n_neighbors': 5, 
+        'seed': 0, 
+        'noise_level': 'none',
+        
+        # === ПАРАМЕТРИ МОДЕЛЕЙ ===
+        'model_type': 'krr',  # 'linear', 'krr', 'svr', 'gpr', 'nn', 'neural'
+        
+        # Лінійна модель (L-MPC)
+        'linear_type': 'ols',  # 'ols', 'ridge', 'lasso'
+        'poly_degree': 1,
+        'include_bias': True,
+        'alpha': 1.0,  # Для лінійних моделей - регуляризація Ridge/Lasso
+        
+        # Kernel моделі (K-MPC)
+        'kernel': 'rbf', 
+        'find_optimal_params': True,
+        
+        # 🆕 НЕЙРОННА МЕРЕЖА (N-MPC) - НОВІ ПАРАМЕТРИ
+        'hidden_layer_sizes': (50, 25),    # Архітектура нейронної мережі
+        'activation': 'relu',               # Функція активації: 'relu', 'tanh', 'logistic'
+        'solver': 'adam',                   # Оптимізатор: 'adam', 'lbfgs', 'sgd'
+        'learning_rate_init': 0.001,        # Початкова швидкість навчання
+        'max_iter': 1000,                   # Максимальна кількість епох навчання
+        'early_stopping': True,             # Рання зупинка навчання
+        'validation_fraction': 0.1,         # Частка даних для валідації
+        'n_iter_no_change': 20,            # Терпіння для ранньої зупинки
+        'n_iter_random_search': 30,        # Кількість ітерацій для автопошуку параметрів
+        'random_state': 42,                 # Фіксація випадковості для відтворюваності
+        
+        # === MPC ПАРАМЕТРИ ===
+        'λ_obj': 0.1, 
+        'K_I': 0.01, 
+        'w_fe': 7.0, 
+        'w_mass': 1.0,
+        'ref_fe': 53.5, 
+        'ref_mass': 57.0, 
+        'train_size': 0.7, 
+        'val_size': 0.15, 
+        'test_size': 0.15,
+        'u_min': 20.0, 
+        'u_max': 40.0, 
+        'delta_u_max': 1.0, 
+        'use_disturbance_estimator': True,
+        'y_max_fe': 54.5, 
+        'y_max_mass': 58.0, 
+        'rho_trust': 0.1, 
+        
+        # === ADAPTIVE TRUST REGION ПАРАМЕТРИ ===
+        'adaptive_trust_region': True, 
+        'initial_trust_radius': 1.0, 
+        'min_trust_radius': 0.5,
+        'max_trust_radius': 5.0, 
+        'trust_decay_factor': 0.8, 
+        'linearization_check_enabled': True, 
+        'max_linearization_distance': 2.0,
+        'retrain_linearization_threshold': 1.5, 
+        'use_soft_constraints': True, 
+        
+        # === ПРОЦЕСНІ ПАРАМЕТРИ ===
+        'plant_model_type': 'rf',
+        'enable_nonlinear': False,
+        'nonlinear_config': {
+            'concentrate_fe_percent': ('pow', 2), 
+            'concentrate_mass_flow': ('pow', 1.5)
+        },
+        
+        # === RETRAINING ПАРАМЕТРИ ===
+        'enable_retraining': True, 
+        'retrain_period': 50, 
+        'retrain_window_size': 1000,
+        'retrain_innov_threshold': 0.3, 
+        
+        # === АНАЛІЗ ТА ОЦІНКА ===
+        'run_analysis': True,
+        'run_evaluation': True, 
+        'show_evaluation_plots': False, 
+        'tolerance_fe_percent': 2.0,
+        'tolerance_mass_percent': 2.0, 
+        
+        # === EKF ПАРАМЕТРИ ===
+        'P0': 1e-2, 
+        'Q_phys': 1500, 
+        'Q_dist': 1, 
+        'R': 0.01,
+        'q_adaptive_enabled': True, 
+        'q_alpha': 0.99, 
+        'q_nis_threshold': 1.5,
+        
+        # === ANOMALY DETECTION ПАРАМЕТРИ ===
+        'anomaly_params': {
+            'window': 25, 
+            'spike_z': 4.0, 
+            'drop_rel': 0.30, 
+            'freeze_len': 5, 
+            'enabled': True
+        }
     }
     
-    # КРИТИЧНЕ ВИПРАВЛЕННЯ: Встановлюємо дефолти ТІЛЬКИ для відсутніх ключів
+    # 🆕 ВСТАНОВЛЮЄМО ДЕФОЛТИ ТІЛЬКИ ДЛЯ ВІДСУТНІХ КЛЮЧІВ
     for key, default_value in defaults.items():
         if key not in params:
             params[key] = default_value
 
-    # Показуємо отримані параметри конфігурації для діагностики
+    # 🆕 ПОКАЗУЄМО ОТРИМАНІ ПАРАМЕТРИ КОНФІГУРАЦІЇ ДЛЯ ДІАГНОСТИКИ
     config_params = ['N_data', 'model_type', 'Np', 'Nc', 'λ_obj', 'initial_trust_radius', 'retrain_period']
     print(f"📋 ОТРИМАНІ ПАРАМЕТРИ КОНФІГУРАЦІЇ:")
     for param in config_params:
         if param in params:
             print(f"   • {param}: {params[param]}")
 
-    # Валідація параметрів лінійної моделі
+    # 🆕 РОЗШИРЕНА ВАЛІДАЦІЯ ПАРАМЕТРІВ З ПІДТРИМКОЮ НЕЙРОННОЇ МЕРЕЖІ
     model_type = params['model_type'].lower()
+    
     if model_type == 'linear':
         print(f"🔧 Налаштування L-MPC (Linear model)")
         print(f"   • Type: {params['linear_type']}")
         print(f"   • Polynomial degree: {params['poly_degree']}")
         print(f"   • Bias: {params['include_bias']}")
         
+        # Валідація параметрів лінійної моделі
         if params['linear_type'] not in ['ols', 'ridge', 'lasso']:
             print(f"⚠️ Invalid linear_type '{params['linear_type']}', using 'ols'")
             params['linear_type'] = 'ols'
@@ -901,23 +1021,104 @@ def simulate_mpc(reference_df: pd.DataFrame, **kwargs) -> Tuple[Optional[pd.Data
         if params['linear_type'] in ['ridge', 'lasso'] and params['alpha'] <= 0:
             print(f"⚠️ Invalid alpha {params['alpha']}, using 1.0")
             params['alpha'] = 1.0
+            
+    elif model_type in ['nn', 'neural']:
+        # 🆕 ВАЛІДАЦІЯ ПАРАМЕТРІВ НЕЙРОННОЇ МЕРЕЖІ
+        print(f"🧠 Налаштування N-MPC (Neural Network model)")
+        print(f"   • Architecture: {params['hidden_layer_sizes']}")
+        print(f"   • Activation: {params['activation']}")
+        print(f"   • Solver: {params['solver']}")
+        print(f"   • Max iterations: {params['max_iter']}")
+        print(f"   • Learning rate: {params['learning_rate_init']}")
+        print(f"   • Early stopping: {params['early_stopping']}")
+        print(f"   • Auto parameter search: {params['find_optimal_params']}")
+        
+        # Валідація архітектури нейронної мережі
+        hidden_layers = params['hidden_layer_sizes']
+        if not isinstance(hidden_layers, (tuple, list)) or len(hidden_layers) == 0:
+            print(f"⚠️ Invalid hidden_layer_sizes, using default (50, 25)")
+            params['hidden_layer_sizes'] = (50, 25)
+        else:
+            # Перевірка, що всі значення є позитивними цілими числами
+            try:
+                valid_layers = tuple(int(size) for size in hidden_layers if int(size) > 0)
+                if len(valid_layers) != len(hidden_layers):
+                    raise ValueError("Invalid layer sizes")
+                params['hidden_layer_sizes'] = valid_layers
+            except (ValueError, TypeError):
+                print(f"⚠️ Invalid hidden_layer_sizes values, using default (50, 25)")
+                params['hidden_layer_sizes'] = (50, 25)
+            
+        # Валідація функції активації
+        if params['activation'] not in ['relu', 'tanh', 'logistic']:
+            print(f"⚠️ Invalid activation '{params['activation']}', using 'relu'")
+            params['activation'] = 'relu'
+            
+        # Валідація оптимізатора
+        if params['solver'] not in ['adam', 'lbfgs', 'sgd']:
+            print(f"⚠️ Invalid solver '{params['solver']}', using 'adam'")
+            params['solver'] = 'adam'
+            
+        # Валідація числових параметрів
+        if params['learning_rate_init'] <= 0 or params['learning_rate_init'] > 1:
+            print(f"⚠️ Invalid learning_rate_init {params['learning_rate_init']}, using 0.001")
+            params['learning_rate_init'] = 0.001
+            
+        if params['max_iter'] <= 0:
+            print(f"⚠️ Invalid max_iter {params['max_iter']}, using 1000")
+            params['max_iter'] = 1000
+            
+        if params['alpha'] < 0:  # Для нейронки alpha це L2 регуляризація
+            print(f"⚠️ Invalid alpha {params['alpha']}, using 0.001")
+            params['alpha'] = 0.001
+        
+        # 🆕 СПЕЦІАЛЬНІ НАЛАШТУВАННЯ TRUST REGION ДЛЯ НЕЙРОННОЇ МЕРЕЖІ
+        if 'initial_trust_radius' not in kwargs:  # Якщо не встановлено користувачем
+            params['initial_trust_radius'] = 1.5  # Середнє між лінійною (1.2) та kernel (1.0)
+        if 'min_trust_radius' not in kwargs:
+            params['min_trust_radius'] = 0.3
+        if 'max_trust_radius' not in kwargs:
+            params['max_trust_radius'] = 4.0
+        if 'trust_decay_factor' not in kwargs:
+            params['trust_decay_factor'] = 0.85
+        
+        # 🆕 СПЕЦІАЛЬНІ НАЛАШТУВАННЯ RETRAINING ДЛЯ НЕЙРОННОЇ МЕРЕЖІ
+        if 'retrain_period' not in kwargs:  # Частіше перенавчання для нейронки
+            params['retrain_period'] = 40
+        if 'retrain_innov_threshold' not in kwargs:  # Нижчий поріг
+            params['retrain_innov_threshold'] = 0.25
+            
+        print(f"   • Trust region адаптовано для нейронної мережі:")
+        print(f"     - Initial radius: {params['initial_trust_radius']}")
+        print(f"     - Retrain period: {params['retrain_period']}")
+        
     else:
-        print(f"🧠 Налаштування K-MPC (Kernel model: {params['model_type']})")
+        # Kernel моделі (KRR, SVR, GPR)
+        print(f"🧮 Налаштування K-MPC (Kernel model: {params['model_type']})")
         print(f"   • Kernel: {params.get('kernel', 'rbf')}")
         print(f"   • Auto parameter search: {params.get('find_optimal_params', True)}")
+        
+        # Валідація kernel параметрів
+        if params.get('kernel') not in ['linear', 'rbf', 'poly']:
+            print(f"⚠️ Invalid kernel '{params.get('kernel')}', using 'rbf'")
+            params['kernel'] = 'rbf'
     
     try:
-        # Підготовка даних
+        # === КРОК 1: ПІДГОТОВКА ДАНИХ ===
+        print(f"\n🔄 ПОЧАТОК СИМУЛЯЦІЇ MPC:")
+        print(f"   Режим: {model_type.upper()}-MPC")
+        print("=" * 50)
+        
         true_gen, df_true, X, Y = prepare_simulation_data(reference_df, params)
         data, x_scaler, y_scaler = split_and_scale_data(X, Y, params)
 
-        # Ініціалізація розширеного MPC
+        # === КРОК 2: ІНІЦІАЛІЗАЦІЯ MPC КОНТРОЛЕРА ===
         mpc = initialize_mpc_controller(params, x_scaler, y_scaler)
         
-        # Навчання та оцінка моделі
+        # === КРОК 3: НАВЧАННЯ ТА ОЦІНКА МОДЕЛІ ===
         metrics, timing_metrics = train_and_evaluate_model(mpc, data, y_scaler)
         
-        # Ініціалізація EKF
+        # === КРОК 4: ІНІЦІАЛІЗАЦІЯ EKF ===
         n_train_pts = len(data['X_train'])
         n_val_pts = len(data['X_val'])
         test_idx_start = params['lag'] + 1 + n_train_pts + n_val_pts
@@ -927,18 +1128,18 @@ def simulate_mpc(reference_df: pd.DataFrame, **kwargs) -> Tuple[Optional[pd.Data
         
         ekf = initialize_ekf(mpc, (x_scaler, y_scaler), hist0_unscaled, data['Y_train_scaled'], params['lag'], params)
 
-        # Запуск симуляції
+        # === КРОК 5: ЗАПУСК СИМУЛЯЦІЇ ===
         results_df, analysis_data = run_simulation_loop(
             true_gen, mpc, ekf, df_true, data, (x_scaler, y_scaler), params, 
             timing_metrics, params.get('progress_callback')
         )
         
-        # Перевірка чи симуляція була успішною
+        # === ПЕРЕВІРКА РЕЗУЛЬТАТІВ ===
         if results_df is None or len(results_df) == 0:
             print("ERROR: Simulation failed to produce results")
             return None, None
         
-        # Розширений аналіз
+        # === КРОК 6: РОЗШИРЕНИЙ АНАЛІЗ ===
         if params.get('run_analysis', True):
             try:
                 run_post_simulation_analysis_enhanced(results_df, analysis_data, params)
@@ -946,7 +1147,7 @@ def simulate_mpc(reference_df: pd.DataFrame, **kwargs) -> Tuple[Optional[pd.Data
                 print(f"Warning: Post-simulation analysis failed: {analysis_error}")
                 print("Continuing without detailed analysis...")
         
-        # Оцінка ефективності
+        # === КРОК 7: ОЦІНКА ЕФЕКТИВНОСТІ ===
         if params.get('run_evaluation', True):
             print("\n" + "="*60)
             print("🎯 ОЦІНКА ЕФЕКТИВНОСТІ MPC СИСТЕМИ")
@@ -972,7 +1173,7 @@ def simulate_mpc(reference_df: pd.DataFrame, **kwargs) -> Tuple[Optional[pd.Data
                 traceback.print_exc()
             print("="*60)
             
-        # Автоматичне оцінювання та збереження
+        # === КРОК 8: АВТОМАТИЧНЕ ОЦІНЮВАННЯ ТА ЗБЕРЕЖЕННЯ ===
         try:
             eval_results = evaluate_simulation(results_df, analysis_data, params)
             
@@ -982,14 +1183,14 @@ def simulate_mpc(reference_df: pd.DataFrame, **kwargs) -> Tuple[Optional[pd.Data
                 eval_results=eval_results,
                 analysis_data=analysis_data,
                 params=params,
-                description=f"Auto-simulation {datetime.now()}"
+                description=f"Auto-simulation {model_type.upper()}-MPC {datetime.now()}"
             )
             
             # Додавання до бази даних
             eval_id = quick_add_to_database(
                 package=quick_load(file_path),
                 series_id="production_runs",
-                tags=["auto", "production"]
+                tags=["auto", "production", f"{model_type}_mpc"]
             )
             
             print(f"✅ Simulation saved: file {file_path}, DB ID {eval_id}")
@@ -997,14 +1198,26 @@ def simulate_mpc(reference_df: pd.DataFrame, **kwargs) -> Tuple[Optional[pd.Data
             print(f"Warning: Could not save results: {save_error}")
             # Продовжуємо без збереження замість падіння
         
+        # === ФІНАЛЬНИЙ ЗВІТ ===
+        print(f"\n🎉 СИМУЛЯЦІЯ ЗАВЕРШЕНА УСПІШНО!")
+        print(f"   Модель: {model_type.upper()}-MPC")
+        if model_type in ['nn', 'neural']:
+            print(f"   Архітектура NN: {params['hidden_layer_sizes']}")
+            print(f"   Активація: {params['activation']}")
+        elif model_type == 'linear':
+            print(f"   Тип лінійної моделі: {params['linear_type']}")
+        else:
+            print(f"   Kernel: {params.get('kernel', 'rbf')}")
+        print(f"   Кроків симуляції: {len(results_df)}")
+        print(f"   MSE: {metrics.get('test_mse_total', 'N/A')}")
+        
         return results_df, metrics
         
     except Exception as e:
-        print(f"⌛ Critical error in simulate_mpc: {e}")
+        print(f"⛔ Critical error in simulate_mpc: {e}")
         import traceback
         traceback.print_exc()
         return None, None
-
 
 # =============================================================================
 # Command Line Interface

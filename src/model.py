@@ -19,6 +19,7 @@ from sklearn.model_selection import RandomizedSearchCV
 from sklearn.svm import SVR
 from sklearn.linear_model import LinearRegression, Ridge, Lasso
 from sklearn.preprocessing import PolynomialFeatures
+from sklearn.neural_network import MLPRegressor
 
 # ======================================================================
 #                        БАЗОВА СТРАТЕГІЯ
@@ -628,6 +629,226 @@ class _LinearModel(_BaseKernelModel):
         print(f"✅ Оптимальні параметри Linear {self.linear_type}: {rs.best_params_}")
         
         return rs.best_estimator_
+    
+class _NeuralNetworkModel(_BaseKernelModel):
+    """
+    Нейронна мережа (MLP) для системи MPC з підтримкою лінеаризації.
+    Реалізує той самий інтерфейс, що й інші моделі у системі.
+    """
+    
+    def __init__(
+        self,
+        hidden_layer_sizes: tuple = (50, 25),  # Архітектура мережі
+        activation: str = 'relu',              # Функція активації
+        solver: str = 'adam',                  # Оптимізатор
+        alpha: float = 0.001,                  # L2 регуляризація
+        learning_rate_init: float = 0.001,     # Початкова швидкість навчання
+        max_iter: int = 1000,                  # Максимальна кількість епох
+        early_stopping: bool = True,           # Рання зупинка
+        validation_fraction: float = 0.1,      # Частка валідації для ранньої зупинки
+        n_iter_no_change: int = 20,           # Терпіння для ранньої зупинки
+        find_optimal_params: bool = False,     # Автопошук гіперпараметрів
+        n_iter_random_search: int = 30,        # Кількість ітерацій випадкового пошуку
+        random_state: int = 42                 # Фіксація випадковості
+    ):
+        super().__init__()
+        self.hidden_layer_sizes = hidden_layer_sizes
+        self.activation = activation
+        self.solver = solver
+        self.alpha = alpha
+        self.learning_rate_init = learning_rate_init
+        self.max_iter = max_iter
+        self.early_stopping = early_stopping
+        self.validation_fraction = validation_fraction
+        self.n_iter_no_change = n_iter_no_change
+        self.find_optimal_params = find_optimal_params
+        self.n_iter_random_search = n_iter_random_search
+        self.random_state = random_state
+        
+        # Внутрішні атрибути
+        self.model: MLPRegressor | None = None
+        self.n_features_: int | None = None
+        self.n_outputs_: int | None = None
+        
+        # Для сумісності з kernel interface
+        self._kernel = "neural_network"
+
+    def fit(self, X: np.ndarray, Y: np.ndarray) -> None:
+        """Навчання нейронної мережі на тренувальних даних."""
+        print(f"🧠 Навчання Neural Network...")
+        print(f"   Архітектура: {self.hidden_layer_sizes}")
+        print(f"   Активація: {self.activation}, Solver: {self.solver}")
+        
+        self.n_features_ = X.shape[1]
+        self.n_outputs_ = Y.shape[1] if Y.ndim > 1 else 1
+        
+        if self.find_optimal_params:
+            print(f"🔍 Автоматичний пошук оптимальних гіперпараметрів...")
+            self.model = self._run_random_search(X, Y)
+        else:
+            # Створення моделі з заданими параметрами
+            self.model = MLPRegressor(
+                hidden_layer_sizes=self.hidden_layer_sizes,
+                activation=self.activation,
+                solver=self.solver,
+                alpha=self.alpha,
+                learning_rate_init=self.learning_rate_init,
+                max_iter=self.max_iter,
+                early_stopping=self.early_stopping,
+                validation_fraction=self.validation_fraction,
+                n_iter_no_change=self.n_iter_no_change,
+                random_state=self.random_state
+            )
+            
+            print(f"📚 Навчання на {X.shape[0]} зразках...")
+            self.model.fit(X, Y)
+        
+        # Перевірка конвергенції
+        if hasattr(self.model, 'n_iter_'):
+            print(f"✅ Навчання завершено за {self.model.n_iter_} епох")
+            if self.model.n_iter_ >= self.max_iter:
+                print(f"⚠️  Досягнуто максимальну кількість епох. Можливо потрібно збільшити max_iter")
+        
+        print(f"   Фінальна функція втрат: {getattr(self.model, 'loss_', 'невідома'):.6f}")
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        """Передбачення за допомогою навченої нейронної мережі."""
+        if self.model is None:
+            raise RuntimeError("Нейронна мережа не навчена. Викличте fit() спочатку.")
+        
+        predictions = self.model.predict(X)
+        
+        # Забезпечуємо правильну форму виходу
+        if predictions.ndim == 1 and self.n_outputs_ > 1:
+            predictions = predictions.reshape(-1, self.n_outputs_)
+        elif predictions.ndim == 1:
+            predictions = predictions.reshape(-1, 1)
+            
+        return predictions
+
+    def linearize(self, X0: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Лінеаризація нейронної мережі в точці X0 за допомогою числового диференціювання.
+        
+        Повертає:
+            W: (n_features, n_outputs) - матриця градієнтів (якобіан)
+            b: (n_outputs,) - вектор зміщення для лінійної апроксимації
+        """
+        if self.model is None:
+            raise RuntimeError("Нейронна мережа не навчена.")
+        
+        if X0.ndim == 1:
+            X0 = X0.reshape(1, -1)
+        
+        # Параметри для числового диференціювання
+        epsilon = 1e-7  # Крок для обчислення градієнту
+        n_features = X0.shape[1]
+        
+        # Передбачення в точці X0
+        y0 = self.predict(X0)[0]  # (n_outputs,)
+        n_outputs = len(y0)
+        
+        # Ініціалізація матриці якобіану
+        W = np.zeros((n_features, n_outputs))
+        
+        # Обчислення часткових похідних для кожної змінної
+        for i in range(n_features):
+            # Створюємо збурену точку
+            X_plus = X0.copy()
+            X_minus = X0.copy()
+            
+            X_plus[0, i] += epsilon
+            X_minus[0, i] -= epsilon
+            
+            # Обчислюємо градієнт методом центральних різниць
+            y_plus = self.predict(X_plus)[0]
+            y_minus = self.predict(X_minus)[0]
+            
+            # Часткова похідна для i-ї змінної
+            grad_i = (y_plus - y_minus) / (2 * epsilon)
+            W[i, :] = grad_i
+        
+        # Обчислюємо зміщення для лінійної апроксимації
+        # y ≈ y0 + W^T * (x - x0) = (y0 - W^T * x0) + W^T * x
+        # Тому b = y0 - W^T * x0
+        b = y0 - X0[0] @ W
+        
+        # Обмеження градієнтів для стабільності
+        W = np.clip(W, -1e3, 1e3)
+        b = np.clip(b, -1e3, 1e3)
+        
+        return W, b
+
+    def _run_random_search(self, X: np.ndarray, Y: np.ndarray) -> MLPRegressor:
+        """Випадковий пошук оптимальних гіперпараметрів для нейронної мережі."""
+        
+        print(f"🎯 Випадковий пошук серед {self.n_iter_random_search} конфігурацій...")
+        
+        # Простір пошуку гіперпараметрів
+        param_dist = {
+            'hidden_layer_sizes': [
+                (50,), (100,), (50, 25), (100, 50), (100, 50, 25),
+                (200,), (150, 75), (200, 100), (200, 100, 50)
+            ],
+            'activation': ['relu', 'tanh'],
+            'solver': ['adam', 'lbfgs'],
+            'alpha': loguniform(1e-5, 1e-1),
+            'learning_rate_init': loguniform(1e-4, 1e-1)
+        }
+        
+        # Базова модель
+        base_model = MLPRegressor(
+            max_iter=self.max_iter,
+            early_stopping=self.early_stopping,
+            validation_fraction=self.validation_fraction,
+            n_iter_no_change=self.n_iter_no_change,
+            random_state=self.random_state
+        )
+        
+        # Випадковий пошук
+        random_search = RandomizedSearchCV(
+            base_model,
+            param_dist,
+            n_iter=self.n_iter_random_search,
+            cv=3,  # 3-fold cross-validation
+            scoring='neg_mean_squared_error',
+            random_state=self.random_state,
+            n_jobs=-1,
+            verbose=1
+        )
+        
+        random_search.fit(X, Y)
+        
+        print(f"✅ Знайдено оптимальні параметри:")
+        for param, value in random_search.best_params_.items():
+            print(f"   • {param}: {value}")
+        print(f"   • Найкращий результат CV: {-random_search.best_score_:.6f}")
+        
+        return random_search.best_estimator_
+
+    def get_model_info(self) -> dict:
+        """Повертає інформацію про навчену модель."""
+        if self.model is None:
+            return {"status": "не навчена"}
+        
+        info = {
+            "status": "навчена",
+            "architecture": self.hidden_layer_sizes,
+            "activation": self.activation,
+            "solver": self.solver,
+            "n_features": self.n_features_,
+            "n_outputs": self.n_outputs_,
+            "n_epochs": getattr(self.model, 'n_iter_', 'невідомо'),
+            "final_loss": getattr(self.model, 'loss_', 'невідома')
+        }
+        
+        # Додаткова інформація якщо доступна
+        if hasattr(self.model, 'coefs_'):
+            total_params = sum(w.size for w in self.model.coefs_) + sum(b.size for b in self.model.intercepts_)
+            info["total_parameters"] = total_params
+            
+        return info
+    
 # ======================================================================
 #                              FACADE
 # ======================================================================
@@ -642,8 +863,9 @@ class KernelModel:
         "krr": _KRRModel,
         "gpr": _GPRModel,
         "svr": _SVRModel,
-        "linear": _LinearModel,  # 🆕 ДОДАНО L-MPC!
-
+        "linear": _LinearModel,
+        "nn": _NeuralNetworkModel,      # 🆕 ДОДАНО Neural Network!
+        "neural": _NeuralNetworkModel,  # 🆕 Альтернативна назва
     }
 
     def __init__(self, model_type: str = "krr", **kwargs):

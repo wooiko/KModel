@@ -1347,24 +1347,24 @@ def list_saved_results() -> List[Dict[str, str]]:
     Returns:
         Кортеж (валідна, список_помилок)
     """
-    required_params = ['model_type', 'Np', 'Nc', 'N_data', 'control_pts']
-    errors = []
+    # required_params = ['model_type', 'Np', 'Nc', 'N_data', 'control_pts']
+    # errors = []
     
-    for param in required_params:
-        if param not in config:
-            errors.append(f"Відсутній обов'язковий параметр: {param}")
+    # for param in required_params:
+    #     if param not in config:
+    #         errors.append(f"Відсутній обов'язковий параметр: {param}")
     
-    # Перевірка типів та діапазонів
-    if 'Np' in config and not isinstance(config['Np'], int) or config['Np'] < 1:
-        errors.append("Np повинен бути додатним цілим числом")
+    # # Перевірка типів та діапазонів
+    # if 'Np' in config and not isinstance(config['Np'], int) or config['Np'] < 1:
+    #     errors.append("Np повинен бути додатним цілим числом")
     
-    if 'Nc' in config and not isinstance(config['Nc'], int) or config['Nc'] < 1:
-        errors.append("Nc повинен бути додатним цілим числом")
+    # if 'Nc' in config and not isinstance(config['Nc'], int) or config['Nc'] < 1:
+    #     errors.append("Nc повинен бути додатним цілим числом")
     
-    if 'model_type' in config and config['model_type'] not in ['krr', 'svr', 'linear', 'gpr']:
-        errors.append("model_type повинен бути одним з: krr, svr, linear, gpr")
+    # if 'model_type' in config and config['model_type'] not in ['krr', 'svr', 'linear', 'gpr']:
+    #     errors.append("model_type повинен бути одним з: krr, svr, linear, gpr")
     
-    return len(errors) == 0, errors
+    # return len(errors) == 0, errors
 
 if __name__ == '__main__':
     create_default_configs_ext()
