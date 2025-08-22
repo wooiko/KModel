@@ -33,6 +33,7 @@ from config_manager import (
 )
 from evaluation_storage import quick_save, quick_load  
 from evaluation_database import quick_add_to_database
+from dissertation_helper import enable_dissertation_analysis, log_step, log_model, save_dissertation_materials
 
 
 # =============================================================================
@@ -105,6 +106,7 @@ def prepare_simulation_data(reference_df: pd.DataFrame, params: Dict[str, Any]) 
 
     # Create lagged dataset
     X, Y_full = StatefulDataGenerator.create_lagged_dataset(df_true, lags=params['lag'])
+    # X = X_full[:, :3]
     Y = Y_full[:, [0, 2]]  # Select concentrate_fe and concentrate_mass columns
 
     return true_gen, df_true, X, Y

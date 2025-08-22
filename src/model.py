@@ -21,6 +21,15 @@ from sklearn.linear_model import LinearRegression, Ridge, Lasso
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.neural_network import MLPRegressor
 
+
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_squared_error
+import numpy as np
+from data_gen import StatefulDataGenerator
+
+
 # ======================================================================
 #                        БАЗОВА СТРАТЕГІЯ
 # ======================================================================
@@ -1022,3 +1031,1171 @@ class KernelModel:
 
     def __getattr__(self, item):
         return getattr(self._impl, item)
+
+import time
+import json
+import numpy as np
+import pandas as pd
+from pathlib import Path
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_squared_error
+
+from tqdm import tqdm  # прогрес-бар
+
+
+import re
+import json
+from pathlib import Path
+from typing import Dict, Any, List, Optional
+
+import numpy as np
+import pandas as pd
+
+import matplotlib
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from scipy.stats import ttest_rel
+
+
+def analyze_experiment_results(
+    results_dir: str = "exp_results",
+    kernel_focus: Optional[List[str]] = None,   # напр., ["rbf", "linear"]
+    metrics_gain: List[str] = ("RMSE_Fe_gain_%", "RMSE_Mass_gain_%", "MSE_gain_%"),
+    do_ttests: bool = True,
+    save_figs: bool = True,
+    show_figs: bool = False,
+    export_tables: bool = True,
+    style: str = "whitegrid",
+    cmap: str = "RdYlGn",
+) -> Dict[str, Any]:
+    """
+    Єдина функція аналізу результатів батч-експериментів.
+
+    Що робить:
+      - Завантажує summary.csv і всі details_*.csv з директорії results_dir
+      - Будує теплові карти гейнів (по lag×N), профілі гейнів по lag для кожного N
+      - Будує графіки часу тренування
+      - (опційно) Виконує парні t-тести по сідах для RMSE (ARX vs KRR)
+      - Зберігає графіки та таблиці у підпапку 'analysis' і повертає все у словнику
+
+    Повертає:
+      {
+        "df_summary": pd.DataFrame,
+        "df_details": pd.DataFrame | None,
+        "ttests": pd.DataFrame | None,
+        "fig_paths": List[str],
+        "table_paths": Dict[str, str],
+        "meta": Dict[str, Any],
+      }
+
+    Примітки:
+      - Очікується, що summary.csv має колонки:
+          ["kernel","N","lag","seeds", "RMSE_Fe_gain_%","RMSE_Mass_gain_%","MSE_gain_%","ARX_time_s","KRR_time_s", ...]
+      - Очікується, що details_*.csv містять принаймні:
+          ["seed","N","lag","kernel","MSE_ARX","RMSE_Fe_ARX","RMSE_Mass_ARX","MSE_KRR","RMSE_Fe_KRR","RMSE_Mass_KRR","Train_s_ARX","Train_s_KRR"]
+        (N, lag, kernel додаються при завантаженні з імені файлу)
+    """
+    results_path = Path(results_dir)
+    if not results_path.exists():
+        raise FileNotFoundError(f"Директорія не знайдена: {results_dir}")
+
+    out_dir = results_path / "analysis"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Headless-сейф режим для фігур
+    if not show_figs:
+        matplotlib.use("Agg")
+
+    sns.set(style=style)
+
+    # 1) Завантаження summary
+    summary_fp = results_path / "summary.csv"
+    if not summary_fp.exists():
+        raise FileNotFoundError(f"Не знайдено summary.csv у {results_dir}")
+
+    df_summary = pd.read_csv(summary_fp)
+    # Мінімальна валідація
+    required_summary_cols = {"kernel", "N", "lag"}
+    if not required_summary_cols.issubset(df_summary.columns):
+        raise ValueError(f"summary.csv не містить потрібних колонок: {sorted(required_summary_cols - set(df_summary.columns))}")
+
+    # 2) Завантаження details (опційно)
+    details_files = sorted(results_path.glob("details_*.csv"))
+    df_details = None
+    if details_files:
+        rows = []
+        for fp in details_files:
+            m = re.match(r"details_N(?P<N>\d+)_L(?P<L>\d+)_K(?P<K>\w+)\.csv", fp.name)
+            if not m:
+                # Пропустити файли, що не підпадають під патерн
+                continue
+            N = int(m.group("N")); L = int(m.group("L")); K = m.group("K")
+            d = pd.read_csv(fp)
+            d["N"] = N
+            d["lag"] = L
+            d["kernel"] = K
+            rows.append(d)
+        if rows:
+            df_details = pd.concat(rows, ignore_index=True)
+
+    # Ядра для аналізу
+    if kernel_focus is None:
+        kernel_focus = sorted(df_summary["kernel"].unique().tolist())
+
+    fig_paths: List[str] = []
+    table_paths: Dict[str, str] = {}
+
+    # 3) Експорт базових таблиць
+    if export_tables:
+        tbl_rbf = (df_summary
+                   .query("kernel=='rbf'") if "rbf" in df_summary["kernel"].unique() else df_summary.copy())
+        tbl_rbf = tbl_rbf.loc[:, [c for c in ["kernel","N","lag","seeds","RMSE_Fe_gain_%","RMSE_Mass_gain_%","MSE_gain_%","KRR_time_s","ARX_time_s"] if c in df_summary.columns]]
+        table_paths["table_rbf_gains.csv"] = str((out_dir / "table_rbf_gains.csv").resolve())
+        tbl_rbf.to_csv(table_paths["table_rbf_gains.csv"], index=False)
+
+        # Зведені півод-таблиці по гейнах (для кожного kernel окремо)
+        for k in kernel_focus:
+            for metric in metrics_gain:
+                if metric not in df_summary.columns:
+                    continue
+                pivot = (df_summary[df_summary["kernel"] == k]
+                         .pivot_table(index="N", columns="lag", values=metric, aggfunc="mean"))
+                fp = out_dir / f"pivot_{metric}_kernel-{k}.csv"
+                pivot.to_csv(fp)
+                table_paths[fp.name] = str(fp.resolve())
+
+    # 4) Графіки — теплові карти гейнів
+    def plot_heatmap_gain(df, metric: str, kernel: str, title: Optional[str] = None):
+        d = df[(df["kernel"] == kernel)].pivot_table(index="N", columns="lag", values=metric, aggfunc="mean")
+        if d.empty:
+            return None
+        plt.figure(figsize=(6, 4))
+        ax = sns.heatmap(d, annot=True, fmt=".1f", cmap=cmap, center=0, cbar_kws={"label": metric})
+        plt.title(title or f"{metric} — kernel={kernel}")
+        plt.ylabel("N"); plt.xlabel("lag")
+        plt.tight_layout()
+        out_fp = out_dir / f"heatmap_{metric}_kernel-{kernel}.png"
+        plt.savefig(out_fp, dpi=200)
+        if show_figs:
+            plt.show()
+        plt.close()
+        return str(out_fp.resolve())
+
+    for k in kernel_focus:
+        for metric in metrics_gain:
+            if metric in df_summary.columns:
+                fp = plot_heatmap_gain(df_summary, metric=metric, kernel=k, title=None)
+                if fp:
+                    fig_paths.append(fp)
+
+    # 5) Профілі гейнів по lag для кожного N
+    def plot_line_profile(df, metric: str, kernel: str):
+        vals = df[(df["kernel"] == kernel)]
+        if vals.empty or metric not in vals.columns:
+            return None
+        Ns_sorted = sorted(vals["N"].unique().tolist())
+        plt.figure(figsize=(7, 4))
+        for N in Ns_sorted:
+            d = vals[vals["N"] == N].sort_values("lag")
+            plt.plot(d["lag"], d[metric], marker="o", label=f"N={N}")
+        plt.axhline(0, color="k", lw=1)
+        plt.title(f"{metric} vs lag — {kernel}")
+        plt.xlabel("lag"); plt.ylabel(metric)
+        plt.legend()
+        plt.tight_layout()
+        out_fp = out_dir / f"line_{metric}_kernel-{kernel}.png"
+        plt.savefig(out_fp, dpi=200)
+        if show_figs:
+            plt.show()
+        plt.close()
+        return str(out_fp.resolve())
+
+    for k in kernel_focus:
+        for metric in metrics_gain:
+            if metric in df_summary.columns:
+                fp = plot_line_profile(df_summary, metric=metric, kernel=k)
+                if fp:
+                    fig_paths.append(fp)
+
+    # 6) Час тренування (KRR_time_s по lag для кожного N і ядра)
+    if "KRR_time_s" in df_summary.columns:
+        for k in kernel_focus:
+            d_k = df_summary[df_summary["kernel"] == k]
+            if d_k.empty:
+                continue
+            plt.figure(figsize=(7, 4))
+            for N in sorted(d_k["N"].unique().tolist()):
+                d = d_k[d_k["N"] == N].sort_values("lag")
+                if "KRR_time_s" in d.columns:
+                    plt.plot(d["lag"], d["KRR_time_s"], marker="s", label=f"N={N}")
+            plt.title(f"KRR час тренування vs lag — kernel={k}")
+            plt.xlabel("lag"); plt.ylabel("секунди")
+            plt.legend()
+            plt.tight_layout()
+            out_fp = out_dir / f"time_KRR_kernel-{k}.png"
+            plt.savefig(out_fp, dpi=200)
+            if show_figs:
+                plt.show()
+            plt.close()
+            fig_paths.append(str(out_fp.resolve()))
+
+    # 7) Парні t-тести (по сідах) — якщо доступні details
+    df_sig = None
+    if do_ttests and df_details is not None:
+        required_detail_cols = {"RMSE_Fe_ARX", "RMSE_Fe_KRR", "RMSE_Mass_ARX", "RMSE_Mass_KRR", "N", "lag", "kernel"}
+        if required_detail_cols.issubset(df_details.columns):
+            rows = []
+            for (N, L, K) in sorted(df_details.groupby(["N", "lag", "kernel"]).groups.keys()):
+                g = df_details[(df_details["N"] == N) & (df_details["lag"] == L) & (df_details["kernel"] == K)]
+                if len(g) < 2:
+                    # Двох і більше сідів потрібно для t-тесту
+                    continue
+                # t-тести RMSE Fe і Mass
+                t_fe, p_fe = ttest_rel(g["RMSE_Fe_ARX"], g["RMSE_Fe_KRR"])
+                t_ms, p_ms = ttest_rel(g["RMSE_Mass_ARX"], g["RMSE_Mass_KRR"])
+                rows.append({
+                    "N": N, "lag": L, "kernel": K, "n_seeds": len(g),
+                    "p_value_fe": p_fe,
+                    "p_value_mass": p_ms,
+                    "mean_gain_fe_%": 100.0 * (g["RMSE_Fe_ARX"].mean() - g["RMSE_Fe_KRR"].mean()) / (g["RMSE_Fe_ARX"].mean() + 1e-12),
+                    "mean_gain_mass_%": 100.0 * (g["RMSE_Mass_ARX"].mean() - g["RMSE_Mass_KRR"].mean()) / (g["RMSE_Mass_ARX"].mean() + 1e-12),
+                })
+            if rows:
+                df_sig = pd.DataFrame(rows).sort_values(["kernel", "N", "lag"]).reset_index(drop=True)
+                if export_tables:
+                    fp = out_dir / "ttests_by_combo.csv"
+                    df_sig.to_csv(fp, index=False)
+                    table_paths[fp.name] = str(fp.resolve())
+
+    # 8) Зберегти метадані аналізу
+    meta = {
+        "results_dir": str(results_path.resolve()),
+        "analysis_dir": str(out_dir.resolve()),
+        "kernels_analyzed": kernel_focus,
+        "metrics_gain": list(metrics_gain),
+        "has_details": df_details is not None,
+        "fig_paths": fig_paths,
+        "table_paths": table_paths,
+    }
+    with open(out_dir / "analysis_meta.json", "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
+
+    return {
+        "df_summary": df_summary,
+        "df_details": df_details,
+        "ttests": df_sig,
+        "fig_paths": fig_paths,
+        "table_paths": table_paths,
+        "meta": meta,
+    }
+
+
+def run_experiment_suite(
+    reference_df: pd.DataFrame,
+    lags=(1,2,3,4),
+    Ns=(5000, 7000),
+    krr_kernels=("linear", "rbf"),
+    anomaly_severity="mild",
+    use_anomalies=True,
+    seeds=(123, 42),
+    noise_level="none",
+    results_dir="exp_results",
+    n_iter_search_rbf=15,
+    verbose=False,
+):
+    """
+    Батч-експерименти за сіткою (N, lag, kernel∈{linear, rbf}) + мультисіди з прогрес-баром (tqdm).
+    Зберігає детальні CSV для кожної комбінації і summary.csv з агрегатами.
+    """
+
+    Path(results_dir).mkdir(parents=True, exist_ok=True)
+    rows_all, detail_records = [], []
+
+    # Підрахунок загальної кількості ітерацій (цикл = одна комбінація для одного seed)
+    total_cycles = len(Ns) * len(lags) * len(krr_kernels) * len(seeds)
+
+    # Зовнішній прогрес-бар по всім ітераціям
+    pbar = tqdm(total=total_cycles, desc="Experiment grid", unit="cycle")
+
+    for N_data in Ns:
+        for lag in lags:
+            for kernel in krr_kernels:
+
+                metrics = []
+                for sd in seeds:
+                    t_cycle_start = time.time()
+
+                    # 1) Параметри генерації
+                    simulation_params = {
+                        "N_data": int(N_data),
+                        "control_pts": max(12, int(0.1*N_data)),
+                        "lag": int(lag),
+                        "train_size": 0.8,
+                        "val_size": 0.1,
+                        "test_size": 0.1,
+                        "time_step_s": 5,
+                        "time_constants_s": {
+                            "concentrate_fe_percent": 8.0,
+                            "tailings_fe_percent": 10.0,
+                            "concentrate_mass_flow": 5.0,
+                            "tailings_mass_flow": 7.0
+                        },
+                        "dead_times_s": {
+                            "concentrate_fe_percent": 20.0,
+                            "tailings_fe_percent": 25.0,
+                            "concentrate_mass_flow": 20.0,
+                            "tailings_mass_flow": 25.0
+                        },
+                        "plant_model_type": "rf",
+                        "seed": int(sd),
+                        "n_neighbors": 5,
+                        "noise_level": noise_level,
+                        # Нелінійність (фіксована)
+                        "enable_nonlinear": True,
+                        "nonlinear_config": {
+                            "concentrate_fe_percent": ("pow", 2.0),
+                            "concentrate_mass_flow": ("pow", 1.6),
+                        },
+                        # Аномалії
+                        "use_anomalies": bool(use_anomalies),
+                        "anomaly_severity": anomaly_severity,
+                        "anomaly_in_train": False,
+                    }
+
+                    # 2) Дані
+                    _, df_sim = create_simulation_data(reference_df, simulation_params)
+
+                    # 3) Лаги + спліт
+                    X, Y = _create_lagged_matrices_corrected(df_sim, lag)
+                    n = X.shape[0]
+                    n_train = int(simulation_params["train_size"] * n)
+                    n_val = int(simulation_params["val_size"] * n)
+                    Xtr, Ytr = X[:n_train], Y[:n_train]
+                    Xva, Yva = X[n_train:n_train+n_val], Y[n_train:n_train+n_val]
+                    Xte, Yte = X[n_train+n_val:], Y[n_train+n_val:]
+
+                    # 4) Скейлінг
+                    xs, ys = StandardScaler(), StandardScaler()
+                    Xtr_s, Ytr_s = xs.fit_transform(Xtr), ys.fit_transform(Ytr)
+                    Xva_s, Yva_s = xs.transform(Xva), ys.transform(Yva)
+                    Xte_s = xs.transform(Xte)
+
+                    # 5) ARX (лінійний бенчмарк)
+                    arx = KernelModel(model_type="linear", linear_type="ols", poly_degree=1, include_bias=True)
+                    t0 = time.time()
+                    try:
+                        arx.fit(Xtr_s, Ytr_s, X_val=Xva_s, Y_val=Yva_s)
+                    except TypeError:
+                        arx.fit(Xtr_s, Ytr_s)
+                    arx_t = time.time() - t0
+                    Yhat_arx = ys.inverse_transform(arx.predict(Xte_s))
+                    mse_arx = mean_squared_error(Yte, Yhat_arx)
+                    rmse_fe_arx = np.sqrt(mean_squared_error(Yte[:,0], Yhat_arx[:,0]))
+                    rmse_mass_arx = np.sqrt(mean_squared_error(Yte[:,1], Yhat_arx[:,1]))
+
+                    # 6) KRR (linear або rbf)
+                    if kernel not in ("linear", "rbf"):
+                        raise ValueError("Підтримуються тільки 'linear' та 'rbf' для KRR")
+                    krr_kwargs = {"model_type": "krr", "kernel": kernel}
+                    if kernel == "rbf":
+                        krr_kwargs.update({"find_optimal_params": True, "n_iter_random_search": int(n_iter_search_rbf)})
+                    else:
+                        krr_kwargs.update({"find_optimal_params": False})
+
+                    krr = KernelModel(**krr_kwargs)
+                    t0 = time.time()
+                    try:
+                        krr.fit(Xtr_s, Ytr_s, X_val=Xva_s, Y_val=Yva_s)
+                    except TypeError:
+                        krr.fit(Xtr_s, Ytr_s)
+                    krr_t = time.time() - t0
+                    Yhat_krr = ys.inverse_transform(krr.predict(Xte_s))
+                    mse_krr = mean_squared_error(Yte, Yhat_krr)
+                    rmse_fe_krr = np.sqrt(mean_squared_error(Yte[:,0], Yhat_krr[:,0]))
+                    rmse_mass_krr = np.sqrt(mean_squared_error(Yte[:,1], Yhat_krr[:,1]))
+
+                    metrics.append({
+                        "seed": sd, "N": N_data, "lag": lag, "kernel": kernel,
+                        "MSE_ARX": mse_arx, "RMSE_Fe_ARX": rmse_fe_arx, "RMSE_Mass_ARX": rmse_mass_arx, "Train_s_ARX": arx_t,
+                        "MSE_KRR": mse_krr, "RMSE_Fe_KRR": rmse_fe_krr, "RMSE_Mass_KRR": rmse_mass_krr, "Train_s_KRR": krr_t,
+                    })
+
+                    # Оновлюємо прогрес-бар + ETA
+                    t_cycle = time.time() - t_cycle_start
+                    pbar.set_postfix({
+                        "N": N_data, "L": lag, "K": kernel, "seed": sd,
+                        "cycle_s": f"{t_cycle:.1f}",
+                        "arx_s": f"{arx_t:.1f}",
+                        "krr_s": f"{krr_t:.1f}",
+                    })
+                    pbar.update(1)
+
+                # 7) Агрегація по сідах для комбінації (N, lag, kernel)
+                dfm = pd.DataFrame(metrics)
+                agg = dfm.agg({
+                    "MSE_ARX": ["mean","std"], "RMSE_Fe_ARX": ["mean","std"], "RMSE_Mass_ARX": ["mean","std"], "Train_s_ARX": ["mean","std"],
+                    "MSE_KRR": ["mean","std"], "RMSE_Fe_KRR": ["mean","std"], "RMSE_Mass_KRR": ["mean","std"], "Train_s_KRR": ["mean","std"],
+                }).T.reset_index()
+                agg.columns = ["metric", "mean", "std"]
+
+                summary = {
+                    "N": N_data, "lag": lag, "kernel": kernel, "seeds": len(seeds),
+                    "MSE_gain_%": (agg.loc[agg.metric=="MSE_ARX","mean"].values[0] - agg.loc[agg.metric=="MSE_KRR","mean"].values[0])
+                                   / (agg.loc[agg.metric=="MSE_ARX","mean"].values[0] + 1e-12) * 100,
+                    "RMSE_Fe_gain_%": (agg.loc[agg.metric=="RMSE_Fe_ARX","mean"].values[0] - agg.loc[agg.metric=="RMSE_Fe_KRR","mean"].values[0])
+                                   / (agg.loc[agg.metric=="RMSE_Fe_ARX","mean"].values[0] + 1e-12) * 100,
+                    "RMSE_Mass_gain_%": (agg.loc[agg.metric=="RMSE_Mass_ARX","mean"].values[0] - agg.loc[agg.metric=="RMSE_Mass_KRR","mean"].values[0])
+                                   / (agg.loc[agg.metric=="RMSE_Mass_ARX","mean"].values[0] + 1e-12) * 100,
+                    "ARX_time_s": agg.loc[agg.metric=="Train_s_ARX","mean"].values[0],
+                    "KRR_time_s": agg.loc[agg.metric=="Train_s_KRR","mean"].values[0],
+                }
+                rows_all.append(summary)
+
+                # Збереження детальних метрик по сідах для цієї комбінації
+                detail_path = Path(results_dir) / f"details_N{N_data}_L{lag}_K{kernel}.csv"
+                dfm.to_csv(detail_path, index=False)
+                detail_records.append({"combo": (N_data, lag, kernel), "path": str(detail_path)})
+
+    pbar.close()
+
+    df_summary = pd.DataFrame(rows_all).sort_values(["kernel","N","lag"]).reset_index(drop=True)
+    summary_path = Path(results_dir) / "summary.csv"
+    df_summary.to_csv(summary_path, index=False)
+
+    meta = {
+        "created_at": pd.Timestamp.now().isoformat(),
+        "lags": list(lags), "Ns": list(Ns), "krr_kernels": list(krr_kernels),
+        "anomaly_severity": anomaly_severity, "use_anomalies": use_anomalies,
+        "seeds": list(seeds), "noise_level": noise_level,
+        "detail_files": detail_records, "summary_csv": str(summary_path),
+    }
+    with open(Path(results_dir) / "meta.json", "w") as f:
+        json.dump(meta, f, indent=2)
+
+    if verbose:
+        print(f"Summary saved to: {summary_path}")
+        print(pd.DataFrame(rows_all))
+
+    return df_summary
+def compare_linear_vs_kernel_models(reference_df=None, **kwargs):
+    """
+    Пряме порівняння лінійних (ARX) та ядерних моделей для дисертації.
+    Тепер: підтримка конфігурованих аномалій у val/test і спільний anomaly_cfg.
+    """
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.metrics import mean_squared_error
+    import numpy as np
+    from data_gen import StatefulDataGenerator
+
+    print("🎓 ПОРІВНЯННЯ МОДЕЛЕЙ ДЛЯ ДИСЕРТАЦІЇ")
+    print("=" * 60)
+    print("Розділ 2.1.1: Логічний перехід до ядерних моделей")
+    print("=" * 60)
+
+    # ----1. Підготовка референтних даних
+    if reference_df is None:
+        print("📊 Завантаження референтних даних...")
+        try:
+            reference_df = pd.read_parquet('processed.parquet')
+            print(f"✅ Завантажено {len(reference_df)} записів")
+        except FileNotFoundError:
+            print("❌ Файл 'processed.parquet' не знайдено")
+
+    # ---- Параметри симуляції
+    train_size = kwargs.get('train_size', 0.8)
+    val_size   = kwargs.get('val_size', 0.1)
+    test_size  = kwargs.get('test_size', 0.1)
+
+    simulation_params = {
+        'N_data': kwargs.get('N_data', 7000),
+        'control_pts': 700,
+        'lag': kwargs.get('lag', 2),
+        'train_size': train_size,
+        'val_size': val_size,
+        'test_size': test_size,
+        'time_step_s': 5,
+        'time_constants_s': {
+            'concentrate_fe_percent': 8.0,
+            'tailings_fe_percent': 10.0,
+            'concentrate_mass_flow': 5.0,
+            'tailings_mass_flow': 7.0
+        },
+        'dead_times_s': {
+            'concentrate_fe_percent': 20.0,
+            'tailings_fe_percent': 25.0,
+            'concentrate_mass_flow': 20.0,
+            'tailings_mass_flow': 25.0
+        },
+        'plant_model_type': 'rf',
+        'seed': kwargs.get('seed', 42),
+        'n_neighbors': 5,
+        'noise_level': kwargs.get('noise_level', 'none'),
+
+        # Нелінійність
+        'enable_nonlinear': True,
+        'nonlinear_config': {
+            'concentrate_fe_percent': ('pow', 2.0),
+            'concentrate_mass_flow': ('pow', 1.5)
+        },
+
+        # Аномалії
+        'use_anomalies': kwargs.get('use_anomalies', True),
+        'anomaly_severity': kwargs.get('anomaly_severity', 'mild'),
+        'anomaly_in_train': kwargs.get('anomaly_in_train', False),
+    }
+
+    print(f"📈 Створення симуляційних даних (N={simulation_params['N_data']}, L={simulation_params['lag']})...")
+    true_gen, df_sim = create_simulation_data(reference_df, simulation_params)
+
+    # ---- Лаговані матриці
+    X, Y = _create_lagged_matrices_corrected(df_sim, simulation_params['lag'])
+    print(f"   Розмірність X: {X.shape}, Y: {Y.shape}")
+
+    # ----2. Спліт на train/val/test
+    n = X.shape[0]
+    n_train = int(train_size * n)
+    n_val   = int(val_size * n)
+
+    X_train, Y_train = X[:n_train], Y[:n_train]
+    X_val,   Y_val   = X[n_train:n_train + n_val], Y[n_train:n_train + n_val]
+    X_test,  Y_test  = X[n_train + n_val:], Y[n_train + n_val:]
+
+    # ---- Нормалізація (fit тільки на train)
+    x_scaler = StandardScaler()
+    y_scaler = StandardScaler()
+
+    X_train_scaled = x_scaler.fit_transform(X_train)
+    Y_train_scaled = y_scaler.fit_transform(Y_train)
+    X_val_scaled   = x_scaler.transform(X_val)
+    Y_val_scaled   = y_scaler.transform(Y_val)
+    X_test_scaled  = x_scaler.transform(X_test)
+    Y_test_scaled  = y_scaler.transform(Y_test)
+
+    print(f"   Тренувальний набір: {X_train_scaled.shape[0]} зразків")
+    print(f"   Валідаційний набір: {X_val_scaled.shape[0]} зразків")
+    print(f"   Тестовий набір: {X_test_scaled.shape[0]} зразків")
+
+    # ----3. Лінійна модель (ARX)
+    print("\n🔴 НАВЧАННЯ ЛІНІЙНОЇ МОДЕЛІ (ARX)")
+    print("-" * 40)
+    linear_model = KernelModel(model_type='linear', linear_type='ols', poly_degree=1, include_bias=True)
+
+    import time
+    start_time = time.time()
+    try:
+        # Якщо реалізація підтримує val-дані для тюнінгу
+        linear_model.fit(X_train_scaled, Y_train_scaled, X_val=X_val_scaled, Y_val=Y_val_scaled)
+    except TypeError:
+        linear_model.fit(X_train_scaled, Y_train_scaled)
+    linear_train_time = time.time() - start_time
+
+    Y_pred_linear_scaled = linear_model.predict(X_test_scaled)
+    Y_pred_linear = y_scaler.inverse_transform(Y_pred_linear_scaled)
+
+    linear_mse = mean_squared_error(Y_test, Y_pred_linear)
+    linear_rmse_fe = np.sqrt(mean_squared_error(Y_test[:, 0], Y_pred_linear[:, 0]))
+    linear_rmse_mass = np.sqrt(mean_squared_error(Y_test[:, 1], Y_pred_linear[:, 1]))
+
+    print(f"   ⏱️ Час навчання: {linear_train_time:.3f} сек")
+    print(f"   📊 MSE: {linear_mse:.6f}")
+    print(f"   📊 RMSE Fe: {linear_rmse_fe:.3f}")
+    print(f"   📊 RMSE Mass: {linear_rmse_mass:.3f}")
+
+    # ----4. Ядерна модель (KRR, RBF)
+    print("\n🟢 НАВЧАННЯ ЯДЕРНОЇ МОДЕЛІ (KRR)")
+    print("-" * 40)
+    kernel_model = KernelModel(
+        model_type='krr',
+        kernel='rbf',
+        find_optimal_params=kwargs.get('find_optimal_params', True),
+        n_iter_random_search=kwargs.get('n_iter_search', 20)
+    )
+
+    start_time = time.time()
+    try:
+        kernel_model.fit(X_train_scaled, Y_train_scaled, X_val=X_val_scaled, Y_val=Y_val_scaled)
+    except TypeError:
+        kernel_model.fit(X_train_scaled, Y_train_scaled)
+    kernel_train_time = time.time() - start_time
+
+    Y_pred_kernel_scaled = kernel_model.predict(X_test_scaled)
+    Y_pred_kernel = y_scaler.inverse_transform(Y_pred_kernel_scaled)
+
+    kernel_mse = mean_squared_error(Y_test, Y_pred_kernel)
+    kernel_rmse_fe = np.sqrt(mean_squared_error(Y_test[:, 0], Y_pred_kernel[:, 0]))
+    kernel_rmse_mass = np.sqrt(mean_squared_error(Y_test[:, 1], Y_pred_kernel[:, 1]))
+
+    print(f"   ⏱️ Час навчання: {kernel_train_time:.3f} сек")
+    print(f"   📊 MSE: {kernel_mse:.6f}")
+    print(f"   📊 RMSE Fe: {kernel_rmse_fe:.3f}")
+    print(f"   📊 RMSE Mass: {kernel_rmse_mass:.3f}")
+
+    # ----5. Порівняння і аналіз нелінійності
+    improvement_mse = ((linear_mse - kernel_mse) / (linear_mse + 1e-12)) * 100
+    improvement_fe = ((linear_rmse_fe - kernel_rmse_fe) / (linear_rmse_fe + 1e-12)) * 100
+    improvement_mass = ((linear_rmse_mass - kernel_rmse_mass) / (linear_rmse_mass + 1e-12)) * 100
+
+    print("\n📊 ПОРІВНЯННЯ ТА АНАЛІЗ НЕЛІНІЙНОСТІ")
+    print("-" * 50)
+    print("🎯 КЛЮЧОВІ РЕЗУЛЬТАТИ ДЛЯ ДИСЕРТАЦІЇ:")
+    print(f"   💡 Покращення MSE: {improvement_mse:.1f}%")
+    print(f"   💡 Покращення RMSE Fe: {improvement_fe:.1f}%")
+    print(f"   💡 Покращення RMSE Mass: {improvement_mass:.1f}%")
+
+    target_achieved = improvement_mse >= 15
+    print(f"   {'✅' if target_achieved else '❌'} Цільовий діапазон "
+          f"{'ДОСЯГНУТО' if target_achieved else 'НЕ досягнуто'}")
+
+    nonlinearity_metrics = _analyze_simulation_nonlinearity(df_sim, true_gen)
+
+    print("\n🔍 АНАЛІЗ НЕЛІНІЙНОСТІ ПРОЦЕСУ")
+    print("-" * 40)
+    for metric_name, value in nonlinearity_metrics.items():
+        print(f"   📈 {metric_name}: {value:.3f}")
+
+    # ----6. Візуалізація та збереження
+    print("\n📊 ГЕНЕРАЦІЯ ВІЗУАЛІЗАЦІЙ...")
+    figures = _create_comparison_visualizations(
+        Y_test, Y_pred_linear, Y_pred_kernel,
+        linear_mse, kernel_mse, improvement_mse,
+        nonlinearity_metrics, df_sim
+    )
+
+    # Результати
+    import json
+    results = {
+        'timestamp': pd.Timestamp.now().isoformat(),
+        'simulation_params': simulation_params,
+        'data_info': {
+            'samples_total': len(df_sim),
+            'samples_train': X_train_scaled.shape[0],
+            'samples_val': X_val_scaled.shape[0],
+            'samples_test': X_test_scaled.shape[0],
+            'lag_used': simulation_params['lag'],
+            'features': X_train_scaled.shape[1]
+        },
+        'linear_model': {
+            'type': 'Linear (ARX)',
+            'mse': linear_mse,
+            'rmse_fe': linear_rmse_fe,
+            'rmse_mass': linear_rmse_mass,
+            'train_time': linear_train_time
+        },
+        'kernel_model': {
+            'type': 'Kernel Ridge Regression (RBF)',
+            'mse': kernel_mse,
+            'rmse_fe': kernel_rmse_fe,
+            'rmse_mass': kernel_rmse_mass,
+            'train_time': kernel_train_time
+        },
+        'performance_comparison': {
+            'mse_improvement_percent': improvement_mse,
+            'rmse_fe_improvement_percent': improvement_fe,
+            'rmse_mass_improvement_percent': improvement_mass,
+            'target_achieved': target_achieved,
+            'target_range': (15, 20)
+        },
+        'nonlinearity_analysis': nonlinearity_metrics
+    }
+
+    fname = f'dissertation_comparison_{pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")}.json'
+    with open(fname, 'w') as f:
+        json.dump(results, f, indent=2, default=str)
+
+    print("\n✅ АНАЛІЗ ЗАВЕРШЕНО")
+    print(f"📁 Результати збережено у {fname}")
+    print("🖼️ Графіки збережено у PNG файли")
+
+    return results
+
+def make_anomaly_config_for_comparison(
+    N_data: int,
+    train_frac: float = 0.7,
+    val_frac: float = 0.15,
+    test_frac: float = 0.15,
+    seed: int = 42,
+    severity: str = "mild",
+    include_train: bool = False
+) -> dict:
+    """
+    Генерує reproducible anomaly_config для DataGenerator.generate_anomalies().
+    За замовчуванням: аномалії тільки у val/test.
+    severity: 'mild' | 'medium' | 'strong'
+    """
+    total = train_frac + val_frac + test_frac
+    train_frac, val_frac, test_frac = train_frac/total, val_frac/total, test_frac/total
+
+    train_end = int(train_frac * N_data)
+    val_end   = train_end + int(val_frac * N_data)
+    segments = {"train": (0, train_end), "val": (train_end, val_end), "test": (val_end, N_data)}
+
+    base_durations = {"spike": 1, "drift": 25, "drop": 20, "freeze": 15}
+    sev_map = {"mild": (0.08, 0.15), "medium": (0.12, 0.22), "strong": (0.18, 0.30)}
+    mag_lo, mag_hi = sev_map.get(severity, sev_map["mild"])
+
+    rng = np.random.default_rng(seed)
+
+    def seg_bounds(name):
+        s, e = segments[name]
+        return s, max(s, e-1), max(0, e-s)
+
+    def pick_start(seg_name, dur):
+        s, e_minus1, length = seg_bounds(seg_name)
+        if length <= 0:
+            return None
+        dur = min(dur, length)
+        hi = max(s, e_minus1 - (dur-1))
+        return int(rng.integers(low=s, high=hi+1)), dur
+
+    params = [
+        "ore_mass_flow", "feed_fe_percent", "solid_feed_percent",
+        "concentrate_fe_percent", "tailings_fe_percent",
+        "concentrate_mass_flow", "tailings_mass_flow"
+    ]
+    cfg = {p: [] for p in params}
+
+    def add_anom(param, seg, typ, mag=None, force_positive=False):
+        dur = base_durations[typ]
+        sd = pick_start(seg, dur)
+        if sd is None:
+            return
+        start, dur = sd
+        if typ == "freeze":
+            cfg[param].append({"start": start, "duration": dur, "type": typ})
+        else:
+            m = float(abs(mag) if mag is not None else rng.uniform(mag_lo, mag_hi))
+            if typ != "drop" and not force_positive and rng.random() < 0.5:
+                m = -m
+            if typ == "drop":
+                m = abs(m)
+            cfg[param].append({"start": start, "duration": dur, "magnitude": m, "type": typ})
+
+    apply_train_here = include_train
+
+    # План аномалій (val/test; train опц.)
+    if apply_train_here: add_anom("ore_mass_flow", "train", "drift")
+    add_anom("ore_mass_flow", "val",  "drift")
+    add_anom("ore_mass_flow", "test", "spike")
+
+    if apply_train_here: add_anom("solid_feed_percent", "train", "freeze")
+    add_anom("solid_feed_percent", "val", "freeze")
+
+    add_anom("feed_fe_percent", "test", "spike")
+    add_anom("concentrate_mass_flow", "val", "drop", force_positive=True)
+    add_anom("tailings_mass_flow", "test", "drift")
+    add_anom("concentrate_fe_percent", "val", "spike")
+    add_anom("tailings_fe_percent", "test", "freeze")
+
+    return cfg
+
+def create_simulation_data(reference_df: pd.DataFrame, params: dict):
+    """
+    Створення симуляційних даних через StatefulDataGenerator.
+    Адаптовано: один і той самий anomaly_cfg для базових і нелінійних даних.
+    """
+    from data_gen import StatefulDataGenerator
+
+    true_gen = StatefulDataGenerator(
+        reference_df,
+        ore_flow_var_pct=3.0,
+        time_step_s=params['time_step_s'],
+        time_constants_s=params['time_constants_s'],
+        dead_times_s=params['dead_times_s'],
+        true_model_type=params['plant_model_type'],
+        seed=params['seed']
+    )
+
+    # 1) Аномалії (за замовчуванням увімкнено; у train — вимкнено)
+    anomaly_cfg = None
+    if params.get('use_anomalies', True):
+        anomaly_cfg = make_anomaly_config_for_comparison(
+            N_data=params['N_data'],
+            train_frac=params.get('train_size', 0.8),
+            val_frac=params.get('val_size', 0.1),
+            test_frac=params.get('test_size', 0.1),
+            seed=params['seed'],
+            severity=params.get('anomaly_severity', 'mild'),
+            include_train=params.get('anomaly_in_train', False),
+        )
+
+    # 2) Базові дані
+    df_true_orig = true_gen.generate(
+        T=params['N_data'],
+        control_pts=params['control_pts'],
+        n_neighbors=params['n_neighbors'],
+        noise_level=params.get('noise_level', 'none'),
+        anomaly_config=anomaly_cfg
+    )
+
+    # 3) Нелінійний варіант (ті самі аномалії)
+    if params.get('enable_nonlinear', False):
+        df_true = true_gen.generate_nonlinear_variant(
+            base_df=df_true_orig,
+            non_linear_factors=params['nonlinear_config'],
+            noise_level='none',            # Щоб не «накладати» додатковий шум
+            anomaly_config=anomaly_cfg
+        )
+    else:
+        df_true = df_true_orig
+
+    return true_gen, df_true
+def _create_lagged_matrices_corrected(df, lag=2):
+    """Створення лагових матриць для порівняння моделей"""
+    
+    # Використовуємо стандартні назви колонок з StatefulDataGenerator
+    input_vars = ['feed_fe_percent', 'ore_mass_flow', 'solid_feed_percent']
+    output_vars = ['concentrate_fe', 'concentrate_mass']  # Скорочені назви з генератора
+    
+    # Перевірка альтернативних назв
+    if 'concentrate_fe' not in df.columns and 'concentrate_fe_percent' in df.columns:
+        output_vars = ['concentrate_fe_percent', 'concentrate_mass_flow']
+    
+    # Перевірка наявності колонок
+    missing_vars = [var for var in input_vars + output_vars if var not in df.columns]
+    if missing_vars:
+        print(f"⚠️ Відсутні колонки: {missing_vars}")
+        print(f"📋 Доступні колонки: {list(df.columns)}")
+        # Використовуємо StatefulDataGenerator метод
+        return StatefulDataGenerator.create_lagged_dataset(df, lags=lag)
+    
+    n = len(df)
+    X, Y = [], []
+    
+    for i in range(lag, n):
+        # Лагова структура для динамічних моделей
+        row = []
+        for var in input_vars:
+            for j in range(lag + 1):  # від t до t-L
+                row.append(df[var].iloc[i - j])
+        X.append(row)
+        
+        # Вихідні змінні в момент t
+        Y.append([df[var].iloc[i] for var in output_vars])
+    
+    return np.array(X), np.array(Y)
+
+
+def _analyze_simulation_nonlinearity(df_sim, true_gen):
+    """Аналіз нелінійності симуляційних даних"""
+    
+    metrics = {}
+    
+    # 1. Оцінка S-подібності через варіації градієнтів
+    if 'concentrate_fe' in df_sim.columns:
+        fe_values = df_sim['concentrate_fe'].values
+        fe_gradients = np.diff(fe_values)
+        metrics['fe_gradient_variance'] = np.var(fe_gradients)
+        metrics['fe_gradient_skewness'] = pd.Series(fe_gradients).skew()
+    
+    # 2. Нелінійні взаємодії через кореляційний аналіз
+    numeric_cols = df_sim.select_dtypes(include=[np.number]).columns
+    if len(numeric_cols) >= 3:
+        pearson_corr = df_sim[numeric_cols].corr(method='pearson')
+        spearman_corr = df_sim[numeric_cols].corr(method='spearman')
+        nonlinearity_indicator = abs(spearman_corr - pearson_corr).mean().mean()
+        metrics['correlation_nonlinearity'] = nonlinearity_indicator
+    
+    # 3. Ентропійна оцінка складності
+    if 'solid_feed_percent' in df_sim.columns:
+        control_changes = np.abs(np.diff(df_sim['solid_feed_percent']))
+        control_entropy = -np.sum((control_changes + 1e-10) * np.log(control_changes + 1e-10))
+        metrics['control_complexity'] = control_entropy
+    
+    # 4. Характеристики розподілу
+    if 'concentrate_mass' in df_sim.columns:
+        mass_values = df_sim['concentrate_mass'].values
+        metrics['mass_distribution_kurtosis'] = pd.Series(mass_values).kurtosis()
+        metrics['mass_distribution_skewness'] = pd.Series(mass_values).skew()
+    
+    return metrics
+
+
+# Залишаємо оригінальні методи візуалізації та висновків без змін
+def _create_comparison_visualizations(Y_test, Y_pred_linear, Y_pred_kernel, 
+                                    linear_mse, kernel_mse, improvement, 
+                                    nonlinearity_metrics, full_df):
+    """Створення комплексних візуалізацій для порівняння моделей"""
+    import matplotlib.pyplot as plt
+    import numpy as np
+    
+    # Налаштування стилю
+    plt.style.use('default')
+    plt.rcParams['figure.figsize'] = (16, 12)
+    plt.rcParams['font.size'] = 10
+    
+    figures = {}
+    
+    # === ОСНОВНА ФІГУРА: ПОРІВНЯННЯ МОДЕЛЕЙ ===
+    fig1, axes = plt.subplots(2, 3, figsize=(18, 12))
+    fig1.suptitle('Порівняння лінійної та ядерної моделей для дисертації', fontsize=16, fontweight='bold')
+    
+    # 1.1 Scatter plot для Fe концентрації
+    ax = axes[0, 0]
+    ax.scatter(Y_test[:, 0], Y_pred_linear[:, 0], alpha=0.6, s=20, color='red', label='Лінійна модель')
+    ax.scatter(Y_test[:, 0], Y_pred_kernel[:, 0], alpha=0.6, s=20, color='green', label='Ядерна модель')
+    
+    # Ідеальна лінія
+    min_val, max_val = Y_test[:, 0].min(), Y_test[:, 0].max()
+    ax.plot([min_val, max_val], [min_val, max_val], 'k--', alpha=0.8, linewidth=2, label='Ідеальна лінія')
+    
+    ax.set_xlabel('Реальна концентрація Fe (%)')
+    ax.set_ylabel('Прогнозована концентрація Fe (%)')
+    ax.set_title('Прогнозування концентрації Fe')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    # Додавання R² на графік
+    r2_linear = 1 - np.sum((Y_test[:, 0] - Y_pred_linear[:, 0])**2) / np.sum((Y_test[:, 0] - np.mean(Y_test[:, 0]))**2)
+    r2_kernel = 1 - np.sum((Y_test[:, 0] - Y_pred_kernel[:, 0])**2) / np.sum((Y_test[:, 0] - np.mean(Y_test[:, 0]))**2)
+    ax.text(0.05, 0.95, f'R² лінійна: {r2_linear:.3f}\nR² ядерна: {r2_kernel:.3f}', 
+            transform=ax.transAxes, verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    
+    # 1.2 Scatter plot для масового потоку
+    ax = axes[0, 1]
+    ax.scatter(Y_test[:, 1], Y_pred_linear[:, 1], alpha=0.6, s=20, color='red', label='Лінійна модель')
+    ax.scatter(Y_test[:, 1], Y_pred_kernel[:, 1], alpha=0.6, s=20, color='green', label='Ядерна модель')
+    
+    min_val, max_val = Y_test[:, 1].min(), Y_test[:, 1].max()
+    ax.plot([min_val, max_val], [min_val, max_val], 'k--', alpha=0.8, linewidth=2, label='Ідеальна лінія')
+    
+    ax.set_xlabel('Реальний масовий потік (т/год)')
+    ax.set_ylabel('Прогнозований масовий потік (т/год)')
+    ax.set_title('Прогнозування масового потоку')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    # 1.3 Порівняння MSE
+    ax = axes[0, 2]
+    models = ['Лінійна\n(ARX)', 'Ядерна\n(KRR)']
+    mse_values = [linear_mse, kernel_mse]
+    colors = ['red', 'green']
+    
+    bars = ax.bar(models, mse_values, color=colors, alpha=0.7, width=0.6)
+    ax.set_ylabel('MSE')
+    ax.set_title(f'Порівняння MSE\n(покращення: {improvement:.1f}%)')
+    ax.grid(True, alpha=0.3, axis='y')
+    
+    # Додавання значень на стовпці
+    for bar, value in zip(bars, mse_values):
+        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(mse_values)*0.02,
+                f'{value:.4f}', ha='center', va='bottom', fontweight='bold')
+    
+    # Додавання стрілки покращення
+    if improvement > 0:
+        ax.annotate('', xy=(1, kernel_mse), xytext=(0, linear_mse),
+                   arrowprops=dict(arrowstyle='<->', color='blue', lw=2))
+        ax.text(0.5, (linear_mse + kernel_mse)/2, f'-{improvement:.1f}%', 
+               ha='center', va='center', color='blue', fontweight='bold',
+               bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.7))
+    
+    # 1.4 Часовий ряд помилок для Fe
+    ax = axes[1, 0]
+    time_steps = range(len(Y_test))
+    error_linear_fe = Y_test[:, 0] - Y_pred_linear[:, 0]
+    error_kernel_fe = Y_test[:, 0] - Y_pred_kernel[:, 0]
+    
+    ax.plot(time_steps, error_linear_fe, color='red', alpha=0.7, linewidth=1, label='Помилка лінійної')
+    ax.plot(time_steps, error_kernel_fe, color='green', alpha=0.7, linewidth=1, label='Помилка ядерної')
+    ax.axhline(y=0, color='black', linestyle='--', alpha=0.5)
+    
+    ax.set_xlabel('Крок тестування')
+    ax.set_ylabel('Помилка прогнозу Fe (%)')
+    ax.set_title('Динаміка помилок прогнозування Fe')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    # 1.5 Розподіл помилок
+    ax = axes[1, 1]
+    ax.hist(error_linear_fe, bins=30, alpha=0.6, color='red', label='Лінійна модель', density=True)
+    ax.hist(error_kernel_fe, bins=30, alpha=0.6, color='green', label='Ядерна модель', density=True)
+    
+    ax.set_xlabel('Помилка прогнозу Fe (%)')
+    ax.set_ylabel('Щільність розподілу')
+    ax.set_title('Розподіл помилок прогнозування')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    # Статистики помилок
+    ax.text(0.02, 0.98, 
+           f'Лінійна:\nСТД: {np.std(error_linear_fe):.3f}\nСер.: {np.mean(error_linear_fe):.3f}\n\n'
+           f'Ядерна:\nСТД: {np.std(error_kernel_fe):.3f}\nСер.: {np.mean(error_kernel_fe):.3f}',
+           transform=ax.transAxes, verticalalignment='top',
+           bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    
+    # 1.6 Метрики нелінійності
+    ax = axes[1, 2]
+    if nonlinearity_metrics:
+        metric_names = list(nonlinearity_metrics.keys())
+        metric_values = list(nonlinearity_metrics.values())
+        
+        # Скорочення назв для кращого відображення
+        short_names = []
+        for name in metric_names:
+            if 'gradient' in name:
+                short_names.append('Градієнт\nваріації')
+            elif 'correlation' in name:
+                short_names.append('Кореляційна\nнелінійність')
+            elif 'complexity' in name:
+                short_names.append('Складність\nкерування')
+            elif 'kurtosis' in name:
+                short_names.append('Куртозис\nрозподілу')
+            elif 'skewness' in name:
+                short_names.append('Асиметрія\nрозподілу')
+            else:
+                short_names.append(name[:10] + '...' if len(name) > 10 else name)
+        
+        bars = ax.bar(range(len(metric_values)), metric_values, color='orange', alpha=0.7)
+        ax.set_xticks(range(len(short_names)))
+        ax.set_xticklabels(short_names, rotation=45, ha='right', fontsize=8)
+        ax.set_ylabel('Значення метрики')
+        ax.set_title('Характеристики нелінійності процесу')
+        ax.grid(True, alpha=0.3, axis='y')
+        
+        # Додавання значень на стовпці
+        for i, (bar, value) in enumerate(zip(bars, metric_values)):
+            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(metric_values)*0.02,
+                   f'{value:.2f}', ha='center', va='bottom', fontsize=8)
+    else:
+        ax.text(0.5, 0.5, 'Метрики нелінійності\nне доступні', 
+               ha='center', va='center', transform=ax.transAxes)
+        ax.set_title('Характеристики нелінійності процесу')
+    
+    plt.tight_layout()
+    plt.savefig('dissertation_model_comparison.png', dpi=300, bbox_inches='tight')
+    figures['main_comparison'] = fig1
+    
+    # === ДОДАТКОВА ФІГУРА: ДЕТАЛЬНИЙ АНАЛІЗ ===
+    fig2, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig2.suptitle('Детальний аналіз продуктивності моделей', fontsize=14, fontweight='bold')
+    
+    # 2.1 Box plot помилок
+    ax = axes[0, 0]
+    error_data = [error_linear_fe, error_kernel_fe]
+    bp = ax.boxplot(error_data, labels=['Лінійна', 'Ядерна'], patch_artist=True)
+    bp['boxes'][0].set_facecolor('red')
+    bp['boxes'][1].set_facecolor('green')
+    bp['boxes'][0].set_alpha(0.6)
+    bp['boxes'][1].set_alpha(0.6)
+    
+    ax.set_ylabel('Помилка прогнозу Fe (%)')
+    ax.set_title('Розподіл помилок (квартилі)')
+    ax.grid(True, alpha=0.3)
+    
+    # 2.2 Кумулятивний розподіл помилок
+    ax = axes[0, 1]
+    sorted_linear = np.sort(np.abs(error_linear_fe))
+    sorted_kernel = np.sort(np.abs(error_kernel_fe))
+    
+    y_linear = np.arange(1, len(sorted_linear) + 1) / len(sorted_linear)
+    y_kernel = np.arange(1, len(sorted_kernel) + 1) / len(sorted_kernel)
+    
+    ax.plot(sorted_linear, y_linear, color='red', linewidth=2, label='Лінійна модель')
+    ax.plot(sorted_kernel, y_kernel, color='green', linewidth=2, label='Ядерна модель')
+    
+    ax.set_xlabel('Абсолютна помилка Fe (%)')
+    ax.set_ylabel('Кумулятивна ймовірність')
+    ax.set_title('Кумулятивний розподіл помилок')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    # 2.3 Кореляція залишків
+    ax = axes[1, 0]
+    ax.scatter(error_linear_fe, error_kernel_fe, alpha=0.6, s=20, color='purple')
+    
+    # Лінія кореляції
+    correlation = np.corrcoef(error_linear_fe, error_kernel_fe)[0, 1]
+    ax.plot([error_linear_fe.min(), error_linear_fe.max()], 
+           [error_kernel_fe.min(), error_kernel_fe.max()], 'r--', alpha=0.8)
+    
+    ax.set_xlabel('Помилка лінійної моделі (%)')
+    ax.set_ylabel('Помилка ядерної моделі (%)')
+    ax.set_title(f'Кореляція помилок (r = {correlation:.3f})')
+    ax.grid(True, alpha=0.3)
+    
+    # 2.4 Покращення за квартилями
+    ax = axes[1, 1]
+    quartiles = [25, 50, 75, 90, 95]
+    linear_percentiles = np.percentile(np.abs(error_linear_fe), quartiles)
+    kernel_percentiles = np.percentile(np.abs(error_kernel_fe), quartiles)
+    improvements = ((linear_percentiles - kernel_percentiles) / linear_percentiles) * 100
+    
+    bars = ax.bar(range(len(quartiles)), improvements, color='blue', alpha=0.7)
+    ax.set_xticks(range(len(quartiles)))
+    ax.set_xticklabels([f'{q}%' for q in quartiles])
+    ax.set_ylabel('Покращення (%)')
+    ax.set_xlabel('Квартиль помилок')
+    ax.set_title('Покращення за квартилями помилок')
+    ax.grid(True, alpha=0.3, axis='y')
+    
+    # Додавання значень на стовпці
+    for bar, value in zip(bars, improvements):
+        color = 'green' if value > 0 else 'red'
+        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(improvements)*0.02,
+               f'{value:.1f}%', ha='center', va='bottom', color=color, fontweight='bold')
+    
+    plt.tight_layout()
+    # plt.savefig('dissertation_detailed_analysis.png', dpi=300, bbox_inches='tight')
+    figures['detailed_analysis'] = fig2
+    plt.show()
+    
+    print("📊 Створено комплексні візуалізації:")
+    print("   📈 dissertation_model_comparison.png - основне порівняння")
+    print("   📊 dissertation_detailed_analysis.png - детальний аналіз")
+    
+    return figures
+
+if __name__ == '__main__':
+
+    reference_df = pd.read_parquet("processed.parquet")
+    
+    # df_summary = run_experiment_suite(
+    #     reference_df= reference_df,
+    #     lags=(1,2,3,4),
+    #     Ns=(5000, 7000),
+    #     krr_kernels=("linear", "rbf"),
+    #     anomaly_severity="mild",
+    #     use_anomalies=True,
+    #     seeds=(123, 42),
+    #     noise_level="none",
+    #     results_dir="exp_results",
+    #     n_iter_search_rbf=15,
+    #     verbose=False,
+    # )
+
+    # df_summary = run_experiment_suite(
+    #     reference_df= reference_df,
+    #     lags=(2,3),
+    #     Ns=(5000, 7000),
+    #     krr_kernels=("linear", "rbf"),
+    #     anomaly_severity="mild",
+    #     use_anomalies=True,
+    #     seeds=(123, 42),
+    #     noise_level="none",
+    #     results_dir="exp_results",
+    #     n_iter_search_rbf=15,
+    #     verbose=False,
+    # )
+
+    # print(df_summary)
+
+    # res = analyze_experiment_results(
+    #     results_dir="exp_results",
+    #     kernel_focus=["rbf","linear"],  # можна залишити None, щоб взяти всі
+    #     do_ttests=True,
+    #     save_figs=True,
+    #     show_figs=True,                # увімкни True, якщо хочеш показ у ноутбуці
+    #     export_tables=True
+    # )
+    
+    # print("Графіки:", *res["fig_paths"], sep="\n - ")
+    # print("Таблиці:", res["table_paths"])
+    # print("Meta:", res["meta"])
+    
+    # # Наприклад, подивитись ТОП по гейну Fe (rbf):
+    # (df := res["df_summary"])
+    # print(df[df.kernel=="rbf"].sort_values("RMSE_Fe_gain_%", ascending=False).head(10))    
+    
+    compare_linear_vs_kernel_models()
