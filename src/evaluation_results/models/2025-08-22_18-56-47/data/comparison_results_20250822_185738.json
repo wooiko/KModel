@@ -1,0 +1,78 @@
+{
+  "timestamp": "2025-08-22T18:57:35.327048",
+  "simulation_params": {
+    "N_data": 7000,
+    "control_pts": 700,
+    "lag": 2,
+    "train_size": 0.8,
+    "val_size": 0.1,
+    "test_size": 0.1,
+    "time_step_s": 5,
+    "time_constants_s": {
+      "concentrate_fe_percent": 8.0,
+      "tailings_fe_percent": 10.0,
+      "concentrate_mass_flow": 5.0,
+      "tailings_mass_flow": 7.0
+    },
+    "dead_times_s": {
+      "concentrate_fe_percent": 20.0,
+      "tailings_fe_percent": 25.0,
+      "concentrate_mass_flow": 20.0,
+      "tailings_mass_flow": 25.0
+    },
+    "plant_model_type": "rf",
+    "seed": 42,
+    "n_neighbors": 5,
+    "noise_level": "none",
+    "enable_nonlinear": true,
+    "nonlinear_config": {
+      "concentrate_fe_percent": [
+        "pow",
+        2.0
+      ],
+      "concentrate_mass_flow": [
+        "pow",
+        1.5
+      ]
+    },
+    "use_anomalies": true,
+    "anomaly_severity": "mild",
+    "anomaly_in_train": false
+  },
+  "data_info": {
+    "samples_total": 7000,
+    "samples_train": 5598,
+    "samples_val": 699,
+    "samples_test": 701,
+    "lag_used": 2,
+    "features": 9
+  },
+  "linear_model": {
+    "type": "Linear (ARX)",
+    "mse": 0.06558093982854077,
+    "rmse_fe": 0.13440384654388676,
+    "rmse_mass": 0.3362996962402566,
+    "train_time": 0.0
+  },
+  "kernel_model": {
+    "type": "Kernel Ridge Regression (RBF)",
+    "mse": 0.027943945754470297,
+    "rmse_fe": 0.06836638774512338,
+    "rmse_mass": 0.2263049458929788,
+    "train_time": 38.159221172332764
+  },
+  "performance_comparison": {
+    "mse_improvement_percent": 57.390141361037614,
+    "rmse_fe_improvement_percent": 49.133607777147134,
+    "rmse_mass_improvement_percent": 32.70735941086581,
+    "target_achieved": true,
+    "target_range": [
+      15,
+      20
+    ]
+  },
+  "nonlinearity_analysis": {
+    "correlation_nonlinearity": 0.08291766753558977,
+    "control_complexity": 1100.0405507777355
+  }
+}

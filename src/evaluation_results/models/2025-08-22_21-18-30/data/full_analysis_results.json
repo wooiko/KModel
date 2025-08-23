@@ -1,9 +1,9 @@
 {
-  "timestamp": "2025-08-22T17:11:04.339640",
+  "timestamp": "2025-08-22T21:20:25.802260",
   "simulation_params": {
     "N_data": 7000,
     "control_pts": 700,
-    "lag": 2,
+    "lag": 3,
     "train_size": 0.8,
     "val_size": 0.1,
     "test_size": 0.1,
@@ -21,7 +21,7 @@
       "tailings_mass_flow": 25.0
     },
     "plant_model_type": "rf",
-    "seed": 42,
+    "seed": 123,
     "n_neighbors": 5,
     "noise_level": "none",
     "enable_nonlinear": true,
@@ -36,35 +36,35 @@
       ]
     },
     "use_anomalies": true,
-    "anomaly_severity": "mild",
+    "anomaly_severity": "medium",
     "anomaly_in_train": false
   },
   "data_info": {
     "samples_total": 7000,
-    "samples_train": 5598,
+    "samples_train": 5597,
     "samples_val": 699,
     "samples_test": 701,
-    "lag_used": 2,
-    "features": 9
+    "lag_used": 3,
+    "features": 12
   },
   "linear_model": {
     "type": "Linear (ARX)",
-    "mse": 0.06558093982854077,
-    "rmse_fe": 0.13440384654388676,
-    "rmse_mass": 0.3362996962402566,
-    "train_time": 0.002605438232421875
+    "mse": 0.16786481131875372,
+    "rmse_fe": 0.256837033199228,
+    "rmse_mass": 0.5193884490580497,
+    "train_time": 0.04962301254272461
   },
   "kernel_model": {
     "type": "Kernel Ridge Regression (RBF)",
-    "mse": 0.027943945754470297,
-    "rmse_fe": 0.06836638774512338,
-    "rmse_mass": 0.2263049458929788,
-    "train_time": 50.64024829864502
+    "mse": 0.019266725606225544,
+    "rmse_fe": 0.06946553052852235,
+    "rmse_mass": 0.18359736185697778,
+    "train_time": 98.03473353385925
   },
   "performance_comparison": {
-    "mse_improvement_percent": 57.390141361037614,
-    "rmse_fe_improvement_percent": 49.133607777147134,
-    "rmse_mass_improvement_percent": 32.70735941086581,
+    "mse_improvement_percent": 88.52247504658631,
+    "rmse_fe_improvement_percent": 72.95346015176575,
+    "rmse_mass_improvement_percent": 64.65124278551208,
     "target_achieved": true,
     "target_range": [
       15,
@@ -72,7 +72,12 @@
     ]
   },
   "nonlinearity_analysis": {
-    "correlation_nonlinearity": 0.08291766753558977,
-    "control_complexity": 1100.0405507777355
+    "correlation_nonlinearity": 0.1190020727297092,
+    "control_complexity": 1118.8595994121642
+  },
+  "custom_metrics": {
+    "data_quality_score": 0.85,
+    "simulation_realism": 0.92,
+    "computational_efficiency": 0.78
   }
 }
