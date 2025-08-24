@@ -1,0 +1,16 @@
+\begin{table}[h]
+\centering
+\caption{Порівняння продуктивності лінійних моделей для процесу магнітної сепарації}
+\label{tab:linear_models_comparison}
+\begin{tabular}{|l|c|c|c|c|c|}
+\hline
+\textbf{Модель} & \textbf{MSE} & \textbf{R²} & \textbf{RMSE Fe, \%} & \textbf{RMSE Mass, т/год} & \textbf{Час навчання, с} \\
+\hline
+ARX_OLS & 94.262003 & -21447.2644 & 12.966 & 4.518 & 0.060 \\
+\hline
+ARX_Ridge & 95.687678 & -21747.4280 & 13.056 & 4.573 & 0.016 \\
+\hline
+ARX_Lasso & 41.118840 & -10485.1531 & 9.067 & 0.185 & 0.012 \\
+\hline
+\end{tabular}
+\end{table}

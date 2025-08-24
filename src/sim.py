@@ -33,7 +33,7 @@ from config_manager import (
 )
 from evaluation_storage import quick_save, quick_load  
 from evaluation_database import quick_add_to_database
-from dissertation_helper import enable_dissertation_analysis, log_step, log_model, save_dissertation_materials
+# from dissertation_helper import enable_dissertation_analysis, log_step, log_model, save_dissertation_materials
 
 
 # =============================================================================

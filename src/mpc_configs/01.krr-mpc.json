@@ -42,7 +42,7 @@
     "u_min": 20.0,
     "u_max": 40.0,
     "plant_model_type": "rf",
-    "noise_level": "low",
+    "noise_level": "none",
     "enable_nonlinear": true,
     "nonlinear_config": {
         "concentrate_fe_percent": [

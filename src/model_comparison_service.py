@@ -1375,7 +1375,7 @@ def custom_parameters_example():
     """Приклад з користувацькими параметрами симуляції"""
     print("\n=== КОРИСТУВАЦЬКІ ПАРАМЕТРИ СИМУЛЯЦІЇ ===\n")
     
-    service = ModelComparisonService(output_dir)
+    service = ModelComparisonService()
     
     # Спеціальні параметри для специфічного дослідження
     results = service.run_comparison(
@@ -1472,9 +1472,7 @@ def main():
 if __name__ == "__main__":
     main()
 
-# if __name__ == "__main__":
-#     # Ініціалізація сервісу
-#     service = ModelComparisonService()
+
     
 #     results = service.run_full_analysis_with_visualizations(
 #         N_data=7000,
