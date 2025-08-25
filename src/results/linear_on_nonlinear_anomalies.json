@@ -1,38 +1,9 @@
 {
-  "timestamp": "2025-08-25 14:19:57",
+  "timestamp": "2025-08-25 17:43:35",
   "global_config": {
     "n_samples": 7000,
     "seed": 42,
-    "generator_params": {
-      "time_step_s": 5.0,
-      "time_constants_s": {
-        "concentrate_fe_percent": 8.0,
-        "tailings_fe_percent": 10.0,
-        "concentrate_mass_flow": 5.0,
-        "tailings_mass_flow": 7.0
-      },
-      "dead_times_s": {
-        "concentrate_fe_percent": 20.0,
-        "tailings_fe_percent": 25.0,
-        "concentrate_mass_flow": 20.0,
-        "tailings_mass_flow": 25.0
-      },
-      "control_pts": 700,
-      "noise_level": "medium",
-      "use_anomalies": true,
-      "anomaly_severity": "medium",
-      "enable_nonlinear": true,
-      "nonlinear_config": {
-        "concentrate_fe_percent": [
-          "pow",
-          2.0
-        ],
-        "concentrate_mass_flow": [
-          "pow",
-          1.5
-        ]
-      }
-    },
+    "generator_params": {},
     "lag_depth": 3,
     "train_size": 0.7,
     "val_size": 0.15,
@@ -76,36 +47,7 @@
       "global_config": {
         "n_samples": 7000,
         "seed": 42,
-        "generator_params": {
-          "time_step_s": 5.0,
-          "time_constants_s": {
-            "concentrate_fe_percent": 8.0,
-            "tailings_fe_percent": 10.0,
-            "concentrate_mass_flow": 5.0,
-            "tailings_mass_flow": 7.0
-          },
-          "dead_times_s": {
-            "concentrate_fe_percent": 20.0,
-            "tailings_fe_percent": 25.0,
-            "concentrate_mass_flow": 20.0,
-            "tailings_mass_flow": 25.0
-          },
-          "control_pts": 700,
-          "noise_level": "medium",
-          "use_anomalies": true,
-          "anomaly_severity": "medium",
-          "enable_nonlinear": true,
-          "nonlinear_config": {
-            "concentrate_fe_percent": [
-              "pow",
-              2.0
-            ],
-            "concentrate_mass_flow": [
-              "pow",
-              1.5
-            ]
-          }
-        },
+        "generator_params": {},
         "lag_depth": 3,
         "train_size": 0.7,
         "val_size": 0.15,
@@ -172,7 +114,7 @@
                 "MAE": 0.38187837254753065,
                 "R2": 0.04696325417810726
               },
-              "train_time_sec": 0.030708099948242307,
+              "train_time_sec": 0.004067400004714727,
               "predictions_head": [
                 [
                   53.85931978036632,
@@ -202,7 +144,7 @@
                 "MAE": 0.3818760592066203,
                 "R2": 0.04697916849135142
               },
-              "train_time_sec": 0.022343500051647425,
+              "train_time_sec": 0.002552800113335252,
               "predictions_head": [
                 [
                   53.859344707290774,
@@ -232,7 +174,7 @@
                 "MAE": 0.3817662985104636,
                 "R2": 0.047065092438097644
               },
-              "train_time_sec": 0.010483999969437718,
+              "train_time_sec": 0.005931399995461106,
               "predictions_head": [
                 [
                   53.863395671549995,
@@ -286,7 +228,7 @@
                 "MAE": 0.3782846123682124,
                 "R2": 0.0399427011451306
               },
-              "train_time_sec": 0.0015865000896155834,
+              "train_time_sec": 0.0011042000260204077,
               "predictions_head": [
                 [
                   53.62288635223736,
@@ -316,7 +258,7 @@
                 "MAE": 0.3782820794715819,
                 "R2": 0.039962198547023986
               },
-              "train_time_sec": 0.0027834000065922737,
+              "train_time_sec": 0.001088599907234311,
               "predictions_head": [
                 [
                   53.622910647094685,
@@ -346,7 +288,7 @@
                 "MAE": 0.37813460924733194,
                 "R2": 0.040561870088812346
               },
-              "train_time_sec": 0.0024393999483436346,
+              "train_time_sec": 0.0021031000651419163,
               "predictions_head": [
                 [
                   53.626580375259486,
@@ -400,7 +342,7 @@
                 "MAE": 0.3715287035353561,
                 "R2": 0.031094833796978527
               },
-              "train_time_sec": 0.0013955999165773392,
+              "train_time_sec": 0.00125070009380579,
               "predictions_head": [
                 [
                   53.459803312110296,
@@ -430,7 +372,7 @@
                 "MAE": 0.37152617246275865,
                 "R2": 0.031118524589757834
               },
-              "train_time_sec": 0.0012527999933809042,
+              "train_time_sec": 0.0018874001689255238,
               "predictions_head": [
                 [
                   53.45982581247151,
@@ -460,7 +402,7 @@
                 "MAE": 0.37138380507054897,
                 "R2": 0.03237580234366061
               },
-              "train_time_sec": 0.0027002000715583563,
+              "train_time_sec": 0.0023982999846339226,
               "predictions_head": [
                 [
                   53.46332104490791,

@@ -228,6 +228,148 @@ class DataFactory:
             target_names=target_cols
         )
 
+class MagneticDataFactory:
+    """
+    Централізована фабрика генерації даних поверх data_gen.DataGenerator.
+    Призначення:
+      - завантаження reference_df з processed.parquet (або .csv),
+      - генерація базових даних зі шумом і аномаліями,
+      - опційне застосування нелінійності,
+      - повернення стандартизованого DataFrame з X та Y_*.
+
+    Використання з існуючим TestHarness (без його змін):
+      mf = MagneticDataFactory("processed.parquet")
+      harness = TestHarness(
+          data_generator=mf.build_generator(),
+          model_registry=...,
+          global_config=...,
+          working_config=...
+      )
+    """
+    def __init__(self, processed_path: str = "processed.parquet"):
+        from pathlib import Path
+        self.processed_path = Path(processed_path)
+        self.reference_df = self._load_reference_df()
+
+    def _load_reference_df(self) -> "pd.DataFrame":
+        import pandas as pd
+        if not self.processed_path.exists():
+            raise FileNotFoundError(f"Reference файл не знайдено: {self.processed_path}")
+        suffix = self.processed_path.suffix.lower()
+        if suffix == ".parquet":
+            return pd.read_parquet(self.processed_path)
+        if suffix == ".csv":
+            return pd.read_csv(self.processed_path)
+        raise ValueError(f"Непідтримуване розширення: {suffix}")
+
+    def _generate_core(self, params: "dict[str, object]") -> "pd.DataFrame":
+        """
+        Єдине місце роботи з DataGenerator:
+        - базова генерація,
+        - шум/аномалії,
+        - опційна нелінійність,
+        - стандартизація колонок (3 X + 2 Y_*).
+        """
+        import pandas as pd
+        from data_gen import DataGenerator
+
+        # 0) Базові параметри з дефолтами
+        n_samples = int(params.get("n_samples", params.get("N_data", 7000)))
+        seed = int(params.get("seed", 42))
+        control_pts = int(params.get("control_pts", max(20, n_samples // 10)))
+        time_step_s = float(params.get("time_step_s", 5.0))
+
+        time_constants_s = params.get("time_constants_s", {
+            "concentrate_fe_percent": 8.0,
+            "tailings_fe_percent": 10.0,
+            "concentrate_mass_flow": 5.0,
+            "tailings_mass_flow": 7.0,
+        })
+        dead_times_s = params.get("dead_times_s", {
+            "concentrate_fe_percent": 20.0,
+            "tailings_fe_percent": 25.0,
+            "concentrate_mass_flow": 20.0,
+            "tailings_mass_flow": 25.0,
+        })
+        noise_level = params.get("noise_level", "none")  # 'none' | 'low' | 'medium' | 'high'
+        plant_model_type = params.get("plant_model_type", "rf")
+
+        # 1) Генератор
+        gen = DataGenerator(
+            reference_df=self.reference_df,
+            seed=seed,
+            time_step_s=time_step_s,
+            time_constants_s=time_constants_s,
+            dead_times_s=dead_times_s,
+            true_model_type=plant_model_type,
+        )
+
+        # 2) Аномалії (централізовано)
+        use_anomalies = bool(params.get("use_anomalies", True))
+        if use_anomalies:
+            train_frac = float(params.get("train_size", 0.7))
+            val_frac = float(params.get("val_size", 0.15))
+            test_frac = float(params.get("test_size", 0.15))
+            anomaly_cfg = DataGenerator.generate_anomaly_config(
+                N_data=n_samples,
+                train_frac=train_frac,
+                val_frac=val_frac,
+                test_frac=test_frac,
+                seed=seed,
+            )
+        else:
+            anomaly_cfg = None
+
+        # 3) База зі шумом
+        df_base = gen.generate(
+            T=n_samples,
+            control_pts=control_pts,
+            n_neighbors=int(params.get("n_neighbors", 5)),
+            noise_level=noise_level,
+            anomaly_config=anomaly_cfg,
+        )
+
+        # 4) Нелінійність (за потреби)
+        if bool(params.get("enable_nonlinear", True)):
+            nonlin_cfg = params.get("nonlinear_config", {
+                "concentrate_fe_percent": ("pow", 2.0),
+                "concentrate_mass_flow": ("pow", 1.5),
+            })
+            df_used = gen.generate_nonlinear_variant(
+                base_df=df_base,
+                non_linear_factors=nonlin_cfg,
+                noise_level="none",          # шум уже додано
+                anomaly_config=anomaly_cfg,  # консистентний розклад аномалій
+            )
+        else:
+            df_used = df_base
+
+        # 5) Форматування виходу
+        cols_inp = ["feed_fe_percent", "ore_mass_flow", "solid_feed_percent"]
+        cols_y = ["concentrate_fe_percent", "concentrate_mass_flow"]
+        missing = [c for c in cols_inp + cols_y if c not in df_used.columns]
+        if missing:
+            raise KeyError(f"Відсутні колонки у згенерованих даних: {missing}")
+
+        df_out = df_used[cols_inp + cols_y].copy()
+        df_out.rename(columns={
+            "concentrate_fe_percent": "Y_concentrate_fe_percent",
+            "concentrate_mass_flow": "Y_concentrate_mass_flow",
+        }, inplace=True)
+        return df_out
+
+    def build_generator(self):
+        """
+        Повертає функцію-генератор, сумісну з існуючим TestHarness (через data_generator=...).
+        Вона делегує всю логіку в _generate_core і підставляє дефолти для часток, якщо їх не передали.
+        """
+        def generate_dataframe(params: "dict[str, object]") -> "pd.DataFrame":
+            p = dict(params or {})
+            p.setdefault("train_size", 0.7)
+            p.setdefault("val_size", 0.15)
+            p.setdefault("test_size", 0.15)
+            return self._generate_core(p)
+        return generate_dataframe
 
 # =========================
 #       MODEL LAYER

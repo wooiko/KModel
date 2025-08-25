@@ -33,138 +33,139 @@ from testing_framework import (
 #  ГЕНЕРАТОР ДАНИХ (АДАПТЕР)
 # =========================
 
-def _load_reference_df(params: Mapping[str, Any]) -> pd.DataFrame:
-    """Завантажує референсні дані."""
-    if "reference_df" in params and params["reference_df"] is not None:
-        ref = params["reference_df"]
-        if isinstance(ref, pd.DataFrame):
-            return ref
-        elif isinstance(ref, (str, Path)):
-            p = Path(ref)
-            if p.suffix.lower() in {".parquet"} and p.exists():
-                return pd.read_parquet(p)
-            if p.suffix.lower() in {".csv"} and p.exists():
-                return pd.read_csv(p)
-            raise FileNotFoundError(f"reference_df={ref} не знайдено")
-        else:
-            raise TypeError("reference_df має бути DataFrame або шляхем до файлу")
-    # Fallback: шукаємо processed.parquet поруч
-    if Path("processed.parquet").exists():
-        return pd.read_parquet("processed.parquet")
-    raise FileNotFoundError(
-        "Не передано reference_df і не знайдено processed.parquet"
-    )
-
-
-def _build_anomaly_config(n_samples: int, params: Mapping[str, Any]) -> Optional[dict]:
-    """Генерує anomaly_config для DataGenerator на основі часток train/val/test."""
     use_anomalies = params.get("use_anomalies", True)
-    if not use_anomalies:
-        return None
+# def _load_reference_df(params: Mapping[str, Any]) -> pd.DataFrame:
+#     """Завантажує референсні дані."""
+#     if "reference_df" in params and params["reference_df"] is not None:
+#         ref = params["reference_df"]
+#         if isinstance(ref, pd.DataFrame):
+#             return ref
+#         elif isinstance(ref, (str, Path)):
+#             p = Path(ref)
+#             if p.suffix.lower() in {".parquet"} and p.exists():
+#                 return pd.read_parquet(p)
+#             if p.suffix.lower() in {".csv"} and p.exists():
+#                 return pd.read_csv(p)
+#             raise FileNotFoundError(f"reference_df={ref} не знайдено")
+#         else:
+#             raise TypeError("reference_df має бути DataFrame або шляхем до файлу")
+#     # Fallback: шукаємо processed.parquet поруч
+#     if Path("processed.parquet").exists():
+#         return pd.read_parquet("processed.parquet")
+#     raise FileNotFoundError(
+#         "Не передано reference_df і не знайдено processed.parquet"
+#     )
 
-    train = float(params.get("train_size", 0.7))
-    val = float(params.get("val_size", 0.15))
-    test = float(params.get("test_size", 0.15))
-    seed = int(params.get("seed", 42))
 
-    # Використовуємо статичний метод з вашого data_gen.py
-    return DataGenerator.generate_anomaly_config(
-        N_data=n_samples,
-        train_frac=train,
-        val_frac=val,
-        test_frac=test,
-        seed=seed,
-    )
+# def _build_anomaly_config(n_samples: int, params: Mapping[str, Any]) -> Optional[dict]:
+#     """Генерує anomaly_config для DataGenerator на основі часток train/val/test."""
+#     use_anomalies = params.get("use_anomalies", True)
+#     if not use_anomalies:
+#         return None
+
+#     train = float(params.get("train_size", 0.7))
+#     val = float(params.get("val_size", 0.15))
+#     test = float(params.get("test_size", 0.15))
+#     seed = int(params.get("seed", 42))
+
+#     # Використовуємо статичний метод з вашого data_gen.py
+#     return DataGenerator.generate_anomaly_config(
+#         N_data=n_samples,
+#         train_frac=train,
+#         val_frac=val,
+#         test_frac=test,
+#         seed=seed,
+#     )
 
 
-def generate_dataframe(params: Mapping[str, Any]) -> pd.DataFrame:
-    """
-    Адаптер-функція для DataFactory: формує дані у потрібному форматі.
-    Повертає лише потрібні колонки:
-      X: feed_fe_percent, ore_mass_flow, solid_feed_percent
-      Y: Y_concentrate_fe_percent, Y_concentrate_mass_flow
-    """
-    # 0) Набір базових параметрів
-    n_samples = int(params.get("n_samples", params.get("N_data", 7000)))
-    seed = int(params.get("seed", 42))
-    control_pts = int(params.get("control_pts", max(20, n_samples // 10)))
+# def generate_dataframe(params: Mapping[str, Any]) -> pd.DataFrame:
+#     """
+#     Адаптер-функція для DataFactory: формує дані у потрібному форматі.
+#     Повертає лише потрібні колонки:
+#       X: feed_fe_percent, ore_mass_flow, solid_feed_percent
+#       Y: Y_concentrate_fe_percent, Y_concentrate_mass_flow
+#     """
+#     # 0) Набір базових параметрів
+#     n_samples = int(params.get("n_samples", params.get("N_data", 7000)))
+#     seed = int(params.get("seed", 42))
+#     control_pts = int(params.get("control_pts", max(20, n_samples // 10)))
 
-    time_step_s = float(params.get("time_step_s", 5.0))
-    time_constants_s = params.get("time_constants_s", {
-        "concentrate_fe_percent": 8.0,
-        "tailings_fe_percent": 10.0,
-        "concentrate_mass_flow": 5.0,
-        "tailings_mass_flow": 7.0,
-    })
-    dead_times_s = params.get("dead_times_s", {
-        "concentrate_fe_percent": 20.0,
-        "tailings_fe_percent": 25.0,
-        "concentrate_mass_flow": 20.0,
-        "tailings_mass_flow": 25.0,
-    })
-    noise_level = params.get("noise_level", "none")  # 'none' | 'low' | 'medium' | 'high'
+#     time_step_s = float(params.get("time_step_s", 5.0))
+#     time_constants_s = params.get("time_constants_s", {
+#         "concentrate_fe_percent": 8.0,
+#         "tailings_fe_percent": 10.0,
+#         "concentrate_mass_flow": 5.0,
+#         "tailings_mass_flow": 7.0,
+#     })
+#     dead_times_s = params.get("dead_times_s", {
+#         "concentrate_fe_percent": 20.0,
+#         "tailings_fe_percent": 25.0,
+#         "concentrate_mass_flow": 20.0,
+#         "tailings_mass_flow": 25.0,
+#     })
+#     noise_level = params.get("noise_level", "none")  # 'none' | 'low' | 'medium' | 'high'
 
-    # 1) Референс і генератор
-    reference_df = _load_reference_df(params)
-    gen = DataGenerator(
-        reference_df=reference_df,
-        seed=seed,
-        time_step_s=time_step_s,
-        time_constants_s=time_constants_s,
-        dead_times_s=dead_times_s,
-        true_model_type=params.get("plant_model_type", "rf"),
-    )
+#     # 1) Референс і генератор
+#     reference_df = _load_reference_df(params)
+#     gen = DataGenerator(
+#         reference_df=reference_df,
+#         seed=seed,
+#         time_step_s=time_step_s,
+#         time_constants_s=time_constants_s,
+#         dead_times_s=dead_times_s,
+#         true_model_type=params.get("plant_model_type", "rf"),
+#     )
 
-    # 2) Аномалії
-    anomaly_cfg = _build_anomaly_config(n_samples, params)
+#     # 2) Аномалії
+#     anomaly_cfg = _build_anomaly_config(n_samples, params)
 
-    # 3) Базовий датасет
-    df_base = gen.generate(
-        T=n_samples,
-        control_pts=control_pts,
-        n_neighbors=int(params.get("n_neighbors", 5)),
-        noise_level=noise_level,
-        anomaly_config=anomaly_cfg,
-    )
+#     # 3) Базовий датасет
+#     df_base = gen.generate(
+#         T=n_samples,
+#         control_pts=control_pts,
+#         n_neighbors=int(params.get("n_neighbors", 5)),
+#         noise_level=noise_level,
+#         anomaly_config=anomaly_cfg,
+#     )
 
-    # 4) Нелінійний варіант (за потреби)
-    enable_nl = bool(params.get("enable_nonlinear", True))
-    if enable_nl:
-        nonlin_cfg = params.get(
-            "nonlinear_config",
-            {
-                "concentrate_fe_percent": ("pow", 2.0),
-                "concentrate_mass_flow": ("pow", 1.5),
-            },
-        )
-        df_used = gen.generate_nonlinear_variant(
-            base_df=df_base,
-            non_linear_factors=nonlin_cfg,
-            noise_level="none",             # шум уже додано на базовому кроці
-            anomaly_config=anomaly_cfg,     # консистентна конфігурація аномалій
-        )
-    else:
-        df_used = df_base
+#     # 4) Нелінійний варіант (за потреби)
+#     enable_nl = bool(params.get("enable_nonlinear", True))
+#     if enable_nl:
+#         nonlin_cfg = params.get(
+#             "nonlinear_config",
+#             {
+#                 "concentrate_fe_percent": ("pow", 2.0),
+#                 "concentrate_mass_flow": ("pow", 1.5),
+#             },
+#         )
+#         df_used = gen.generate_nonlinear_variant(
+#             base_df=df_base,
+#             non_linear_factors=nonlin_cfg,
+#             noise_level="none",             # шум уже додано на базовому кроці
+#             anomaly_config=anomaly_cfg,     # консистентна конфігурація аномалій
+#         )
+#     else:
+#         df_used = df_base
 
-    # 5) Відібрані колонки + перейменування цілей із префіксом Y_
-    cols_inp = ["feed_fe_percent", "ore_mass_flow", "solid_feed_percent"]
-    cols_y = ["concentrate_fe_percent", "concentrate_mass_flow"]
+#     # 5) Відібрані колонки + перейменування цілей із префіксом Y_
+#     cols_inp = ["feed_fe_percent", "ore_mass_flow", "solid_feed_percent"]
+#     cols_y = ["concentrate_fe_percent", "concentrate_mass_flow"]
 
-    missing = [c for c in cols_inp + cols_y if c not in df_used.columns]
-    if missing:
-        raise KeyError(f"Відсутні колонки у згенерованих даних: {missing}")
+#     missing = [c for c in cols_inp + cols_y if c not in df_used.columns]
+#     if missing:
+#         raise KeyError(f"Відсутні колонки у згенерованих даних: {missing}")
 
-    df_out = df_used[cols_inp + cols_y].copy()
-    df_out.rename(
-        columns={
-            "concentrate_fe_percent": "Y_concentrate_fe_percent",
-            "concentrate_mass_flow": "Y_concentrate_mass_flow",
-        },
-        inplace=True,
-    )
+#     df_out = df_used[cols_inp + cols_y].copy()
+#     df_out.rename(
+#         columns={
+#             "concentrate_fe_percent": "Y_concentrate_fe_percent",
+#             "concentrate_mass_flow": "Y_concentrate_mass_flow",
+#         },
+#         inplace=True,
+#     )
 
-    # тільки потрібні стовпці: 3 X + 2 Y
-    return df_out
+#     # тільки потрібні стовпці: 3 X + 2 Y
+#     return df_out
 
 
 # =========================
@@ -214,6 +215,161 @@ def get_model_registry() -> Dict[str, Callable[..., KernelModel]]:
         "ARX_Lasso": build_arx_lasso,
     }
 
+def visualize_report(report_or_path, out_dir: str = "results/figs") -> dict:
+    """
+    Будує візуалізації метрик з тестового звіту:
+      - accuracy_comparison.png: 1x3 (RMSE, MAE, R2) лінійні графіки по сценаріях (weak→moderate→strong) з розбиттям по моделях
+      - train_time.png: стовпчики часу навчання
+      - metrics_long.csv: метрики у довгому форматі (для подальшого аналізу)
+    Параметри:
+      - report_or_path: dict (вже завантажений звіт) або шлях до JSON-файлу
+      - out_dir: куди зберігати результати
+    Повертає:
+      - dict зі шляхами до згенерованих файлів
+    """
+    import json
+    from pathlib import Path
+    import pandas as pd
+
+    # 0) Завантаження
+    if isinstance(report_or_path, (str, Path)):
+        with open(report_or_path, "r", encoding="utf-8") as f:
+            report = json.load(f)
+    elif isinstance(report_or_path, dict):
+        report = report_or_path
+    else:
+        raise TypeError("report_or_path має бути шляхом до JSON або dict-ом.")
+
+    # 1) Дістати блок tests (він може бути словником або JSON-рядком)
+    tests_raw = report.get("tests", {})
+    if isinstance(tests_raw, str):
+        try:
+            tests = json.loads(tests_raw)
+        except json.JSONDecodeError as e:
+            raise ValueError("Поле 'tests' є рядком, але не парситься як JSON.") from e
+    elif isinstance(tests_raw, dict):
+        tests = tests_raw
+    else:
+        raise ValueError("Поле 'tests' має непідтримуваний формат.")
+
+    if not tests:
+        raise ValueError("У звіті відсутні тести (порожнє 'tests').")
+
+    # Припускаємо один ключ верхнього рівня (назва тесту)
+    test_name, test_payload = next(iter(tests.items()))
+
+    scenarios = test_payload.get("scenarios", {})
+    if not scenarios:
+        raise ValueError(f"У тесті '{test_name}' відсутні сценарії.")
+
+    # 2) Витягти метрики та час навчання в «довгий» датафрейм
+    records_metrics = []
+    records_time = []
+    for scen_name, scen_payload in scenarios.items():
+        models = scen_payload.get("models", {})
+        for model_name, model_payload in models.items():
+            # метрики
+            m = model_payload.get("metrics", {})
+            for metric_name, metric_value in m.items():
+                records_metrics.append({
+                    "scenario": scen_name,
+                    "model": model_name,
+                    "metric": metric_name,
+                    "value": float(metric_value),
+                })
+            # час навчання
+            tt = model_payload.get("train_time_sec", None)
+            if tt is not None:
+                records_time.append({
+                    "scenario": scen_name,
+                    "model": model_name,
+                    "train_time_sec": float(tt),
+                })
+
+    if not records_metrics:
+        raise ValueError("Не знайдено метрик у звіті.")
+
+    df_metrics = pd.DataFrame.from_records(records_metrics)
+    df_time = pd.DataFrame.from_records(records_time) if records_time else pd.DataFrame(columns=["scenario", "model", "train_time_sec"])
+
+    # 3) Впорядкування сценаріїв (якщо доступні weak/moderate/strong — використати цей порядок)
+    order_candidates = ["weak", "moderate", "strong"]
+    scenarios_present = list(df_metrics["scenario"].unique())
+    if all(x in scenarios_present for x in order_candidates):
+        scenario_order = order_candidates
+    else:
+        scenario_order = sorted(scenarios_present)
+
+    # 4) Малювання
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # 4.1) accuracy_comparison.png — 3 підграфіки: RMSE, MAE, R2
+    try:
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        sns.set_theme(style="whitegrid")
+        metrics_to_plot = ["RMSE", "MAE", "R2"]
+        fig, axes = plt.subplots(1, 3, figsize=(16, 4), constrained_layout=True)
+
+        for ax, metric in zip(axes, metrics_to_plot):
+            dd = df_metrics[df_metrics["metric"] == metric].copy()
+            if dd.empty:
+                ax.set_visible(False)
+                continue
+            dd["scenario"] = pd.Categorical(dd["scenario"], categories=scenario_order, ordered=True)
+            dd.sort_values(["scenario", "model"], inplace=True)
+            sns.lineplot(
+                data=dd,
+                x="scenario", y="value", hue="model", marker="o", ax=ax
+            )
+            ax.set_title(metric)
+            ax.set_xlabel("Scenario")
+            ax.set_ylabel(metric)
+            ax.legend(title="Model", fontsize=8, title_fontsize=9)
+
+        acc_path = out_dir / "accuracy_comparison.png"
+        fig.suptitle(f"Accuracy metrics by scenario — {test_name}", fontsize=12)
+        fig.savefig(acc_path, dpi=150)
+        plt.close(fig)
+    except Exception as e:
+        raise RuntimeError(f"Не вдалося побудувати accuracy_comparison.png: {e}")
+
+    # 4.2) train_time.png — стовпчики часу навчання (якщо є)
+    time_path = None
+    if not df_time.empty:
+        try:
+            import matplotlib.pyplot as plt
+            import seaborn as sns
+            sns.set_theme(style="whitegrid")
+            df_time["scenario"] = pd.Categorical(df_time["scenario"], categories=scenario_order, ordered=True)
+            df_time.sort_values(["scenario", "model"], inplace=True)
+
+            plt.figure(figsize=(8, 4))
+            sns.barplot(data=df_time, x="scenario", y="train_time_sec", hue="model")
+            plt.title(f"Train time by scenario — {test_name}")
+            plt.xlabel("Scenario")
+            plt.ylabel("Train time, sec")
+            plt.legend(title="Model", fontsize=8, title_fontsize=9)
+            time_path = out_dir / "train_time.png"
+            plt.tight_layout()
+            plt.savefig(time_path, dpi=150)
+            plt.close()
+        except Exception as e:
+            raise RuntimeError(f"Не вдалося побудувати train_time.png: {e}")
+
+    # 5) Зберегти таблицю метрик у довгому форматі
+    csv_path = out_dir / "metrics_long.csv"
+    df_metrics.sort_values(["metric", "scenario", "model"]).to_csv(csv_path, index=False, encoding="utf-8")
+
+    # 6) Повернути шляхи
+    out = {
+        "accuracy_comparison": str(acc_path),
+        "train_time": str(time_path) if time_path else None,
+        "metrics_long_csv": str(csv_path),
+    }
+    print("Візуалізації збережено:", out)
+    return out
 
 # =========================
 #        КАСТОМНИЙ ТЕСТ
@@ -268,28 +424,6 @@ def make_default_configs() -> tuple[GlobalConfig, WorkingConfig]:
     gcfg = GlobalConfig(
         n_samples=7000,
         seed=42,
-        generator_params={
-            "time_step_s": 5.0,
-            "time_constants_s": {
-                "concentrate_fe_percent": 8.0,
-                "tailings_fe_percent": 10.0,
-                "concentrate_mass_flow": 5.0,
-                "tailings_mass_flow": 7.0,
-            },
-            "dead_times_s": {
-                "concentrate_fe_percent": 20.0,
-                "tailings_fe_percent": 25.0,
-                "concentrate_mass_flow": 20.0,
-                "tailings_mass_flow": 25.0,
-            },
-            "control_pts": 700,
-            "noise_level": "medium",
-            "use_anomalies": True,
-            "anomaly_severity": "medium",
-            "enable_nonlinear": True,
-            "nonlinear_config": {"concentrate_fe_percent": ("pow", 2.0),
-                                 "concentrate_mass_flow": ("pow", 1.5)},
-        },
         lag_depth=3,
         train_size=0.7,
         val_size=0.15,
@@ -299,31 +433,66 @@ def make_default_configs() -> tuple[GlobalConfig, WorkingConfig]:
         scale_y=True,
     )
 
+    # Якщо у вашій реалізації GlobalConfig немає поля base_generator_params,
+    # можна покласти ці значення у gcfg.generator_params — фреймворк їх підхопить.
+    gcfg.base_generator_params = {
+        "time_step_s": 5.0,
+        "time_constants_s": {
+            "concentrate_fe_percent": 8.0,
+            "tailings_fe_percent": 10.0,
+            "concentrate_mass_flow": 5.0,
+            "tailings_mass_flow": 7.0,
+        },
+        "dead_times_s": {
+            "concentrate_fe_percent": 20.0,
+            "tailings_fe_percent": 25.0,
+            "concentrate_mass_flow": 20.0,
+            "tailings_mass_flow": 25.0,
+        },
+        "control_pts": 700,
+        "enable_nonlinear": True,
+        "nonlinear_config": {
+            "concentrate_fe_percent": ("pow", 2.0),
+            "concentrate_mass_flow": ("pow", 1.5),
+        },
+        "noise_level": "medium",
+        "use_anomalies": True,
+        "anomaly_severity": "medium",
+    }
+
     wcfg = WorkingConfig(metrics=("RMSE", "MAE", "R2"))
     wcfg.add_model("ARX_OLS")
     wcfg.add_model("ARX_Ridge", alpha=1.0)
     wcfg.add_model("ARX_Lasso", alpha=0.01)
+    
     return gcfg, wcfg
 
+def run_demo():
+    from typing import Any, Dict
+    from pathlib import Path
+    from testing_framework import TestHarness, MagneticDataFactory
 
-def run_demo() -> Dict[str, Any]:
-    # Конфіги
+    # 1) Конфіги
     gcfg, wcfg = make_default_configs()
 
-    # Реєстр моделей
+    # 2) Реєстр моделей
     model_registry = get_model_registry()
 
-    # Хаб
+    # 3) Централізована фабрика + генератор (сумісно з існуючим TestHarness)
+    mag_factory = MagneticDataFactory(processed_path="processed.parquet")
+    generator_fn = mag_factory.build_generator()
+
+    # 4) TestHarness у поточному інтерфейсі (без змін у TestHarness)
     h = TestHarness(
-        data_generator=generate_dataframe,
+        data_generator=generator_fn,
         model_registry=model_registry,
         global_config=gcfg,
         working_config=wcfg,
     )
 
-    # Тест: Лінійні моделі на нелінійних даних із аномаліями
+    # 5) Тест: Лінійні моделі на нелінійних даних із аномаліями
     test = LinearOnNonlinearAnomaliesTest(
-        data_factory=h.data_factory,
+        data_factory=h.data_factory,  # якщо у твоєму TestHarness атрибуту data_factory немає — напиши, адаптую виклик
         runner=h.runner,
         gcfg=gcfg,
         wcfg=wcfg,
@@ -331,13 +500,19 @@ def run_demo() -> Dict[str, Any]:
         anomaly_severity="medium",
     )
 
-    report = h.run_tests([test])
-    # Можна зберегти
+    # 6) Запуск і збереження звіту
+    report: Dict[str, Any] = h.run_tests([test])
     Path("results").mkdir(exist_ok=True)
-    h.save_report(report, "results/linear_on_nonlinear_anomalies.json")
-    print("✅ Звіт збережено у results/linear_on_nonlinear_anomalies.json")
-    return report
+    report_path = "results/linear_on_nonlinear_anomalies.json"
+    h.save_report(report, report_path)
+    print(f"✅ Звіт збережено у {report_path}")
 
+    # 7) Візуалізація
+    figs_dir = "results/figs_linear_on_nonlinear_anomalies"
+    artifacts = visualize_report(report_path, out_dir=figs_dir)
+    print("✅ Візуалізація готова:", artifacts)
+
+    return report
 
 if __name__ == "__main__":
     run_demo()
