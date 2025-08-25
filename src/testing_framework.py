@@ -160,40 +160,151 @@ class DataFactory:
         y_test = y[-n_test:]
         return X_train, y_train, X_val, y_val, X_test, y_test
 
+    def _inject_test_anomalies(self,
+                               X_test: "np.ndarray",
+                               y_test: "np.ndarray",
+                               spec: "dict | str",
+                               std_x_train: "np.ndarray",
+                               std_y_train: "np.ndarray",
+                               rng: "np.random.Generator") -> tuple["np.ndarray", "np.ndarray"]:
+        """
+        Ін'єкція аномалій ТІЛЬКИ у тест:
+          - шум у ознаках,
+          - поодинокі outlier-и та спайки у цілях,
+          - короткі bias-сегменти в цілях.
+        Масштаб аномалій нормується на std тренувальної частини.
+        """
+        # Пресети
+        presets = {
+            "weak": dict(
+                feature_noise_prob=0.5,   feature_noise_sigma=0.15,
+                target_outlier_prob=0.02, target_outlier_scale=2.0,
+                spike_prob=0.005,         spike_scale=4.0,
+                n_bias_segments=0,        bias_len=(15, 30), bias_scale=0.5,
+            ),
+            "moderate": dict(
+                feature_noise_prob=0.7,   feature_noise_sigma=0.25,
+                target_outlier_prob=0.04, target_outlier_scale=3.0,
+                spike_prob=0.01,          spike_scale=6.0,
+                n_bias_segments=1,        bias_len=(20, 40), bias_scale=0.8,
+            ),
+            "strong": dict(
+                feature_noise_prob=0.9,   feature_noise_sigma=0.35,
+                target_outlier_prob=0.07, target_outlier_scale=4.5,
+                spike_prob=0.02,          spike_scale=8.0,
+                n_bias_segments=2,        bias_len=(25, 60), bias_scale=1.2,
+            ),
+        }
+    
+        if isinstance(spec, str):
+            if spec not in presets:
+                raise ValueError(f"Невідомий рівень аномалій: {spec}")
+            cfg = dict(presets[spec])
+        elif isinstance(spec, dict):
+            cfg = dict(presets["moderate"])
+            cfg.update(spec)
+        else:
+            raise TypeError("spec має бути 'weak'|'moderate'|'strong' або dict.")
+    
+        X = X_test.copy()
+        Y = y_test.copy()
+        n, d = X.shape
+        _, m = Y.shape
+    
+        # 1) Шум у ознаках
+        if cfg["feature_noise_prob"] > 0 and cfg["feature_noise_sigma"] > 0:
+            mask = rng.random(n) < float(cfg["feature_noise_prob"])
+            if np.any(mask):
+                noise = rng.normal(0.0, cfg["feature_noise_sigma"], size=(mask.sum(), d))
+                noise *= np.where(std_x_train <= 1e-12, 1.0, std_x_train)
+                X[mask] += noise
+    
+        # 2) Outlier-и в цілях
+        if cfg["target_outlier_prob"] > 0 and cfg["target_outlier_scale"] > 0:
+            for j in range(m):
+                mask = rng.random(n) < float(cfg["target_outlier_prob"])
+                if np.any(mask):
+                    amp = rng.normal(0.0, cfg["target_outlier_scale"], size=mask.sum())
+                    amp *= std_y_train[j] if std_y_train[j] > 1e-12 else 1.0
+                    Y[mask, j] += amp
+    
+        # 3) Спайки
+        if cfg["spike_prob"] > 0 and cfg["spike_scale"] > 0:
+            for j in range(m):
+                mask = rng.random(n) < float(cfg["spike_prob"])
+                if np.any(mask):
+                    signs = rng.choice([-1.0, 1.0], size=mask.sum())
+                    amp = signs * cfg["spike_scale"] * (std_y_train[j] if std_y_train[j] > 1e-12 else 1.0)
+                    Y[mask, j] += amp
+    
+        # 4) Bias-сегменти
+        n_seg = int(cfg.get("n_bias_segments", 0))
+        min_len, max_len = cfg.get("bias_len", (20, 40))
+        bias_scale = float(cfg.get("bias_scale", 0.8))
+        if n_seg > 0 and max_len > 0:
+            for _ in range(n_seg):
+                L = int(rng.integers(low=min_len, high=max_len + 1))
+                if L <= 0 or L >= n:
+                    continue
+                start = int(rng.integers(low=0, high=max(1, n - L)))
+                end = start + L
+                for j in range(m):
+                    shift = bias_scale * (std_y_train[j] if std_y_train[j] > 1e-12 else 1.0)
+                    shift *= rng.choice([-1.0, 1.0])
+                    Y[start:end, j] += shift
+    
+        return X, Y
+
     def create_dataset(self, gcfg: GlobalConfig,
                        overrides: Optional[ScenarioOverride] = None) -> Dataset:
         gcfg = GlobalConfig(**asdict(gcfg))  # ізолюємо зміни
         gcfg.ensure_valid()
-
+    
         # 1) Генерація даних
         gen_params = dict(gcfg.generator_params)
         if overrides and overrides.generator_overrides:
             gen_params.update(overrides.generator_overrides)
-
+    
         df: pd.DataFrame = self.generator({
             "n_samples": gcfg.n_samples,
             "seed": gcfg.seed,
             **gen_params
         })
-
-        # Визначимо target та features
+    
+        # 2) Структура цілей
         target_cols = [c for c in df.columns if c.startswith("Y_") or c.startswith("target")]
-        feature_cols = [c for c in df.columns if c not in target_cols]
-
-        # 2) Лаги
+    
+        # 3) Лаги
         lag_depth = gcfg.lag_depth if overrides is None or overrides.lag_depth is None else overrides.lag_depth
         df = self._create_lag_features(df, lag_depth, target_cols)
-
-        # 3) Масиви
+    
+        # 4) Ознаки — ПІСЛЯ лагів
+        feature_cols = [c for c in df.columns if c not in target_cols]
+    
+        # 5) Масиви
         X = df[feature_cols].to_numpy(dtype=float)
         y = df[target_cols].to_numpy(dtype=float)
-
-        # 4) Спліт
+    
+        # 6) Спліт
         X_train, y_train, X_val, y_val, X_test, y_test = self._split(
             X, y, gcfg.train_size, gcfg.val_size, gcfg.test_size, gcfg.shuffle, gcfg.seed
         )
-
-        # 5) Масштабування — фіксуємо scaler-и один раз на першому датасеті
+    
+        # 7) Ін'єкція аномалій ТІЛЬКИ у тест (за наявності overrides.generator_overrides['test_anomalies'])
+        test_anoms = None
+        if overrides and overrides.generator_overrides:
+            test_anoms = overrides.generator_overrides.get("test_anomalies", None)
+    
+        if test_anoms:
+            std_x = np.std(X_train, axis=0, ddof=1)
+            std_y = np.std(y_train, axis=0, ddof=1)
+            rng = np.random.default_rng(int(gcfg.seed) + 10001)
+            X_test, y_test = self._inject_test_anomalies(
+                X_test=X_test, y_test=y_test,
+                spec=test_anoms, std_x_train=std_x, std_y_train=std_y, rng=rng
+            )
+    
+        # 8) Масштабування — фіксуємо scaler-и один раз на першому датасеті
         if gcfg.scale_x:
             if self._scaler_x is None:
                 self._scaler_x = StandardScaler().fit(X_train)
@@ -202,18 +313,18 @@ class DataFactory:
             X_test_s = self._scaler_x.transform(X_test)
         else:
             X_train_s, X_val_s, X_test_s = X_train, X_val, X_test
-
+    
         if gcfg.scale_y:
             if self._scaler_y is None:
                 self._scaler_y = StandardScaler().fit(y_train)
             y_train_s = self._scaler_y.transform(y_train)
             y_val_s = self._scaler_y.transform(y_val) if y_val is not None else None
             y_test_s = self._scaler_y.transform(y_test)
-            y_test_real = y_test  # збережемо «реальні» одиниці
+            y_test_real = y_test  # «реальні» одиниці для метрик/візуалізацій
         else:
             y_train_s, y_val_s, y_test_s = y_train, y_val, y_test
             y_test_real = y_test
-
+    
         return Dataset(
             X_train=X_train_s,
             y_train=y_train_s,
@@ -227,7 +338,7 @@ class DataFactory:
             feature_names=feature_cols,
             target_names=target_cols
         )
-
+    
 class MagneticDataFactory:
     """
     Централізована фабрика генерації даних поверх data_gen.DataGenerator.
@@ -265,20 +376,19 @@ class MagneticDataFactory:
     def _generate_core(self, params: "dict[str, object]") -> "pd.DataFrame":
         """
         Єдине місце роботи з DataGenerator:
-        - базова генерація,
-        - шум/аномалії,
+        - базова генерація (без аномалій),
         - опційна нелінійність,
         - стандартизація колонок (3 X + 2 Y_*).
         """
         import pandas as pd
         from data_gen import DataGenerator
-
+    
         # 0) Базові параметри з дефолтами
         n_samples = int(params.get("n_samples", params.get("N_data", 7000)))
         seed = int(params.get("seed", 42))
         control_pts = int(params.get("control_pts", max(20, n_samples // 10)))
         time_step_s = float(params.get("time_step_s", 5.0))
-
+    
         time_constants_s = params.get("time_constants_s", {
             "concentrate_fe_percent": 8.0,
             "tailings_fe_percent": 10.0,
@@ -293,7 +403,7 @@ class MagneticDataFactory:
         })
         noise_level = params.get("noise_level", "none")  # 'none' | 'low' | 'medium' | 'high'
         plant_model_type = params.get("plant_model_type", "rf")
-
+    
         # 1) Генератор
         gen = DataGenerator(
             reference_df=self.reference_df,
@@ -303,33 +413,17 @@ class MagneticDataFactory:
             dead_times_s=dead_times_s,
             true_model_type=plant_model_type,
         )
-
-        # 2) Аномалії (централізовано)
-        use_anomalies = bool(params.get("use_anomalies", True))
-        if use_anomalies:
-            train_frac = float(params.get("train_size", 0.7))
-            val_frac = float(params.get("val_size", 0.15))
-            test_frac = float(params.get("test_size", 0.15))
-            anomaly_cfg = DataGenerator.generate_anomaly_config(
-                N_data=n_samples,
-                train_frac=train_frac,
-                val_frac=val_frac,
-                test_frac=test_frac,
-                seed=seed,
-            )
-        else:
-            anomaly_cfg = None
-
-        # 3) База зі шумом
+    
+        # 2) База зі шумом (без аномалій)
         df_base = gen.generate(
             T=n_samples,
             control_pts=control_pts,
             n_neighbors=int(params.get("n_neighbors", 5)),
             noise_level=noise_level,
-            anomaly_config=anomaly_cfg,
+            anomaly_config=None,   # ключова зміна: без аномалій
         )
-
-        # 4) Нелінійність (за потреби)
+    
+        # 3) Нелінійність (за потреби)
         if bool(params.get("enable_nonlinear", True)):
             nonlin_cfg = params.get("nonlinear_config", {
                 "concentrate_fe_percent": ("pow", 2.0),
@@ -338,26 +432,26 @@ class MagneticDataFactory:
             df_used = gen.generate_nonlinear_variant(
                 base_df=df_base,
                 non_linear_factors=nonlin_cfg,
-                noise_level="none",          # шум уже додано
-                anomaly_config=anomaly_cfg,  # консистентний розклад аномалій
+                noise_level="none",      # шум уже додано
+                anomaly_config=None,     # без аномалій
             )
         else:
             df_used = df_base
-
-        # 5) Форматування виходу
+    
+        # 4) Форматування виходу
         cols_inp = ["feed_fe_percent", "ore_mass_flow", "solid_feed_percent"]
         cols_y = ["concentrate_fe_percent", "concentrate_mass_flow"]
         missing = [c for c in cols_inp + cols_y if c not in df_used.columns]
         if missing:
             raise KeyError(f"Відсутні колонки у згенерованих даних: {missing}")
-
+    
         df_out = df_used[cols_inp + cols_y].copy()
         df_out.rename(columns={
             "concentrate_fe_percent": "Y_concentrate_fe_percent",
             "concentrate_mass_flow": "Y_concentrate_mass_flow",
         }, inplace=True)
         return df_out
-
+    
     def build_generator(self):
         """
         Повертає функцію-генератор, сумісну з існуючим TestHarness (через data_generator=...).

@@ -33,7 +33,6 @@ from testing_framework import (
 #  ГЕНЕРАТОР ДАНИХ (АДАПТЕР)
 # =========================
 
-    use_anomalies = params.get("use_anomalies", True)
 # def _load_reference_df(params: Mapping[str, Any]) -> pd.DataFrame:
 #     """Завантажує референсні дані."""
 #     if "reference_df" in params and params["reference_df"] is not None:
@@ -401,20 +400,17 @@ class LinearOnNonlinearAnomaliesTest(BaseTestCase):
         }
 
     def iter_scenarios(self):
-        for name, cfg in self.nl_levels.items():
+        """
+        Єдиний нелінійний сигнал; варіюємо лише інтенсивність тестових аномалій.
+        Рівні: weak → moderate → strong.
+        """
+        for level in ("weak", "moderate", "strong"):
             yield ScenarioOverride(
-                name=name,
+                name=level,
                 generator_overrides={
-                    # постійно: аномалії та шум
-                    "use_anomalies": True,
-                    "anomaly_severity": self.anomaly_severity,
-                    "noise_level": self.noise_level,
-                    # перемикаємо рівень нелінійності
-                    "enable_nonlinear": True,
-                    "nonlinear_config": dict(cfg),
+                    "test_anomalies": level  # ін’єкція відбудеться у DataFactory.create_dataset(...)
                 },
             )
-
 
 # =========================
 #      ШВИДКИЙ ЗАПУСК/ДЕМО
@@ -433,9 +429,8 @@ def make_default_configs() -> tuple[GlobalConfig, WorkingConfig]:
         scale_y=True,
     )
 
-    # Якщо у вашій реалізації GlobalConfig немає поля base_generator_params,
-    # можна покласти ці значення у gcfg.generator_params — фреймворк їх підхопить.
-    gcfg.base_generator_params = {
+    # Базові параметри генератора: один нелінійний сигнал, БЕЗ аномалій
+    gcfg.generator_params = {
         "time_step_s": 5.0,
         "time_constants_s": {
             "concentrate_fe_percent": 8.0,
@@ -456,15 +451,14 @@ def make_default_configs() -> tuple[GlobalConfig, WorkingConfig]:
             "concentrate_mass_flow": ("pow", 1.5),
         },
         "noise_level": "medium",
-        "use_anomalies": True,
-        "anomaly_severity": "medium",
+        # важливо: аномалії не створюємо на етапі генерації
+        # усе «викривлення» додається лише в тест після спліту
     }
 
     wcfg = WorkingConfig(metrics=("RMSE", "MAE", "R2"))
     wcfg.add_model("ARX_OLS")
     wcfg.add_model("ARX_Ridge", alpha=1.0)
     wcfg.add_model("ARX_Lasso", alpha=0.01)
-    
     return gcfg, wcfg
 
 def run_demo():
