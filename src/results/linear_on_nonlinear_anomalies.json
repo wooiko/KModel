@@ -1,0 +1,492 @@
+{
+  "timestamp": "2025-08-25 14:19:57",
+  "global_config": {
+    "n_samples": 7000,
+    "seed": 42,
+    "generator_params": {
+      "time_step_s": 5.0,
+      "time_constants_s": {
+        "concentrate_fe_percent": 8.0,
+        "tailings_fe_percent": 10.0,
+        "concentrate_mass_flow": 5.0,
+        "tailings_mass_flow": 7.0
+      },
+      "dead_times_s": {
+        "concentrate_fe_percent": 20.0,
+        "tailings_fe_percent": 25.0,
+        "concentrate_mass_flow": 20.0,
+        "tailings_mass_flow": 25.0
+      },
+      "control_pts": 700,
+      "noise_level": "medium",
+      "use_anomalies": true,
+      "anomaly_severity": "medium",
+      "enable_nonlinear": true,
+      "nonlinear_config": {
+        "concentrate_fe_percent": [
+          "pow",
+          2.0
+        ],
+        "concentrate_mass_flow": [
+          "pow",
+          1.5
+        ]
+      }
+    },
+    "lag_depth": 3,
+    "train_size": 0.7,
+    "val_size": 0.15,
+    "test_size": 0.15,
+    "shuffle": false,
+    "scale_x": true,
+    "scale_y": true
+  },
+  "working_config": {
+    "model_configs": [
+      {
+        "name": "ARX_OLS",
+        "params": {}
+      },
+      {
+        "name": "ARX_Ridge",
+        "params": {
+          "alpha": 1.0
+        }
+      },
+      {
+        "name": "ARX_Lasso",
+        "params": {
+          "alpha": 0.01
+        }
+      }
+    ],
+    "metrics": [
+      "RMSE",
+      "MAE",
+      "R2"
+    ],
+    "save_predictions": true,
+    "save_intermediate": false,
+    "low_var_eps": 1e-08,
+    "low_var_cv_threshold": 0.01
+  },
+  "tests": {
+    "LinearOnNonlinearWithAnomalies": {
+      "test_name": "LinearOnNonlinearWithAnomalies",
+      "global_config": {
+        "n_samples": 7000,
+        "seed": 42,
+        "generator_params": {
+          "time_step_s": 5.0,
+          "time_constants_s": {
+            "concentrate_fe_percent": 8.0,
+            "tailings_fe_percent": 10.0,
+            "concentrate_mass_flow": 5.0,
+            "tailings_mass_flow": 7.0
+          },
+          "dead_times_s": {
+            "concentrate_fe_percent": 20.0,
+            "tailings_fe_percent": 25.0,
+            "concentrate_mass_flow": 20.0,
+            "tailings_mass_flow": 25.0
+          },
+          "control_pts": 700,
+          "noise_level": "medium",
+          "use_anomalies": true,
+          "anomaly_severity": "medium",
+          "enable_nonlinear": true,
+          "nonlinear_config": {
+            "concentrate_fe_percent": [
+              "pow",
+              2.0
+            ],
+            "concentrate_mass_flow": [
+              "pow",
+              1.5
+            ]
+          }
+        },
+        "lag_depth": 3,
+        "train_size": 0.7,
+        "val_size": 0.15,
+        "test_size": 0.15,
+        "shuffle": false,
+        "scale_x": true,
+        "scale_y": true
+      },
+      "working_config": {
+        "model_configs": [
+          {
+            "name": "ARX_OLS",
+            "params": {}
+          },
+          {
+            "name": "ARX_Ridge",
+            "params": {
+              "alpha": 1.0
+            }
+          },
+          {
+            "name": "ARX_Lasso",
+            "params": {
+              "alpha": 0.01
+            }
+          }
+        ],
+        "metrics": [
+          "RMSE",
+          "MAE",
+          "R2"
+        ],
+        "save_predictions": true,
+        "save_intermediate": false,
+        "low_var_eps": 1e-08,
+        "low_var_cv_threshold": 0.01
+      },
+      "scenarios": {
+        "weak": {
+          "override": {
+            "name": "weak",
+            "generator_overrides": {
+              "use_anomalies": true,
+              "anomaly_severity": "medium",
+              "noise_level": "medium",
+              "enable_nonlinear": true,
+              "nonlinear_config": {
+                "concentrate_fe_percent": [
+                  "pow",
+                  1.2
+                ],
+                "concentrate_mass_flow": [
+                  "pow",
+                  1.1
+                ]
+              }
+            },
+            "lag_depth": null
+          },
+          "models": {
+            "ARX_OLS": {
+              "metrics": {
+                "RMSE": 0.5570630529817594,
+                "MAE": 0.38187837254753065,
+                "R2": 0.04696325417810726
+              },
+              "train_time_sec": 0.030708099948242307,
+              "predictions_head": [
+                [
+                  53.85931978036632,
+                  56.78014426349093
+                ],
+                [
+                  53.934950964969175,
+                  56.82247271963106
+                ],
+                [
+                  53.93038483115496,
+                  56.72976360891341
+                ],
+                [
+                  53.940980211254775,
+                  56.67491798184043
+                ],
+                [
+                  53.87666103018319,
+                  56.63372493739284
+                ]
+              ]
+            },
+            "ARX_Ridge": {
+              "metrics": {
+                "RMSE": 0.5570612655769062,
+                "MAE": 0.3818760592066203,
+                "R2": 0.04697916849135142
+              },
+              "train_time_sec": 0.022343500051647425,
+              "predictions_head": [
+                [
+                  53.859344707290774,
+                  56.78011929163725
+                ],
+                [
+                  53.93496068076273,
+                  56.82244079250994
+                ],
+                [
+                  53.93039510789655,
+                  56.729749398521975
+                ],
+                [
+                  53.94098823475293,
+                  56.674914872613186
+                ],
+                [
+                  53.87668208311788,
+                  56.63372913884055
+                ]
+              ]
+            },
+            "ARX_Lasso": {
+              "metrics": {
+                "RMSE": 0.5572688821677177,
+                "MAE": 0.3817662985104636,
+                "R2": 0.047065092438097644
+              },
+              "train_time_sec": 0.010483999969437718,
+              "predictions_head": [
+                [
+                  53.863395671549995,
+                  56.75247607934203
+                ],
+                [
+                  53.93990392359424,
+                  56.811754577824914
+                ],
+                [
+                  53.93328309615399,
+                  56.72072572376144
+                ],
+                [
+                  53.94343276047601,
+                  56.673124384858816
+                ],
+                [
+                  53.87900250490757,
+                  56.62059968872103
+                ]
+              ]
+            }
+          }
+        },
+        "moderate": {
+          "override": {
+            "name": "moderate",
+            "generator_overrides": {
+              "use_anomalies": true,
+              "anomaly_severity": "medium",
+              "noise_level": "medium",
+              "enable_nonlinear": true,
+              "nonlinear_config": {
+                "concentrate_fe_percent": [
+                  "pow",
+                  1.6
+                ],
+                "concentrate_mass_flow": [
+                  "pow",
+                  1.3
+                ]
+              }
+            },
+            "lag_depth": null
+          },
+          "models": {
+            "ARX_OLS": {
+              "metrics": {
+                "RMSE": 0.5547198648779589,
+                "MAE": 0.3782846123682124,
+                "R2": 0.0399427011451306
+              },
+              "train_time_sec": 0.0015865000896155834,
+              "predictions_head": [
+                [
+                  53.62288635223736,
+                  56.67787866885402
+                ],
+                [
+                  53.69759057078015,
+                  56.7204941881483
+                ],
+                [
+                  53.692340685666196,
+                  56.62847136640292
+                ],
+                [
+                  53.702327861682676,
+                  56.574013571515856
+                ],
+                [
+                  53.63877389778997,
+                  56.53249521118348
+                ]
+              ]
+            },
+            "ARX_Ridge": {
+              "metrics": {
+                "RMSE": 0.5547180080418923,
+                "MAE": 0.3782820794715819,
+                "R2": 0.039962198547023986
+              },
+              "train_time_sec": 0.0027834000065922737,
+              "predictions_head": [
+                [
+                  53.622910647094685,
+                  56.677854140217924
+                ],
+                [
+                  53.697599852932015,
+                  56.720462639283895
+                ],
+                [
+                  53.69235066544229,
+                  56.62845739583256
+                ],
+                [
+                  53.70233571321497,
+                  56.57401062232452
+                ],
+                [
+                  53.63879461568465,
+                  56.53249964399771
+                ]
+              ]
+            },
+            "ARX_Lasso": {
+              "metrics": {
+                "RMSE": 0.554916246365358,
+                "MAE": 0.37813460924733194,
+                "R2": 0.040561870088812346
+              },
+              "train_time_sec": 0.0024393999483436346,
+              "predictions_head": [
+                [
+                  53.626580375259486,
+                  56.65021048460937
+                ],
+                [
+                  53.70280759204428,
+                  56.70977604641645
+                ],
+                [
+                  53.695258747987864,
+                  56.61943348124771
+                ],
+                [
+                  53.70488140939286,
+                  56.57221997452865
+                ],
+                [
+                  53.640779237894186,
+                  56.51936996237601
+                ]
+              ]
+            }
+          }
+        },
+        "strong": {
+          "override": {
+            "name": "strong",
+            "generator_overrides": {
+              "use_anomalies": true,
+              "anomaly_severity": "medium",
+              "noise_level": "medium",
+              "enable_nonlinear": true,
+              "nonlinear_config": {
+                "concentrate_fe_percent": [
+                  "pow",
+                  2.0
+                ],
+                "concentrate_mass_flow": [
+                  "pow",
+                  1.5
+                ]
+              }
+            },
+            "lag_depth": null
+          },
+          "models": {
+            "ARX_OLS": {
+              "metrics": {
+                "RMSE": 0.5508283630346217,
+                "MAE": 0.3715287035353561,
+                "R2": 0.031094833796978527
+              },
+              "train_time_sec": 0.0013955999165773392,
+              "predictions_head": [
+                [
+                  53.459803312110296,
+                  56.59113319098374
+                ],
+                [
+                  53.530505177479476,
+                  56.63313924947832
+                ],
+                [
+                  53.524475039972124,
+                  56.542816737337134
+                ],
+                [
+                  53.53330927917415,
+                  56.48912664440895
+                ],
+                [
+                  53.47319300852892,
+                  56.4479646544142
+                ]
+              ]
+            },
+            "ARX_Ridge": {
+              "metrics": {
+                "RMSE": 0.5508264964306702,
+                "MAE": 0.37152617246275865,
+                "R2": 0.031118524589757834
+              },
+              "train_time_sec": 0.0012527999933809042,
+              "predictions_head": [
+                [
+                  53.45982581247151,
+                  56.591109274608776
+                ],
+                [
+                  53.53051348399479,
+                  56.633108417151206
+                ],
+                [
+                  53.52448421530353,
+                  56.54280314762638
+                ],
+                [
+                  53.53331656636784,
+                  56.48912391959929
+                ],
+                [
+                  53.473212455988914,
+                  56.44796925290678
+                ]
+              ]
+            },
+            "ARX_Lasso": {
+              "metrics": {
+                "RMSE": 0.5510204619150969,
+                "MAE": 0.37138380507054897,
+                "R2": 0.03237580234366061
+              },
+              "train_time_sec": 0.0027002000715583563,
+              "predictions_head": [
+                [
+                  53.46332104490791,
+                  56.563465006582945
+                ],
+                [
+                  53.53584410380629,
+                  56.62242110786755
+                ],
+                [
+                  53.527402241767994,
+                  56.5337788521767
+                ],
+                [
+                  53.53590945304269,
+                  56.48733304741287
+                ],
+                [
+                  53.47504317138832,
+                  56.43483940538594
+                ]
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

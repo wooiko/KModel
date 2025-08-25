@@ -14,6 +14,7 @@ from datetime import datetime
 import seaborn as sns
 from scipy import stats
 from statsmodels.stats.diagnostic import het_breuschpagan, acorr_ljungbox
+from statsmodels.tools.tools import add_constant
 
 # Припускаємо, що ці модулі знаходяться в тому ж каталозі
 from data_gen import StatefulDataGenerator
@@ -210,45 +211,46 @@ class LinearModelsComparisonService:
                 raise ValueError("Для використання реальних даних потрібен reference_df")
             df = self.reference_df.copy()
         
-        # Створення лагових ознак
+        # Лагові ознаки
         lag_depth = global_config.get('lag_depth', 3)
         X, Y = self._create_lag_features(df, lag_depth)
-        
-        print(f"   🎯 Лагова глибина: {lag_depth}")
-        print(f"   📊 Розмір даних після лагування: X={X.shape}, Y={Y.shape}")
-        print(f"   📈 Статистика Y: min={Y.min():.3f}, max={Y.max():.3f}, std={Y.std():.3f}")
-        
-        # Розбиття даних
+    
+        # Розбиття
         train_size = global_config.get('train_size', 0.8)
         val_size = global_config.get('val_size', 0.1)
-        
-        n_train = int(len(X) * train_size)
-        n_val = int(len(X) * val_size)
-        
-        X_train, Y_train = X[:n_train], Y[:n_train]
-        X_val, Y_val = X[n_train:n_train+n_val], Y[n_train:n_train+n_val]
-        X_test, Y_test = X[n_train+n_val:], Y[n_train+n_val:]
-        
-        # Масштабування
-        X_train_scaled = self.scaler_x.fit_transform(X_train)
-        Y_train_scaled = self.scaler_y.fit_transform(Y_train)
-        
-        X_val_scaled = self.scaler_x.transform(X_val) if len(X_val) > 0 else None
-        Y_val_scaled = self.scaler_y.transform(Y_val) if len(Y_val) > 0 else None
-        
+        n = X.shape[0]
+        n_train = int(n * train_size)
+        n_val = int(n * val_size)
+        n_test = n - n_train - n_val
+    
+        X_train = X[:n_train]
+        Y_train = Y[:n_train]
+        X_val = X[n_train:n_train + n_val] if n_val > 0 else None
+        Y_val = Y[n_train:n_train + n_val] if n_val > 0 else None
+        X_test = X[-n_test:]
+        Y_test = Y[-n_test:]
+    
+        # Масштабування: fit ТІЛЬКИ один раз, коли вони ще не фіткнуті
+        if not hasattr(self.scaler_x, "mean_"):
+            self.scaler_x.fit(X_train)
+        if not hasattr(self.scaler_y, "mean_"):
+            self.scaler_y.fit(Y_train)
+    
+        X_train_scaled = self.scaler_x.transform(X_train)
+        X_val_scaled = self.scaler_x.transform(X_val) if X_val is not None else None
         X_test_scaled = self.scaler_x.transform(X_test)
+    
+        Y_train_scaled = self.scaler_y.transform(Y_train)
+        Y_val_scaled = self.scaler_y.transform(Y_val) if Y_val is not None else None
         Y_test_scaled = self.scaler_y.transform(Y_test)
-        
-        print(f"✅ Дані підготовлено: Train={X_train.shape}, Val={X_val.shape}, Test={X_test.shape}")
-        
-        if np.allclose(Y_train, Y_train.mean(), rtol=1e-3):
-            print("⚠️  УВАГА: Y_train має дуже мало варіації - можливо помилка в генерації!")
-        
-        if len(np.unique(Y_test.round(3))) < 10:
-            print("⚠️  УВАГА: Y_test має дуже мало унікальних значень!")
-        
-        return (X_train_scaled, Y_train_scaled, X_val_scaled, 
-                Y_val_scaled, X_test_scaled, Y_test, X_test, Y_test_scaled) 
+    
+        # Повертаємо і масштабовані, і «реальні» тестові Y для коректних метрик
+        return (
+            X_train_scaled, Y_train_scaled,
+            X_val_scaled, Y_val_scaled,
+            X_test_scaled, Y_test,  # Y_test у реальних одиницях
+            X_test, Y_test_scaled
+        ) 
      
     def _create_anomaly_config(self, global_config: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -517,16 +519,16 @@ class LinearModelsComparisonService:
                 }
             
             try:
-                combined_residuals = np.mean(residuals, axis=1)
-                lb_result = acorr_ljungbox(combined_residuals, lags=10, return_df=True)
-                model_diagnostics['autocorrelation'] = {
-                    'ljung_box_stats': lb_result['lb_stat'].tolist(),
-                    'ljung_box_p_values': lb_result['lb_pvalue'].tolist(),
-                    'has_autocorr': any(lb_result['lb_pvalue'] < 0.05)
+                # Додаємо константу, як вимагає BP-тест
+                exog = add_constant(X_test, has_constant='add')
+                bp_stat, bp_p, _, _ = het_breuschpagan(residuals[:, 0], exog)
+                model_diagnostics['heteroscedasticity'] = {
+                    'breusch_pagan_stat': float(bp_stat),
+                    'breusch_pagan_p': float(bp_p),
+                    'is_homoscedastic': bool(bp_p > 0.05),
                 }
             except Exception as e:
-                print(f"   ⚠️ Помилка в тесті автокореляції: {e}")
-                model_diagnostics['autocorrelation'] = {'error': str(e)}
+                model_diagnostics['heteroscedasticity'] = {'error': str(e)}
             
             try:
                 bp_stat, bp_p, _, _ = het_breuschpagan(residuals[:, 0], X_test)
@@ -573,69 +575,55 @@ class LinearModelsComparisonService:
         )
         return robustness_results
     
+
     def _test_noise_robustness(self, global_config: Dict[str, Any],
-                             model_configs: List[Dict[str, Any]], 
-                             noise_levels: List[float]) -> Dict[str, Any]:
-        """Тестування робастності до шуму."""
-        noise_results = {model_config['name']: {} for model_config in model_configs}
-        
+                               model_configs: List[Dict[str, Any]],
+                               noise_levels: List[float]) -> Dict[str, Any]:
+        noise_results = {mc['name']: {} for mc in model_configs}
+    
         for noise_level in noise_levels:
-            print(f"🔊 Тестування при рівні шуму: {noise_level*100:.1f}%")
-            noisy_config = global_config.copy()
-            noisy_config['noise_level'] = 'custom'
-            noisy_config['custom_noise_std'] = noise_level
-            
-            try:
-                temp_results = self._prepare_data(noisy_config)
-                X_train_noisy, Y_train_noisy, _, _, X_test_noisy, Y_test_noisy, _, _ = temp_results
-            except Exception as e:
-                print(f"⚠️ Помилка генерації зашумлених даних: {e}")
-                base_results = self._prepare_data(global_config)
-                X_train_base, Y_train_base, _, _, X_test_base, Y_test_base, _, _ = base_results
-                X_train_noisy = X_train_base + np.random.normal(0, noise_level, X_train_base.shape)
-                Y_train_noisy = Y_train_base + np.random.normal(0, noise_level, Y_train_base.shape)
-                X_test_noisy = X_test_base + np.random.normal(0, noise_level, X_test_base.shape)
-                Y_test_noisy = Y_test_base + np.random.normal(0, noise_level, Y_test_base.shape)
-            
-            for config in model_configs:
-                model_name = config['name']
-                model_result = self._train_single_model(config, X_train_noisy, Y_train_noisy, None, None)
-                Y_pred_scaled = model_result['model'].predict(X_test_noisy)
-                Y_pred = self.scaler_y.inverse_transform(Y_pred_scaled)
-                mse = mean_squared_error(Y_test_noisy, Y_pred)
-                r2 = r2_score(Y_test_noisy, Y_pred)
-                noise_results[model_name][f'noise_{noise_level}'] = {'mse': mse, 'r2': r2}
+            noisy_cfg = global_config.copy()
+            noisy_cfg['noise_level'] = 'custom'
+            noisy_cfg['custom_noise_std'] = noise_level
+    
+            # ВАЖЛИВО: не рефітимо scaler-и на нових даних; _prepare_data повертає
+            # X_* вже трансформовані поточними scaler-ами сервісу
+            X_train_s, Y_train_s, _, _, X_test_s, Y_test_real, _, _ = self._prepare_data(noisy_cfg)
+    
+            for cfg in model_configs:
+                mr = self._train_single_model(cfg, X_train_s, Y_train_s, None, None)
+                Y_pred_s = mr['model'].predict(X_test_s)
+                Y_pred = self.scaler_y.inverse_transform(Y_pred_s)
+    
+                mse = mean_squared_error(Y_test_real, Y_pred)
+                r2 = r2_score(Y_test_real, Y_pred)
+                noise_results[cfg['name']][f'noise_{noise_level}'] = {'mse': mse, 'r2': r2}
+    
         return noise_results
     
+    
     def _test_nonlinearity_robustness(self, global_config: Dict[str, Any],
-                                    model_configs: List[Dict[str, Any]],
-                                    nonlinearity_levels: List[Tuple[str, Dict]]) -> Dict[str, Any]:
-        """Тестування робастності до різних рівнів нелінійності."""
-        nonlinearity_results = {model_config['name']: {} for model_config in model_configs}
-        
-        for level_name, nonlinear_config in nonlinearity_levels:
-            print(f"📈 Тестування при нелінійності: {level_name}")
-            nl_config = global_config.copy()
-            nl_config['enable_nonlinear'] = len(nonlinear_config) > 0
-            nl_config['nonlinear_config'] = nonlinear_config
-            
-            try:
-                temp_results = self._prepare_data(nl_config)
-                X_train_nl, Y_train_nl, _, _, X_test_nl, Y_test_nl, _, _ = temp_results
-            except Exception as e:
-                print(f"⚠️ Помилка генерації нелінійних даних: {e}")
-                temp_results = self._prepare_data(global_config)
-                X_train_nl, Y_train_nl, _, _, X_test_nl, Y_test_nl, _, _ = temp_results
-            
-            for config in model_configs:
-                model_name = config['name']
-                model_result = self._train_single_model(config, X_train_nl, Y_train_nl, None, None)
-                Y_pred_scaled = model_result['model'].predict(X_test_nl)
-                Y_pred = self.scaler_y.inverse_transform(Y_pred_scaled)
-                mse = mean_squared_error(Y_test_nl, Y_pred)
-                r2 = r2_score(Y_test_nl, Y_pred)
-                nonlinearity_results[model_name][level_name] = {'mse': mse, 'r2': r2}
-        return nonlinearity_results
+                                      model_configs: List[Dict[str, Any]],
+                                      nonlinearity_levels: List[Tuple[str, Dict]]) -> Dict[str, Any]:
+        results = {mc['name']: {} for mc in model_configs}
+    
+        for lvl_name, nl_cfg in nonlinearity_levels:
+            cfg = global_config.copy()
+            cfg['enable_nonlinear'] = bool(nl_cfg)
+            cfg['nonlinear_config'] = nl_cfg
+    
+            X_train_s, Y_train_s, _, _, X_test_s, Y_test_real, _, _ = self._prepare_data(cfg)
+    
+            for mc in model_configs:
+                mr = self._train_single_model(mc, X_train_s, Y_train_s, None, None)
+                Y_pred_s = mr['model'].predict(X_test_s)
+                Y_pred = self.scaler_y.inverse_transform(Y_pred_s)
+    
+                mse = mean_squared_error(Y_test_real, Y_pred)
+                r2 = r2_score(Y_test_real, Y_pred)
+                results[mc['name']][lvl_name] = {'mse': mse, 'r2': r2}
+    
+        return results
     
     # ✅ ВИПРАВЛЕННЯ: Додано Y_test як аргумент для коректної візуалізації
     def _generate_comprehensive_report(self, Y_test: np.ndarray):
@@ -665,13 +653,9 @@ class LinearModelsComparisonService:
             return obj
         return convert_value(results)
     
-    # ✅ ВИПРАВЛЕННЯ: Додано Y_test як аргумент
     def _create_comparison_visualizations(self, Y_test: np.ndarray):
-        """Створення візуалізацій для порівняння моделей."""
-        print("🎨 Створення візуалізацій...")
         self._plot_accuracy_comparison()
-        # ✅ ВИПРАВЛЕННЯ: Передаємо Y_test для аналізу резидуалів
-        self._plot_residual_analysis(Y_test)
+        self._plot_residual_analysis(Y_test)  # Y_test у реальних одиницях
         self._plot_noise_robustness()
         self._plot_nonlinearity_robustness()
         print("✅ Візуалізації створено")
@@ -721,51 +705,76 @@ class LinearModelsComparisonService:
         print(f"📊 Графік точності збережено: {plot_path}")
     
     # ✅ ВИПРАВЛЕННЯ: Метод тепер приймає Y_test для коректного розрахунку залишків
-    def _plot_residual_analysis(self, Y_test: np.ndarray):
-        """Візуалізація аналізу резидуалів."""
-        n_models = len(self.models)
-        fig, axes = plt.subplots(n_models, 3, figsize=(15, 5 * n_models), squeeze=False)
-        fig.suptitle('Діагностика резидуалів лінійних моделей', fontsize=16, fontweight='bold')
-        
+
+    def _plot_residual_analysis(self, Y_test: np.ndarray) -> None:
+        """
+        Будуємо базові графіки залишків для кожної моделі.
+        Очікуємо, що Y_test у реальних одиницях; Y_pred з evaluation_results теж у реальних одиницях.
+        """
+        import numpy as np
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+    
         eval_results = self.results.get('evaluation_results', {})
-        
-        for idx, model_name in enumerate(self.models.keys()):
-            if model_name not in eval_results: continue
-                
-            Y_pred = eval_results[model_name]['predictions']
-            
-            # ✅ ВИПРАВЛЕННЯ: Розрахунок залишків на основі реальних Y_test, а не випадкових даних
-            if Y_test.shape != Y_pred.shape:
-                print(f"⚠️ Помилка розмірності для {model_name}: Y_test={Y_test.shape}, Y_pred={Y_pred.shape}")
+        if not eval_results:
+            print("⚠️ Немає evaluation_results для побудови аналізу залишків.")
+            return
+    
+        for model_name in self.models.keys():
+            if model_name not in eval_results:
                 continue
-            residuals = Y_test - Y_pred
-            
-            # 1. QQ-plot
-            ax = axes[idx, 0]
-            try:
-                stats.probplot(residuals[:, 0], dist="norm", plot=ax)
-                ax.set_title(f'{model_name}: QQ-plot (Fe концентрація)'); ax.grid(True, alpha=0.3)
-            except Exception as e:
-                ax.text(0.5, 0.5, f'Помилка: {str(e)[:50]}...', ha='center', transform=ax.transAxes)
-                ax.set_title(f'{model_name}: QQ-plot (помилка)')
-            
-            # 2. Резидуали vs fitted
-            ax = axes[idx, 1]
-            ax.scatter(Y_pred[:, 0], residuals[:, 0], alpha=0.6, s=20)
-            ax.axhline(y=0, color='red', linestyle='--', alpha=0.8)
-            ax.set_xlabel('Прогнозовані значення'); ax.set_ylabel('Резидуали')
-            ax.set_title(f'{model_name}: Резидуали vs Прогноз'); ax.grid(True, alpha=0.3)
-            
-            # 3. Гістограма
-            ax = axes[idx, 2]
-            sns.histplot(residuals[:, 0], bins=30, kde=True, ax=ax, color='skyblue', line_kws={'linewidth': 2})
-            ax.set_xlabel('Резидуали'); ax.set_ylabel('Щільність')
-            ax.set_title(f'{model_name}: Розподіл резидуалів'); ax.grid(True, alpha=0.3)
-        
-        plt.tight_layout(rect=[0, 0, 1, 0.96])
-        plot_path = self.dirs['diagnostics'] / 'residual_analysis.png'
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight'); plt.close()
-        print(f"🔍 Діагностика резидуалів збережена: {plot_path}")
+    
+            Y_pred = np.asarray(eval_results[model_name].get('predictions'))
+            if Y_pred is None or Y_pred.size == 0:
+                print(f"⚠️ Порожні прогнози для {model_name}")
+                continue
+    
+            Y_pred = Y_pred.reshape(-1, 1) if Y_pred.ndim == 1 else Y_pred
+            Y_true = np.asarray(Y_test)
+            Y_true = Y_true.reshape(-1, 1) if Y_true.ndim == 1 else Y_true
+    
+            if Y_true.shape != Y_pred.shape:
+                print(f"⚠️ Розмірності не збігаються: {model_name}: {Y_true.shape} vs {Y_pred.shape}")
+                continue
+    
+            residuals = Y_true - Y_pred
+            if not np.isfinite(residuals).all():
+                print(f"⚠️ Некоректні значення залишків (NaN/Inf) для {model_name}")
+                continue
+    
+            # 1) Фігура з 2 підсюжетами: розсіювання та гістограма/щільність
+            fig, axes = plt.subplots(1, 2, figsize=(10, 4), constrained_layout=True)
+            ax_scatter, ax_hist = axes
+    
+            # Розсіювання: Y_pred vs residuals
+            ax_scatter.scatter(Y_pred.ravel(), residuals.ravel(), alpha=0.6, s=18, color="#4C78A8", edgecolor="none")
+            ax_scatter.axhline(0.0, color="red", linestyle="--", linewidth=1)
+            ax_scatter.set_title(f"Залишки vs Прогноз — {model_name}")
+            ax_scatter.set_xlabel("Ŷ (прогноз)")
+            ax_scatter.set_ylabel("Залишок (Y − Ŷ)")
+    
+            # Гістограма/щільність залишків
+            sns.histplot(residuals.ravel(), bins=30, kde=True, ax=ax_hist, color="#72B7B2")
+            ax_hist.set_title(f"Розподіл залишків — {model_name}")
+            ax_hist.set_xlabel("Залишок")
+            ax_hist.set_ylabel("Кількість")
+    
+            # Опційно: виносимо короткі метрики по залишках
+            mu = float(np.mean(residuals))
+            sigma = float(np.std(residuals, ddof=1))
+            ax_hist.annotate(f"μ={mu:.3g}\nσ={sigma:.3g}", xy=(0.98, 0.98), xycoords="axes fraction",
+                             ha="right", va="top", fontsize=9,
+                             bbox=dict(boxstyle="round,pad=0.25", fc="white", ec="#999"))
+    
+            # Збереження, якщо у вас заведений шлях self.plots_dir
+            if getattr(self, "plots_dir", None):
+                fname = self.plots_dir / f"residuals_{model_name}.png"
+                try:
+                    fig.savefig(fname, dpi=150)
+                except Exception as e:
+                    print(f"⚠️ Не вдалося зберегти графік залишків для {model_name}: {e}")
+            plt.close(fig)
+
 
     def _plot_noise_robustness(self):
         """Візуалізація робастності до шуму."""
